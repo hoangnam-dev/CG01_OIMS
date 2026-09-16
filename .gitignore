@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+.vscode/
+TestResults/
+coverage/
+logs/
+*.user
+*.suo
+.env
+docs
+**/appsettings.*.json
+.agents
+AGENTS.md
+README.md

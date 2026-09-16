@@ -1,0 +1,66 @@
+name: oims
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${OIMS_POSTGRES_DB:-oims}
+      POSTGRES_USER: ${OIMS_POSTGRES_USER:-oims}
+      POSTGRES_PASSWORD: ${OIMS_POSTGRES_PASSWORD:?Set OIMS_POSTGRES_PASSWORD in .env}
+    ports:
+      - "${OIMS_INFRA_BIND_ADDRESS:-127.0.0.1}:${OIMS_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - oims
+
+  redis:
+    image: redis:8-alpine
+    environment:
+      REDIS_PASSWORD: ${OIMS_REDIS_PASSWORD:?Set OIMS_REDIS_PASSWORD in .env}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
+    ports:
+      - "${OIMS_INFRA_BIND_ADDRESS:-127.0.0.1}:${OIMS_REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - oims
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${OIMS_RABBITMQ_USER:-oims}
+      RABBITMQ_DEFAULT_PASS: ${OIMS_RABBITMQ_PASSWORD:?Set OIMS_RABBITMQ_PASSWORD in .env}
+    ports:
+      - "${OIMS_INFRA_BIND_ADDRESS:-127.0.0.1}:${OIMS_RABBITMQ_PORT:-5672}:5672"
+      - "${OIMS_INFRA_BIND_ADDRESS:-127.0.0.1}:${OIMS_RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - oims
+
+volumes:
+  postgres-data:
+  redis-data:
+  rabbitmq-data:
+
+networks:
+  oims:
+    driver: bridge
