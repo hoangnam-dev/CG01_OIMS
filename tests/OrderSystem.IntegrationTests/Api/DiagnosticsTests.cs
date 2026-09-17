@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Api;
 
@@ -11,10 +12,7 @@ public sealed class DiagnosticsTests : IClassFixture<WebApplicationFactory<Progr
 
     public DiagnosticsTests(WebApplicationFactory<Program> factory) => _client = factory
         .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
-            configuration.AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-            })))
+            configuration.AddOimsTestConfiguration()))
         .CreateClient();
 
     [Fact]

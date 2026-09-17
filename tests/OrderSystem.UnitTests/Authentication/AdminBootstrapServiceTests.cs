@@ -16,14 +16,14 @@ public sealed class AdminBootstrapServiceTests
 
         var result = await service.EnsureAdminAsync(
             " Admin@Example.COM ",
-            "Secret123",
+            TestCredentials.ValidPassword,
             CancellationToken.None);
 
         Assert.Equal(AdminBootstrapResult.Created, result);
         Assert.NotNull(store.CreatedUser);
         Assert.Equal("Admin@Example.COM", store.CreatedUser.Email);
         Assert.Equal("admin@example.com", store.CreatedUser.NormalizedEmail);
-        Assert.Equal("hashed:Secret123", store.CreatedUser.PasswordHash);
+        Assert.Equal($"hashed:{TestCredentials.ValidPassword}", store.CreatedUser.PasswordHash);
         Assert.Equal(UserRole.Admin, store.CreatedUser.Role);
         Assert.Equal(Now, store.CreatedUser.CreatedAt);
     }
@@ -38,7 +38,7 @@ public sealed class AdminBootstrapServiceTests
 
         var result = await service.EnsureAdminAsync(
             existing.Email,
-            "Different9",
+            TestCredentials.AlternatePassword,
             CancellationToken.None);
 
         Assert.Equal(AdminBootstrapResult.AlreadyExists, result);
@@ -55,7 +55,10 @@ public sealed class AdminBootstrapServiceTests
         var service = new AdminBootstrapService(store, new PasswordHasher(), new Clock());
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.EnsureAdminAsync(existing.Email, "Secret123", CancellationToken.None));
+            service.EnsureAdminAsync(
+                existing.Email,
+                TestCredentials.ValidPassword,
+                CancellationToken.None));
 
         Assert.Contains("Customer", exception.Message, StringComparison.Ordinal);
         Assert.Equal(UserRole.Customer, existing.Role);
@@ -76,7 +79,7 @@ public sealed class AdminBootstrapServiceTests
 
         var result = await service.EnsureAdminAsync(
             existingAdmin.Email,
-            "Secret123",
+            TestCredentials.ValidPassword,
             CancellationToken.None);
 
         Assert.Equal(AdminBootstrapResult.AlreadyExists, result);

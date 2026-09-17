@@ -4,7 +4,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
-using OrderSystem.IntegrationTests.Api;
 using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Persistence;
@@ -17,11 +16,8 @@ public sealed class FoundationMigrationTests(PostgreSqlFixture postgres)
     {
         await using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Database:ConnectionString"] = postgres.ConnectionString,
-                    ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-                })));
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString))));
         using var scope = factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetServices<DbContext>().Single();
         await dbContext.Database.MigrateAsync();
@@ -36,7 +32,7 @@ public sealed class FoundationMigrationTests(PostgreSqlFixture postgres)
             insert.Parameters.AddWithValue("id", Guid.NewGuid());
             insert.Parameters.AddWithValue("email", "customer@example.com");
             insert.Parameters.AddWithValue("normalized_email", "customer@example.com");
-            insert.Parameters.AddWithValue("password_hash", "not-a-real-password-hash");
+            insert.Parameters.AddWithValue("password_hash", TestCredentials.CreateHashPlaceholder());
             insert.Parameters.AddWithValue("created_at", DateTime.UtcNow);
             insert.Parameters.AddWithValue("updated_at", DateTime.UtcNow);
             Assert.Equal(1, await insert.ExecuteNonQueryAsync());

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using OrderSystem.Api.Diagnostics;
 using OrderSystem.Infrastructure.Logging;
+using OrderSystem.IntegrationTests.Infrastructure;
 using Serilog;
 using Serilog.Context;
 
@@ -76,11 +77,8 @@ public sealed class FileLoggingTests : IAsyncLifetime
             .WithWebHostBuilder(builder =>
             {
                 builder.ConfigureAppConfiguration((_, configuration) =>
-                    configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                    {
-                        ["Serilog:FilePath"] = logPath,
-                        ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-                    }));
+                    configuration.AddOimsTestConfiguration(
+                        new KeyValuePair<string, string?>("Serilog:FilePath", logPath)));
                 builder.ConfigureServices(services =>
                     services.AddSingleton<IStartupFilter>(new UserPrincipalStartupFilter(
                         ClaimTypes.NameIdentifier,
@@ -112,11 +110,8 @@ public sealed class FileLoggingTests : IAsyncLifetime
             .WithWebHostBuilder(builder =>
             {
                 builder.ConfigureAppConfiguration((_, configuration) =>
-                    configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                    {
-                        ["Serilog:FilePath"] = logPath,
-                        ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-                    }));
+                    configuration.AddOimsTestConfiguration(
+                        new KeyValuePair<string, string?>("Serilog:FilePath", logPath)));
                 builder.ConfigureServices(services =>
                     services.AddSingleton<IStartupFilter>(new UserPrincipalStartupFilter(
                         "sub",
@@ -148,11 +143,8 @@ public sealed class FileLoggingTests : IAsyncLifetime
             .WithWebHostBuilder(builder =>
             {
                 builder.ConfigureAppConfiguration((_, configuration) =>
-                    configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                    {
-                        ["Serilog:FilePath"] = logPath,
-                        ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-                    }));
+                    configuration.AddOimsTestConfiguration(
+                        new KeyValuePair<string, string?>("Serilog:FilePath", logPath)));
                 builder.ConfigureServices(services =>
                     services.AddSingleton<IStartupFilter>(new UserPrincipalStartupFilter(
                         ClaimTypes.NameIdentifier,

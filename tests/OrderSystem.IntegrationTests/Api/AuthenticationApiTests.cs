@@ -19,8 +19,6 @@ namespace OrderSystem.IntegrationTests.Api;
 [Collection(PostgreSqlCollectionDefinition.Name)]
 public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
 {
-    public const string TestSigningKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
-
     [Fact]
     [Trait("Requirement", "API-AUTH-001")]
     public async Task Register_ValidCredentials_CreatesCustomerWithBcryptHash()
@@ -33,7 +31,7 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         using var response = await client.PostAsJsonAsync("/api/auth/register", new
         {
             email = $" {email} ",
-            password = "Secret123",
+            password = TestCredentials.ValidPassword,
             role = "Admin"
         });
 
@@ -47,7 +45,7 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         var user = await dbContext.Users.AsNoTracking().SingleAsync(row => row.NormalizedEmail == normalizedEmail);
         Assert.Equal("Customer", user.Role.ToString());
         Assert.StartsWith("$2", user.PasswordHash, StringComparison.Ordinal);
-        Assert.DoesNotContain("Secret123", user.PasswordHash, StringComparison.Ordinal);
+        Assert.DoesNotContain(TestCredentials.ValidPassword, user.PasswordHash, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -61,12 +59,12 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         using var first = await client.PostAsJsonAsync("/api/auth/register", new
         {
             email = $"{local}@example.com",
-            password = "Secret123"
+            password = TestCredentials.ValidPassword
         });
         using var duplicate = await client.PostAsJsonAsync("/api/auth/register", new
         {
             email = $" {local.ToUpperInvariant()}@EXAMPLE.COM ",
-            password = "OtherPass9"
+            password = TestCredentials.AlternatePassword
         });
 
         Assert.Equal(HttpStatusCode.Created, first.StatusCode);
@@ -83,17 +81,17 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         await MigrateDatabase(factory);
         using var client = factory.CreateClient();
         var email = $"login-{Guid.NewGuid():N}@example.com";
-        await Register(client, email, "Secret123");
+        await Register(client, email, TestCredentials.ValidPassword);
 
         using var unknown = await client.PostAsJsonAsync("/api/auth/login", new
         {
             email = $"missing-{Guid.NewGuid():N}@example.com",
-            password = "Secret123"
+            password = TestCredentials.ValidPassword
         });
         using var wrong = await client.PostAsJsonAsync("/api/auth/login", new
         {
             email,
-            password = "WrongPass9"
+            password = TestCredentials.AlternatePassword
         });
 
         Assert.Equal(HttpStatusCode.Unauthorized, unknown.StatusCode);
@@ -113,14 +111,14 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         await MigrateDatabase(factory);
         using var client = factory.CreateClient();
         var email = $"password-{Guid.NewGuid():N}@example.com";
-        await Register(client, email, "abcdefgh");
+        await Register(client, email, TestCredentials.LowercasePassword);
 
         using var wrongCase = await client.PostAsJsonAsync("/api/auth/login", new
         {
             email,
-            password = "ABCDEFGH"
+            password = TestCredentials.LowercasePassword.ToUpperInvariant()
         });
-        var correctCase = await Login(client, email, "abcdefgh");
+        var correctCase = await Login(client, email, TestCredentials.LowercasePassword);
 
         Assert.Equal(HttpStatusCode.Unauthorized, wrongCase.StatusCode);
         Assert.NotEmpty(correctCase.Data.GetProperty("accessToken").GetString()!);
@@ -133,9 +131,9 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         await MigrateDatabase(factory);
         using var client = factory.CreateClient();
         var email = $"tokens-{Guid.NewGuid():N}@example.com";
-        await Register(client, email, "Secret123");
+        await Register(client, email, TestCredentials.ValidPassword);
 
-        var login = await Login(client, email, "Secret123");
+        var login = await Login(client, email, TestCredentials.ValidPassword);
         var tokens = login.Data;
 
         Assert.Equal(
@@ -183,9 +181,9 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         await MigrateDatabase(factory);
         using var client = factory.CreateClient();
         var email = $"lifetime-{Guid.NewGuid():N}@example.com";
-        await Register(client, email, "Secret123");
+        await Register(client, email, TestCredentials.ValidPassword);
 
-        var tokens = (await Login(client, email, "Secret123")).Data;
+        var tokens = (await Login(client, email, TestCredentials.ValidPassword)).Data;
 
         Assert.Equal(900, tokens.GetProperty("expiresIn").GetInt32());
     }
@@ -199,9 +197,9 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         using var firstClient = CreateHttpsClient(factory);
         using var independentClient = CreateHttpsClient(factory);
         var email = $"rotate-{Guid.NewGuid():N}@example.com";
-        await Register(firstClient, email, "Secret123");
-        var firstSession = await Login(firstClient, email, "Secret123");
-        await Login(independentClient, email, "Secret123");
+        await Register(firstClient, email, TestCredentials.ValidPassword);
+        var firstSession = await Login(firstClient, email, TestCredentials.ValidPassword);
+        await Login(independentClient, email, TestCredentials.ValidPassword);
 
         using var rotatedResponse = await firstClient.PostAsync("/api/auth/refresh", null);
         Assert.Equal(HttpStatusCode.OK, rotatedResponse.StatusCode);
@@ -237,8 +235,8 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         await MigrateDatabase(factory);
         using var client = CreateHttpsClient(factory);
         var email = $"refresh-expiry-{Guid.NewGuid():N}@example.com";
-        await Register(client, email, "Secret123");
-        await Login(client, email, "Secret123");
+        await Register(client, email, TestCredentials.ValidPassword);
+        await Login(client, email, TestCredentials.ValidPassword);
 
         using var invalidClient = CreateHttpsClient(factory);
         using var invalidRequest = CreateCookieRequest(HttpMethod.Post, "/api/auth/refresh", "not-a-refresh-token");
@@ -276,8 +274,8 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         await MigrateDatabase(factory);
         using var loginClient = CreateHttpsClient(factory);
         var email = $"concurrent-{Guid.NewGuid():N}@example.com";
-        await Register(loginClient, email, "Secret123");
-        var login = await Login(loginClient, email, "Secret123");
+        await Register(loginClient, email, TestCredentials.ValidPassword);
+        var login = await Login(loginClient, email, TestCredentials.ValidPassword);
         using var firstClient = CreateHttpsClient(factory);
         using var secondClient = CreateHttpsClient(factory);
         using var firstRequest = CreateCookieRequest(HttpMethod.Post, "/api/auth/refresh", login.RefreshToken);
@@ -302,8 +300,8 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         await MigrateDatabase(factory);
         using var client = CreateHttpsClient(factory);
         var email = $"logout-{Guid.NewGuid():N}@example.com";
-        await Register(client, email, "Secret123");
-        var login = await Login(client, email, "Secret123");
+        await Register(client, email, TestCredentials.ValidPassword);
+        var login = await Login(client, email, TestCredentials.ValidPassword);
 
         using var logout = await client.PostAsync("/api/auth/logout", null);
 
@@ -369,8 +367,8 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         }
 
         var email = $"customer-{Guid.NewGuid():N}@example.com";
-        await Register(client, email, "Secret123");
-        var login = await Login(client, email, "Secret123");
+        await Register(client, email, TestCredentials.ValidPassword);
+        var login = await Login(client, email, TestCredentials.ValidPassword);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer",
             login.Data.GetProperty("accessToken").GetString());
@@ -390,8 +388,8 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
         await MigrateDatabase(factory);
         using var client = factory.CreateClient();
         var email = $"expired-{Guid.NewGuid():N}@example.com";
-        await Register(client, email, "Secret123");
-        var login = await Login(client, email, "Secret123");
+        await Register(client, email, TestCredentials.ValidPassword);
+        var login = await Login(client, email, TestCredentials.ValidPassword);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer",
             login.Data.GetProperty("accessToken").GetString());
@@ -418,8 +416,7 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
             {
                 var settings = new Dictionary<string, string?>
                 {
-                    ["Database:ConnectionString"] = postgres.ConnectionString,
-                    ["Jwt:SigningKey"] = TestSigningKey
+                    ["Database:ConnectionString"] = postgres.ConnectionString
                 };
                 if (refreshPermitLimit is not null)
                 {
@@ -427,7 +424,7 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
                         System.Globalization.CultureInfo.InvariantCulture);
                 }
 
-                configuration.AddInMemoryCollection(settings);
+                configuration.AddOimsTestConfiguration(settings.ToArray());
             });
             if (clock is not null)
             {

@@ -6,7 +6,6 @@ using Microsoft.Extensions.DependencyInjection;
 using OrderSystem.Application.Authentication;
 using OrderSystem.Domain.Users;
 using OrderSystem.Infrastructure.Persistence;
-using OrderSystem.IntegrationTests.Api;
 using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Authentication;
@@ -19,11 +18,8 @@ public sealed class RefreshTokenCleanupTests(PostgreSqlFixture postgres)
     {
         await using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Database:ConnectionString"] = postgres.ConnectionString,
-                    ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-                })));
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString))));
         using var scope = factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
         await dbContext.Database.MigrateAsync();
@@ -33,7 +29,7 @@ public sealed class RefreshTokenCleanupTests(PostgreSqlFixture postgres)
             userId,
             $"cleanup-{userId:N}@example.com",
             $"cleanup-{userId:N}@example.com",
-            "bcrypt-hash-for-cleanup-test",
+            TestCredentials.CreateHashPlaceholder(),
             UserRole.Customer,
             now.AddDays(-40)));
         var chainReplacement = CreateToken(userId, 'b', now.AddDays(-3), now.AddDays(-33));
