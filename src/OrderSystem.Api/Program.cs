@@ -57,6 +57,7 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
     Predicate = registration => registration.Tags.Contains("ready")
 });
 app.MapFoundationEndpoints();
+app.MapProductCatalogEndpoints();
 
 app.Run();
 
