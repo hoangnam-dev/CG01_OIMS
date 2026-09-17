@@ -9,7 +9,6 @@ using OrderSystem.Application.Products;
 using OrderSystem.Application.Products.Contracts;
 using OrderSystem.Domain.Products;
 using OrderSystem.Infrastructure.Persistence;
-using OrderSystem.IntegrationTests.Api;
 using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Products;
@@ -160,11 +159,8 @@ public sealed class ProductCatalogMutationTests(PostgreSqlFixture postgres)
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Database:ConnectionString"] = postgres.ConnectionString,
-                    ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-                }));
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString)));
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<IClock>();

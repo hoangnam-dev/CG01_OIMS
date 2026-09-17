@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using OrderSystem.Infrastructure.Configuration;
+using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Api;
 
@@ -28,10 +29,8 @@ public sealed class ConfigurationValidationTests
     {
         await using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Jwt:SigningKey"] = signingKey
-                })));
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>("Jwt:SigningKey", signingKey))));
 
         var exception = await Assert.ThrowsAnyAsync<Exception>(async () =>
             await factory.CreateClient().GetAsync("/health/live"));
@@ -46,11 +45,8 @@ public sealed class ConfigurationValidationTests
     {
         await using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Database:ConnectionString"] = string.Empty,
-                    ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-                })));
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>("Database:ConnectionString", string.Empty))));
 
         var exception = await Assert.ThrowsAnyAsync<Exception>(async () =>
             await factory.CreateClient().GetAsync("/health/live"));
@@ -76,11 +72,7 @@ public sealed class ConfigurationValidationTests
     {
         await using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    [key] = value,
-                    ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-                })));
+                configuration.AddOimsTestConfiguration(new KeyValuePair<string, string?>(key, value))));
 
         var exception = await Assert.ThrowsAnyAsync<Exception>(async () =>
             await factory.CreateClient().GetAsync("/health/live"));

@@ -14,7 +14,7 @@ public sealed class UserTests
             id,
             "customer@example.com",
             "customer@example.com",
-            "not-a-real-password-hash",
+            Authentication.TestCredentials.CreateHashPlaceholder(),
             UserRole.Customer,
             createdAt);
 

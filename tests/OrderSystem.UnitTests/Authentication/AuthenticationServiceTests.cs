@@ -17,14 +17,14 @@ public sealed class AuthenticationServiceTests
         var service = CreateService(store, passwordHasher);
 
         var result = await service.RegisterAsync(
-            new RegisterRequest("  Customer@Example.COM ", "Secret123"),
+            new RegisterRequest("  Customer@Example.COM ", TestCredentials.ValidPassword),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
         Assert.NotNull(store.CreatedUser);
         Assert.Equal("Customer@Example.COM", store.CreatedUser.Email);
         Assert.Equal("customer@example.com", store.CreatedUser.NormalizedEmail);
-        Assert.Equal("hashed:Secret123", store.CreatedUser.PasswordHash);
+        Assert.Equal($"hashed:{TestCredentials.ValidPassword}", store.CreatedUser.PasswordHash);
         Assert.Equal(UserRole.Customer, store.CreatedUser.Role);
         Assert.Equal("Customer", result.Value!.Role);
     }
@@ -66,12 +66,12 @@ public sealed class AuthenticationServiceTests
         var service = CreateService(store, passwordHasher);
 
         var unknown = await service.LoginAsync(
-            new LoginRequest("unknown@example.com", "Secret123"),
+            new LoginRequest("unknown@example.com", TestCredentials.ValidPassword),
             CancellationToken.None);
         store.UserToFind = CreateUser();
         passwordHasher.VerificationResult = false;
         var wrongPassword = await service.LoginAsync(
-            new LoginRequest("customer@example.com", "WrongPass"),
+            new LoginRequest("customer@example.com", TestCredentials.AlternatePassword),
             CancellationToken.None);
 
         Assert.Equal("UNAUTHORIZED", unknown.Error!.Code);
@@ -86,7 +86,7 @@ public sealed class AuthenticationServiceTests
         var service = CreateService(store, passwordHasher);
 
         var result = await service.LoginAsync(
-            new LoginRequest("CUSTOMER@example.com", "Secret123"),
+            new LoginRequest("CUSTOMER@example.com", TestCredentials.ValidPassword),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -151,7 +151,7 @@ public sealed class AuthenticationServiceTests
         Guid.NewGuid(),
         "customer@example.com",
         "customer@example.com",
-        "hashed:Secret123",
+        $"hashed:{TestCredentials.ValidPassword}",
         UserRole.Customer,
         Now.AddDays(-1));
 

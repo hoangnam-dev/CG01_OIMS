@@ -4,7 +4,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
-using OrderSystem.IntegrationTests.Api;
 using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Persistence;
@@ -20,11 +19,8 @@ public sealed class RefreshTokenMigrationTests(PostgreSqlFixture postgres)
     {
         await using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Database:ConnectionString"] = postgres.ConnectionString,
-                    ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-                })));
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString))));
         using var scope = factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetServices<DbContext>().Single();
         await dbContext.Database.MigrateAsync();
@@ -147,10 +143,11 @@ public sealed class RefreshTokenMigrationTests(PostgreSqlFixture postgres)
     {
         await using var command = new NpgsqlCommand("""
             INSERT INTO users (id, email, normalized_email, password_hash, role, created_at, updated_at)
-            VALUES (@id, @email, @email, 'bcrypt-hash-for-migration-test', 'Customer', @created_at, @created_at)
+            VALUES (@id, @email, @email, @password_hash, 'Customer', @created_at, @created_at)
             """, connection);
         command.Parameters.AddWithValue("id", id);
         command.Parameters.AddWithValue("email", email);
+        command.Parameters.AddWithValue("password_hash", TestCredentials.CreateHashPlaceholder());
         command.Parameters.AddWithValue("created_at", createdAt);
         return await command.ExecuteNonQueryAsync();
     }

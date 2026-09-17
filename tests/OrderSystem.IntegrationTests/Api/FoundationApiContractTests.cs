@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderSystem.Application.Common.Diagnostics;
+using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Api;
 
@@ -18,10 +19,7 @@ public sealed class FoundationApiContractTests : IClassFixture<WebApplicationFac
     {
         _client = factory
             .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-                })))
+                configuration.AddOimsTestConfiguration()))
             .CreateClient(new WebApplicationFactoryClientOptions
             {
                 AllowAutoRedirect = false
@@ -92,10 +90,7 @@ public sealed class FoundationApiContractTests : IClassFixture<WebApplicationFac
             .WithWebHostBuilder(builder =>
             {
                 builder.ConfigureAppConfiguration((_, configuration) =>
-                    configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                    {
-                        ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-                    }));
+                    configuration.AddOimsTestConfiguration());
                 builder.ConfigureServices(services =>
                 {
                     services.RemoveAll<IOperationHook>();
@@ -118,6 +113,7 @@ public sealed class FoundationApiContractTests : IClassFixture<WebApplicationFac
     private sealed class ThrowingOperationHook : IOperationHook
     {
         public Task ReachAsync(string checkpoint, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("Diagnostic failure with password=must-not-leak");
+            throw new InvalidOperationException(
+                $"Diagnostic failure with password={TestCredentials.CreatePassword()}");
     }
 }

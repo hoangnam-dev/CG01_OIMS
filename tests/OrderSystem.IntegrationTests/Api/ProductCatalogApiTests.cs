@@ -236,11 +236,8 @@ public sealed class ProductCatalogApiTests(PostgreSqlFixture postgres)
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Database:ConnectionString"] = postgres.ConnectionString,
-                    ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
-                }));
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString)));
         });
 
     private static async Task AuthenticateAsCustomer(HttpClient client)
@@ -249,10 +246,10 @@ public sealed class ProductCatalogApiTests(PostgreSqlFixture postgres)
         using var register = await client.PostAsJsonAsync("/api/auth/register", new
         {
             email,
-            password = "Secret123"
+            password = TestCredentials.ValidPassword
         });
         register.EnsureSuccessStatusCode();
-        await LoginAndSetBearer(client, email, "Secret123");
+        await LoginAndSetBearer(client, email, TestCredentials.ValidPassword);
     }
 
     private static async Task AuthenticateAsAdmin(
@@ -268,13 +265,13 @@ public sealed class ProductCatalogApiTests(PostgreSqlFixture postgres)
                 Guid.NewGuid(),
                 email,
                 email,
-                hasher.Hash("Secret123"),
+                hasher.Hash(TestCredentials.ValidPassword),
                 UserRole.Admin,
                 DateTimeOffset.UtcNow));
             await dbContext.SaveChangesAsync();
         }
 
-        await LoginAndSetBearer(client, email, "Secret123");
+        await LoginAndSetBearer(client, email, TestCredentials.ValidPassword);
     }
 
     private static async Task LoginAndSetBearer(HttpClient client, string email, string password)

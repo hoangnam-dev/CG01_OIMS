@@ -19,7 +19,11 @@ public sealed class AdminBootstrapTests(PostgreSqlFixture postgres)
     {
         await MigrateDatabase();
         var email = $"disabled-{Guid.NewGuid():N}@example.com";
-        await using var factory = CreateFactory("Development", enabled: false, email, "Secret123");
+        await using var factory = CreateFactory(
+            "Development",
+            enabled: false,
+            email,
+            TestCredentials.ValidPassword);
 
         using var client = factory.CreateClient();
         using var response = await client.GetAsync("/health/live");
@@ -33,7 +37,7 @@ public sealed class AdminBootstrapTests(PostgreSqlFixture postgres)
     {
         await MigrateDatabase();
         var email = $"admin-{Guid.NewGuid():N}@example.com";
-        const string password = "Secret123";
+        var password = TestCredentials.ValidPassword;
 
         await using (var firstFactory = CreateFactory("Development", enabled: true, email, password))
         {
@@ -70,7 +74,11 @@ public sealed class AdminBootstrapTests(PostgreSqlFixture postgres)
         await MigrateDatabase();
         var email = $"customer-{Guid.NewGuid():N}@example.com";
         await SeedCustomer(email);
-        await using var factory = CreateFactory("Test", enabled: true, email, "Secret123");
+        await using var factory = CreateFactory(
+            "Test",
+            enabled: true,
+            email,
+            TestCredentials.ValidPassword);
 
         var exception = await Assert.ThrowsAnyAsync<Exception>(async () =>
             await factory.CreateClient().GetAsync("/health/live"));
@@ -89,7 +97,7 @@ public sealed class AdminBootstrapTests(PostgreSqlFixture postgres)
             "Production",
             enabled: true,
             $"production-{Guid.NewGuid():N}@example.com",
-            "Secret123");
+            TestCredentials.ValidPassword);
 
         var exception = await Assert.ThrowsAnyAsync<Exception>(async () =>
             await factory.CreateClient().GetAsync("/health/live"));
@@ -107,14 +115,11 @@ public sealed class AdminBootstrapTests(PostgreSqlFixture postgres)
         {
             builder.UseEnvironment(environment);
             builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Database:ConnectionString"] = postgres.ConnectionString,
-                    ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey,
-                    ["AdminBootstrap:Enabled"] = enabled.ToString(),
-                    ["AdminBootstrap:Email"] = email,
-                    ["AdminBootstrap:Password"] = password
-                }));
+                configuration.AddOimsTestConfiguration(
+                    new("Database:ConnectionString", postgres.ConnectionString),
+                    new("AdminBootstrap:Enabled", enabled.ToString()),
+                    new("AdminBootstrap:Email", email),
+                    new("AdminBootstrap:Password", password)));
         });
 
     private async Task MigrateDatabase()
@@ -130,7 +135,7 @@ public sealed class AdminBootstrapTests(PostgreSqlFixture postgres)
             Guid.NewGuid(),
             email,
             email,
-            BCrypt.Net.BCrypt.HashPassword("Customer9", 12),
+            BCrypt.Net.BCrypt.HashPassword(TestCredentials.AlternatePassword, 12),
             UserRole.Customer,
             DateTimeOffset.UtcNow));
         await dbContext.SaveChangesAsync();
