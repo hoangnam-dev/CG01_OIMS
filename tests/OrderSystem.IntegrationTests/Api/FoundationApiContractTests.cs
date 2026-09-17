@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderSystem.Application.Common.Diagnostics;
@@ -15,10 +16,16 @@ public sealed class FoundationApiContractTests : IClassFixture<WebApplicationFac
 
     public FoundationApiContractTests(WebApplicationFactory<Program> factory)
     {
-        _client = factory.CreateClient(new WebApplicationFactoryClientOptions
-        {
-            AllowAutoRedirect = false
-        });
+        _client = factory
+            .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
+                })))
+            .CreateClient(new WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false
+            });
     }
 
     [Fact]
@@ -82,11 +89,19 @@ public sealed class FoundationApiContractTests : IClassFixture<WebApplicationFac
     public async Task UnexpectedFailure_ReturnsSanitizedProblemDetails()
     {
         await using var factory = new WebApplicationFactory<Program>()
-            .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+            .WithWebHostBuilder(builder =>
             {
-                services.RemoveAll<IOperationHook>();
-                services.AddSingleton<IOperationHook, ThrowingOperationHook>();
-            }));
+                builder.ConfigureAppConfiguration((_, configuration) =>
+                    configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
+                    }));
+                builder.ConfigureServices(services =>
+                {
+                    services.RemoveAll<IOperationHook>();
+                    services.AddSingleton<IOperationHook, ThrowingOperationHook>();
+                });
+            });
         using var client = factory.CreateClient();
 
         using var response = await client.GetAsync("/api/foundation/success");

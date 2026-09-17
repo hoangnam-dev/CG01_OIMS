@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
+using OrderSystem.IntegrationTests.Api;
 using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Persistence;
@@ -18,7 +19,8 @@ public sealed class ProductCatalogMigrationTests(PostgreSqlFixture postgres)
             .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
                 {
-                    ["Database:ConnectionString"] = postgres.ConnectionString
+                    ["Database:ConnectionString"] = postgres.ConnectionString,
+                    ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
                 })));
         using var scope = factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetServices<DbContext>().Single();

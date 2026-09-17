@@ -79,4 +79,41 @@ public sealed class RefreshTokenTests
             createdAt.AddDays(30),
             createdAt));
     }
+
+    [Fact]
+    public void Rotate_ValidReplacement_RevokesAndLinksToken()
+    {
+        var createdAt = new DateTimeOffset(2026, 9, 17, 8, 0, 0, TimeSpan.Zero);
+        var token = new RefreshToken(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            TokenHash,
+            createdAt.AddDays(30),
+            createdAt);
+        var replacementId = Guid.NewGuid();
+        var revokedAt = createdAt.AddMinutes(5);
+
+        token.Rotate(replacementId, revokedAt);
+
+        Assert.Equal(revokedAt, token.RevokedAt);
+        Assert.Equal(replacementId, token.ReplacedByTokenId);
+    }
+
+    [Fact]
+    public void Revoke_AlreadyRevoked_DoesNotChangeOriginalTimestamp()
+    {
+        var createdAt = new DateTimeOffset(2026, 9, 17, 8, 0, 0, TimeSpan.Zero);
+        var token = new RefreshToken(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            TokenHash,
+            createdAt.AddDays(30),
+            createdAt);
+        var firstRevocation = createdAt.AddMinutes(5);
+
+        token.Revoke(firstRevocation);
+        token.Revoke(createdAt.AddMinutes(10));
+
+        Assert.Equal(firstRevocation, token.RevokedAt);
+    }
 }

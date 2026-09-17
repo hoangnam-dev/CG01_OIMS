@@ -1,4 +1,6 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using OrderSystem.Api.Authentication;
 using OrderSystem.Api.Contracts;
 using OrderSystem.Api.Errors;
 using OrderSystem.Application.Common.Results;
@@ -28,25 +30,29 @@ public static class ProductCatalogEndpoints
             .Produces<ApiResponse<ProductDto>>(StatusCodes.Status201Created)
             .Produces<HttpValidationProblemDetails>(StatusCodes.Status400BadRequest, "application/problem+json")
             .Produces<ProblemDetails>(StatusCodes.Status401Unauthorized, "application/problem+json")
-            .Produces<ProblemDetails>(StatusCodes.Status403Forbidden, "application/problem+json");
+            .Produces<ProblemDetails>(StatusCodes.Status403Forbidden, "application/problem+json")
+            .RequireAuthorization(AuthorizationPolicies.Admin);
         products.MapPut("/{id}", UpdateProduct)
             .Produces<ApiResponse<ProductDto>>()
             .Produces<HttpValidationProblemDetails>(StatusCodes.Status400BadRequest, "application/problem+json")
             .Produces<ProblemDetails>(StatusCodes.Status401Unauthorized, "application/problem+json")
             .Produces<ProblemDetails>(StatusCodes.Status403Forbidden, "application/problem+json")
-            .Produces<ProblemDetails>(StatusCodes.Status404NotFound, "application/problem+json");
+            .Produces<ProblemDetails>(StatusCodes.Status404NotFound, "application/problem+json")
+            .RequireAuthorization(AuthorizationPolicies.Admin);
         products.MapDelete("/{id}", DeactivateProduct)
             .Produces(StatusCodes.Status204NoContent)
             .Produces<ProblemDetails>(StatusCodes.Status401Unauthorized, "application/problem+json")
             .Produces<ProblemDetails>(StatusCodes.Status403Forbidden, "application/problem+json")
-            .Produces<ProblemDetails>(StatusCodes.Status404NotFound, "application/problem+json");
+            .Produces<ProblemDetails>(StatusCodes.Status404NotFound, "application/problem+json")
+            .RequireAuthorization(AuthorizationPolicies.Admin);
         products.MapPost("/{productId}/variants", CreateVariant)
             .Produces<ApiResponse<ProductVariantDto>>(StatusCodes.Status201Created)
             .Produces<HttpValidationProblemDetails>(StatusCodes.Status400BadRequest, "application/problem+json")
             .Produces<ProblemDetails>(StatusCodes.Status401Unauthorized, "application/problem+json")
             .Produces<ProblemDetails>(StatusCodes.Status403Forbidden, "application/problem+json")
             .Produces<ProblemDetails>(StatusCodes.Status404NotFound, "application/problem+json")
-            .Produces<ProblemDetails>(StatusCodes.Status409Conflict, "application/problem+json");
+            .Produces<ProblemDetails>(StatusCodes.Status409Conflict, "application/problem+json")
+            .RequireAuthorization(AuthorizationPolicies.Admin);
 
         var variants = endpoints.MapGroup("/api/product-variants").WithTags("Product Variants");
         variants.MapPut("/{id}", UpdateVariant)
@@ -54,12 +60,14 @@ public static class ProductCatalogEndpoints
             .Produces<HttpValidationProblemDetails>(StatusCodes.Status400BadRequest, "application/problem+json")
             .Produces<ProblemDetails>(StatusCodes.Status401Unauthorized, "application/problem+json")
             .Produces<ProblemDetails>(StatusCodes.Status403Forbidden, "application/problem+json")
-            .Produces<ProblemDetails>(StatusCodes.Status404NotFound, "application/problem+json");
+            .Produces<ProblemDetails>(StatusCodes.Status404NotFound, "application/problem+json")
+            .RequireAuthorization(AuthorizationPolicies.Admin);
         variants.MapDelete("/{id}", DeactivateVariant)
             .Produces(StatusCodes.Status204NoContent)
             .Produces<ProblemDetails>(StatusCodes.Status401Unauthorized, "application/problem+json")
             .Produces<ProblemDetails>(StatusCodes.Status403Forbidden, "application/problem+json")
-            .Produces<ProblemDetails>(StatusCodes.Status404NotFound, "application/problem+json");
+            .Produces<ProblemDetails>(StatusCodes.Status404NotFound, "application/problem+json")
+            .RequireAuthorization(AuthorizationPolicies.Admin);
 
         return endpoints;
     }
@@ -67,10 +75,14 @@ public static class ProductCatalogEndpoints
     private static async Task<IResult> ListProducts(
         [AsParameters] ProductListParameters parameters,
         HttpContext context,
+        IAuthorizationService authorizationService,
         ProductCatalogService service,
         CancellationToken cancellationToken)
     {
-        var visibility = IsAdmin(context) ? CatalogVisibility.All : CatalogVisibility.ActiveOnly;
+        var isAdmin = (await authorizationService.AuthorizeAsync(
+            context.User,
+            AuthorizationPolicies.Admin)).Succeeded;
+        var visibility = isAdmin ? CatalogVisibility.All : CatalogVisibility.ActiveOnly;
         var result = await service.ListProductsAsync(
             new(
                 parameters.Page ?? 1,
@@ -96,6 +108,7 @@ public static class ProductCatalogEndpoints
         string id,
         bool? includeInactive,
         HttpContext context,
+        IAuthorizationService authorizationService,
         ProductCatalogService service,
         CancellationToken cancellationToken)
     {
@@ -106,10 +119,12 @@ public static class ProductCatalogEndpoints
 
         if (includeInactive == true)
         {
-            var denied = ApplicationResultHttpMapper.RequireAdmin(context);
-            if (denied is not null)
+            var isAdmin = (await authorizationService.AuthorizeAsync(
+                context.User,
+                AuthorizationPolicies.Admin)).Succeeded;
+            if (!isAdmin)
             {
-                return denied;
+                return ApplicationResultHttpMapper.AuthorizationDenied(context);
             }
         }
 
@@ -126,12 +141,6 @@ public static class ProductCatalogEndpoints
         ProductCatalogService service,
         CancellationToken cancellationToken)
     {
-        var denied = ApplicationResultHttpMapper.RequireAdmin(context);
-        if (denied is not null)
-        {
-            return denied;
-        }
-
         var result = await service.CreateProductAsync(request, cancellationToken);
         return result.IsSuccess
             ? Results.Created($"/api/products/{result.Value!.Id}", new ApiResponse<ProductDto>(result.Value, null))
@@ -145,12 +154,6 @@ public static class ProductCatalogEndpoints
         ProductCatalogService service,
         CancellationToken cancellationToken)
     {
-        var denied = ApplicationResultHttpMapper.RequireAdmin(context);
-        if (denied is not null)
-        {
-            return denied;
-        }
-
         if (!Guid.TryParse(id, out var productId))
         {
             return ApplicationResultHttpMapper.InvalidUuid(context, "id");
@@ -166,12 +169,6 @@ public static class ProductCatalogEndpoints
         ProductCatalogService service,
         CancellationToken cancellationToken)
     {
-        var denied = ApplicationResultHttpMapper.RequireAdmin(context);
-        if (denied is not null)
-        {
-            return denied;
-        }
-
         if (!Guid.TryParse(id, out var productId))
         {
             return ApplicationResultHttpMapper.InvalidUuid(context, "id");
@@ -190,12 +187,6 @@ public static class ProductCatalogEndpoints
         ProductCatalogService service,
         CancellationToken cancellationToken)
     {
-        var denied = ApplicationResultHttpMapper.RequireAdmin(context);
-        if (denied is not null)
-        {
-            return denied;
-        }
-
         if (!Guid.TryParse(productId, out var parsedProductId))
         {
             return ApplicationResultHttpMapper.InvalidUuid(context, "productId");
@@ -216,12 +207,6 @@ public static class ProductCatalogEndpoints
         ProductCatalogService service,
         CancellationToken cancellationToken)
     {
-        var denied = ApplicationResultHttpMapper.RequireAdmin(context);
-        if (denied is not null)
-        {
-            return denied;
-        }
-
         if (!Guid.TryParse(id, out var variantId))
         {
             return ApplicationResultHttpMapper.InvalidUuid(context, "id");
@@ -239,12 +224,6 @@ public static class ProductCatalogEndpoints
         ProductCatalogService service,
         CancellationToken cancellationToken)
     {
-        var denied = ApplicationResultHttpMapper.RequireAdmin(context);
-        if (denied is not null)
-        {
-            return denied;
-        }
-
         if (!Guid.TryParse(id, out var variantId))
         {
             return ApplicationResultHttpMapper.InvalidUuid(context, "id");
@@ -260,9 +239,6 @@ public static class ProductCatalogEndpoints
         result.IsSuccess
             ? Results.Ok(new ApiResponse<T>(result.Value!, null))
             : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
-
-    private static bool IsAdmin(HttpContext context) =>
-        context.User.Identity?.IsAuthenticated == true && context.User.IsInRole("Admin");
 
     public sealed class ProductListParameters
     {

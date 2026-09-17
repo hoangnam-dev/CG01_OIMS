@@ -11,4 +11,24 @@ public sealed class JwtOptions
     public string? SigningKey { get; init; }
 
     public TimeSpan AccessTokenLifetime { get; init; }
+
+    public byte[] GetSigningKeyBytes()
+    {
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(SigningKey ?? string.Empty);
+        }
+        catch (FormatException exception)
+        {
+            throw new InvalidOperationException("Jwt:SigningKey must be valid Base64.", exception);
+        }
+
+        if (bytes.Length < 32)
+        {
+            throw new InvalidOperationException("Jwt:SigningKey must contain at least 32 bytes.");
+        }
+
+        return bytes;
+    }
 }

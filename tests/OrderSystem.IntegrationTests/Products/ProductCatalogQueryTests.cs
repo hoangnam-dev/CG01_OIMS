@@ -7,6 +7,7 @@ using OrderSystem.Application.Products;
 using OrderSystem.Application.Products.Contracts;
 using OrderSystem.Domain.Products;
 using OrderSystem.Infrastructure.Persistence;
+using OrderSystem.IntegrationTests.Api;
 using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Products;
@@ -151,6 +152,7 @@ public sealed class ProductCatalogQueryTests(PostgreSqlFixture postgres)
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
                 {
-                    ["Database:ConnectionString"] = postgres.ConnectionString
+                    ["Database:ConnectionString"] = postgres.ConnectionString,
+                    ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
                 })));
 }

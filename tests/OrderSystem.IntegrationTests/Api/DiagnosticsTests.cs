@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 
 namespace OrderSystem.IntegrationTests.Api;
 
@@ -8,7 +9,13 @@ public sealed class DiagnosticsTests : IClassFixture<WebApplicationFactory<Progr
 {
     private readonly HttpClient _client;
 
-    public DiagnosticsTests(WebApplicationFactory<Program> factory) => _client = factory.CreateClient();
+    public DiagnosticsTests(WebApplicationFactory<Program> factory) => _client = factory
+        .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
+            configuration.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
+            })))
+        .CreateClient();
 
     [Fact]
     [Trait("Requirement", "API-CONTRACT-003")]
@@ -88,6 +95,29 @@ public sealed class DiagnosticsTests : IClassFixture<WebApplicationFactory<Progr
             .GetProperty("content")
             .GetProperty("application/problem+json")
             .TryGetProperty("schema", out _));
+    }
+
+    [Fact]
+    public async Task OpenApiDocument_DescribesBearerAuthenticationOnlyForProtectedOperations()
+    {
+        using var response = await _client.GetAsync("/openapi/v1.json");
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        var bearer = document.RootElement
+            .GetProperty("components")
+            .GetProperty("securitySchemes")
+            .GetProperty("Bearer");
+        Assert.Equal("http", bearer.GetProperty("type").GetString());
+        Assert.Equal("bearer", bearer.GetProperty("scheme").GetString());
+        Assert.Equal("JWT", bearer.GetProperty("bearerFormat").GetString());
+
+        var paths = document.RootElement.GetProperty("paths");
+        var protectedSecurity = paths.GetProperty("/api/products").GetProperty("post").GetProperty("security");
+        Assert.Contains(
+            protectedSecurity.EnumerateArray(),
+            requirement => requirement.TryGetProperty("Bearer", out _));
+        Assert.False(paths.GetProperty("/api/auth/login").GetProperty("post").TryGetProperty("security", out _));
     }
 
     [Fact]

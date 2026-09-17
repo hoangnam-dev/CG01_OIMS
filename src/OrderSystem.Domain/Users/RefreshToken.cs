@@ -59,4 +59,25 @@ public sealed class RefreshToken
     public Guid? ReplacedByTokenId { get; private set; }
 
     public DateTimeOffset CreatedAt { get; private set; }
+
+    public void Rotate(Guid replacementId, DateTimeOffset revokedAt)
+    {
+        if (replacementId == Guid.Empty || replacementId == Id)
+        {
+            throw new ArgumentException("Replacement token ID must identify another token.", nameof(replacementId));
+        }
+
+        Revoke(revokedAt);
+        ReplacedByTokenId = replacementId;
+    }
+
+    public void Revoke(DateTimeOffset revokedAt)
+    {
+        if (revokedAt < CreatedAt)
+        {
+            throw new ArgumentOutOfRangeException(nameof(revokedAt), revokedAt, "Revocation cannot precede creation.");
+        }
+
+        RevokedAt ??= revokedAt;
+    }
 }
