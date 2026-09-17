@@ -4,10 +4,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
+using OrderSystem.Application.Products;
 using OrderSystem.Infrastructure.Common.Clock;
 using OrderSystem.Infrastructure.Common.Diagnostics;
 using OrderSystem.Infrastructure.Configuration;
 using OrderSystem.Infrastructure.Persistence;
+using OrderSystem.Infrastructure.Products;
 
 namespace OrderSystem.Infrastructure;
 
@@ -28,6 +30,8 @@ public static class DependencyInjection
                 npgsql.MigrationsAssembly(typeof(OrderSystemDbContext).Assembly.FullName));
         });
         services.AddScoped<DbContext>(provider => provider.GetRequiredService<OrderSystemDbContext>());
+        services.AddScoped<IProductCatalogStore, EfProductCatalogStore>();
+        services.AddScoped<ProductCatalogService>();
         services.AddSingleton<IClock, SystemClock>();
         services.AddSingleton<IOperationHook, NoOpOperationHook>();
         services.AddHealthChecks()
