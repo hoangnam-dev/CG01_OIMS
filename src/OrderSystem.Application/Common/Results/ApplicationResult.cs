@@ -5,7 +5,8 @@ public enum ApplicationErrorKind
     Validation,
     NotFound,
     Conflict,
-    Forbidden
+    Forbidden,
+    Unauthorized
 }
 
 public sealed record ApplicationError(

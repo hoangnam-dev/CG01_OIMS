@@ -78,7 +78,8 @@ public sealed class FileLoggingTests : IAsyncLifetime
                 builder.ConfigureAppConfiguration((_, configuration) =>
                     configuration.AddInMemoryCollection(new Dictionary<string, string?>
                     {
-                        ["Serilog:FilePath"] = logPath
+                        ["Serilog:FilePath"] = logPath,
+                        ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
                     }));
                 builder.ConfigureServices(services =>
                     services.AddSingleton<IStartupFilter>(new UserPrincipalStartupFilter(
@@ -113,7 +114,8 @@ public sealed class FileLoggingTests : IAsyncLifetime
                 builder.ConfigureAppConfiguration((_, configuration) =>
                     configuration.AddInMemoryCollection(new Dictionary<string, string?>
                     {
-                        ["Serilog:FilePath"] = logPath
+                        ["Serilog:FilePath"] = logPath,
+                        ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
                     }));
                 builder.ConfigureServices(services =>
                     services.AddSingleton<IStartupFilter>(new UserPrincipalStartupFilter(
@@ -148,7 +150,8 @@ public sealed class FileLoggingTests : IAsyncLifetime
                 builder.ConfigureAppConfiguration((_, configuration) =>
                     configuration.AddInMemoryCollection(new Dictionary<string, string?>
                     {
-                        ["Serilog:FilePath"] = logPath
+                        ["Serilog:FilePath"] = logPath,
+                        ["Jwt:SigningKey"] = AuthenticationApiTests.TestSigningKey
                     }));
                 builder.ConfigureServices(services =>
                     services.AddSingleton<IStartupFilter>(new UserPrincipalStartupFilter(
