@@ -1,14 +1,15 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using System.Security.Claims;
 using System.Text.Json;
-using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using OrderSystem.Application.Authentication;
 using OrderSystem.Domain.Products;
+using OrderSystem.Domain.Users;
 using OrderSystem.Infrastructure.Persistence;
 using OrderSystem.IntegrationTests.Infrastructure;
 
@@ -51,9 +52,8 @@ public sealed class ProductCatalogApiTests(PostgreSqlFixture postgres)
         using var hidden = await anonymousClient.GetAsync($"/api/products/{inactiveId}");
         Assert.Equal(HttpStatusCode.NotFound, hidden.StatusCode);
 
-        await using var adminFactory = CreateFactory("Admin");
-        using var adminClient = adminFactory.CreateClient();
-        using var visible = await adminClient.GetAsync($"/api/products/{inactiveId}?includeInactive=true");
+        await AuthenticateAsAdmin(anonymousFactory, anonymousClient);
+        using var visible = await anonymousClient.GetAsync($"/api/products/{inactiveId}?includeInactive=true");
         Assert.Equal(HttpStatusCode.OK, visible.StatusCode);
     }
 
@@ -95,9 +95,13 @@ public sealed class ProductCatalogApiTests(PostgreSqlFixture postgres)
     [InlineData("Customer", HttpStatusCode.Forbidden)]
     public async Task CreateProduct_NonAdmin_IsDeniedWithoutDatabaseMutation(string? role, HttpStatusCode expected)
     {
-        await using var factory = CreateFactory(role);
+        await using var factory = CreateFactory();
         await MigrateDatabase(factory);
         using var client = factory.CreateClient();
+        if (role == "Customer")
+        {
+            await AuthenticateAsCustomer(client);
+        }
         var name = $"Denied-{Guid.NewGuid():N}";
 
         using var response = await client.PostAsJsonAsync("/api/products", new
@@ -119,9 +123,10 @@ public sealed class ProductCatalogApiTests(PostgreSqlFixture postgres)
     [Trait("Requirement", "DB-CONSTRAINT-012")]
     public async Task AdminCatalogLifecycle_PersistsChangesMapsDuplicateSkuAndDeactivatesWithoutDeletingRows()
     {
-        await using var factory = CreateFactory("Admin");
+        await using var factory = CreateFactory();
         await MigrateDatabase(factory);
         using var client = factory.CreateClient();
+        await AuthenticateAsAdmin(factory, client);
         var suffix = Guid.NewGuid().ToString("N", null)[..6];
         var sku = $"API-{suffix}";
 
@@ -227,35 +232,55 @@ public sealed class ProductCatalogApiTests(PostgreSqlFixture postgres)
         await scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>().Database.MigrateAsync();
     }
 
-    private WebApplicationFactory<Program> CreateFactory(string? role = null) =>
+    private WebApplicationFactory<Program> CreateFactory() =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Database:ConnectionString"] = postgres.ConnectionString
-                }));
-            if (role is not null)
-            {
-                builder.ConfigureServices(services => services.AddSingleton<IStartupFilter>(new TestUserStartupFilter(role)));
-            }
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString)));
         });
 
-    private sealed class TestUserStartupFilter(string role) : IStartupFilter
+    private static async Task AuthenticateAsCustomer(HttpClient client)
     {
-        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        var email = $"catalog-customer-{Guid.NewGuid():N}@example.com";
+        using var register = await client.PostAsJsonAsync("/api/auth/register", new
         {
-            app.Use(async (context, continuation) =>
-            {
-                context.User = new ClaimsPrincipal(new ClaimsIdentity(
-                    [
-                        new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
-                        new Claim(ClaimTypes.Role, role)
-                    ],
-                    "Test"));
-                await continuation();
-            });
-            next(app);
-        };
+            email,
+            password = TestCredentials.ValidPassword
+        });
+        register.EnsureSuccessStatusCode();
+        await LoginAndSetBearer(client, email, TestCredentials.ValidPassword);
+    }
+
+    private static async Task AuthenticateAsAdmin(
+        WebApplicationFactory<Program> factory,
+        HttpClient client)
+    {
+        var email = $"catalog-admin-{Guid.NewGuid():N}@example.com";
+        using (var scope = factory.Services.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+            var hasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher>();
+            dbContext.Users.Add(new User(
+                Guid.NewGuid(),
+                email,
+                email,
+                hasher.Hash(TestCredentials.ValidPassword),
+                UserRole.Admin,
+                DateTimeOffset.UtcNow));
+            await dbContext.SaveChangesAsync();
+        }
+
+        await LoginAndSetBearer(client, email, TestCredentials.ValidPassword);
+    }
+
+    private static async Task LoginAndSetBearer(HttpClient client, string email, string password)
+    {
+        using var login = await client.PostAsJsonAsync("/api/auth/login", new { email, password });
+        login.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await login.Content.ReadAsStringAsync());
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            document.RootElement.GetProperty("data").GetProperty("accessToken").GetString());
     }
 }

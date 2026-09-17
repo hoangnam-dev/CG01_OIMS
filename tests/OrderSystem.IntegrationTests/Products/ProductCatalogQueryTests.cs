@@ -149,8 +149,6 @@ public sealed class ProductCatalogQueryTests(PostgreSqlFixture postgres)
     private WebApplicationFactory<Program> CreateFactory() =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Database:ConnectionString"] = postgres.ConnectionString
-                })));
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString))));
 }

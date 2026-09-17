@@ -142,6 +142,69 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("OrderSystem.Domain.Users.RefreshToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<Guid?>("ReplacedByTokenId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("replaced_by_token_id");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character(64)")
+                        .HasColumnName("token_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_refresh_tokens");
+
+                    b.HasIndex("ReplacedByTokenId")
+                        .HasDatabaseName("ix_refresh_tokens_replaced_by_token_id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("uq_refresh_tokens_token_hash");
+
+                    b.HasIndex("UserId", "ExpiresAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_refresh_tokens_user_id_expires_at");
+
+                    b.ToTable("refresh_tokens", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_refresh_tokens_expiry_after_creation", "expires_at > created_at");
+
+                            t.HasCheckConstraint("ck_refresh_tokens_replacement_not_self", "replaced_by_token_id IS NULL OR replaced_by_token_id <> id");
+
+                            t.HasCheckConstraint("ck_refresh_tokens_replacement_requires_revocation", "replaced_by_token_id IS NULL OR revoked_at IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_refresh_tokens_revocation_after_creation", "revoked_at IS NULL OR revoked_at >= created_at");
+
+                            t.HasCheckConstraint("ck_refresh_tokens_token_hash_canonical", "length(token_hash) = 64 AND token_hash = lower(token_hash) AND token_hash ~ '^[0-9a-f]{64}$'");
+                        });
+                });
+
             modelBuilder.Entity("OrderSystem.Domain.Users.User", b =>
                 {
                     b.Property<Guid>("Id")
@@ -214,6 +277,22 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         .HasConstraintName("fk_product_variants_products_product_id");
 
                     b.Navigation("Product");
+                });
+
+            modelBuilder.Entity("OrderSystem.Domain.Users.RefreshToken", b =>
+                {
+                    b.HasOne("OrderSystem.Domain.Users.RefreshToken", null)
+                        .WithMany()
+                        .HasForeignKey("ReplacedByTokenId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_refresh_tokens_refresh_tokens_replaced_by_token_id");
+
+                    b.HasOne("OrderSystem.Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_refresh_tokens_users_user_id");
                 });
 #pragma warning restore 612, 618
         }

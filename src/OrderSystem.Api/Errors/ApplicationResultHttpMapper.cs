@@ -14,6 +14,7 @@ public static class ApplicationResultHttpMapper
             ApplicationErrorKind.NotFound => StatusCodes.Status404NotFound,
             ApplicationErrorKind.Conflict => StatusCodes.Status409Conflict,
             ApplicationErrorKind.Forbidden => StatusCodes.Status403Forbidden,
+            ApplicationErrorKind.Unauthorized => StatusCodes.Status401Unauthorized,
             _ => StatusCodes.Status500InternalServerError
         };
         var title = error.Kind switch
@@ -22,6 +23,7 @@ public static class ApplicationResultHttpMapper
             ApplicationErrorKind.NotFound => "Resource not found",
             ApplicationErrorKind.Conflict => "Request conflict",
             ApplicationErrorKind.Forbidden => "Forbidden",
+            ApplicationErrorKind.Unauthorized => "Unauthorized",
             _ => "An unexpected error occurred"
         };
         ProblemDetails problem = error.ValidationErrors is null
@@ -36,27 +38,26 @@ public static class ApplicationResultHttpMapper
         return Results.Problem(problem);
     }
 
-    public static IResult? RequireAdmin(HttpContext context)
-    {
-        if (context.User.Identity?.IsAuthenticated != true)
-        {
-            return AccessProblem(
-                context,
-                StatusCodes.Status401Unauthorized,
-                "Unauthorized",
-                "UNAUTHORIZED",
-                "Authentication is required.");
-        }
+    public static IResult AuthorizationDenied(HttpContext context) =>
+        context.User.Identity?.IsAuthenticated == true
+            ? AccessForbidden(context)
+            : AuthenticationRequired(context);
 
-        return context.User.IsInRole("Admin")
-            ? null
-            : AccessProblem(
-                context,
-                StatusCodes.Status403Forbidden,
-                "Forbidden",
-                "FORBIDDEN",
-                "Admin access is required.");
-    }
+    public static IResult AuthenticationRequired(HttpContext context) =>
+        AccessProblem(
+            context,
+            StatusCodes.Status401Unauthorized,
+            "Unauthorized",
+            "UNAUTHORIZED",
+            "Authentication is required.");
+
+    public static IResult AccessForbidden(HttpContext context) =>
+        AccessProblem(
+            context,
+            StatusCodes.Status403Forbidden,
+            "Forbidden",
+            "FORBIDDEN",
+            "The authenticated user is not authorized to access this resource.");
 
     public static IResult InvalidUuid(HttpContext context, string fieldName) =>
         ToProblem(context, new(

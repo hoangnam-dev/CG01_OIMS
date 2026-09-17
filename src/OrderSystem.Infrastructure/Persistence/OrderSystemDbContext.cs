@@ -12,6 +12,8 @@ public sealed class OrderSystemDbContext(DbContextOptions<OrderSystemDbContext> 
 
     public DbSet<User> Users => Set<User>();
 
+    public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

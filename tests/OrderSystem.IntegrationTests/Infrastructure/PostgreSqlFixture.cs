@@ -4,11 +4,16 @@ namespace OrderSystem.IntegrationTests.Infrastructure;
 
 public sealed class PostgreSqlFixture : IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:18-alpine")
-        .WithDatabase("oims_tests")
-        .WithUsername("oims")
-        .WithPassword("oims_tests_only")
-        .Build();
+    private readonly PostgreSqlContainer _container;
+
+    public PostgreSqlFixture()
+    {
+        _container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithDatabase("oims_tests")
+            .WithUsername("oims")
+            .WithPassword(TestCredentials.CreatePassword())
+            .Build();
+    }
 
     public string ConnectionString => _container.GetConnectionString();
 

@@ -16,10 +16,8 @@ public sealed class ProductCatalogMigrationTests(PostgreSqlFixture postgres)
     {
         await using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Database:ConnectionString"] = postgres.ConnectionString
-                })));
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString))));
         using var scope = factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetServices<DbContext>().Single();
         await dbContext.Database.MigrateAsync();

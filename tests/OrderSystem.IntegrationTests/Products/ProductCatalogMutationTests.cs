@@ -159,10 +159,8 @@ public sealed class ProductCatalogMutationTests(PostgreSqlFixture postgres)
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Database:ConnectionString"] = postgres.ConnectionString
-                }));
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString)));
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<IClock>();

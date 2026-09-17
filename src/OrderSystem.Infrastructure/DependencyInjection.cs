@@ -4,6 +4,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
+using OrderSystem.Application.Authentication;
+using OrderSystem.Infrastructure.Authentication;
 using OrderSystem.Application.Products;
 using OrderSystem.Infrastructure.Common.Clock;
 using OrderSystem.Infrastructure.Common.Diagnostics;
@@ -32,6 +34,13 @@ public static class DependencyInjection
         services.AddScoped<DbContext>(provider => provider.GetRequiredService<OrderSystemDbContext>());
         services.AddScoped<IProductCatalogStore, EfProductCatalogStore>();
         services.AddScoped<ProductCatalogService>();
+        services.AddScoped<IAuthenticationStore, EfAuthenticationStore>();
+        services.AddScoped<IRefreshTokenCleanupStore, EfRefreshTokenCleanupStore>();
+        services.AddScoped<AuthenticationService>();
+        services.AddScoped<AdminBootstrapService>();
+        services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
+        services.AddSingleton<IRefreshTokenProtector, SecureRefreshTokenProtector>();
+        services.AddSingleton<IAccessTokenIssuer, JwtAccessTokenIssuer>();
         services.AddSingleton<IClock, SystemClock>();
         services.AddSingleton<IOperationHook, NoOpOperationHook>();
         services.AddHealthChecks()
@@ -52,6 +61,9 @@ public static class DependencyInjection
             .Validate(options => !string.IsNullOrWhiteSpace(options.Issuer), "Jwt:Issuer is required.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.Audience), "Jwt:Audience is required.")
             .Validate(options => options.AccessTokenLifetime > TimeSpan.Zero, "Jwt:AccessTokenLifetime must be positive.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.SigningKey), "Jwt:SigningKey is required.")
+            .Validate(options => IsBase64(options.SigningKey), "Jwt:SigningKey must be valid Base64.")
+            .Validate(options => HasMinimumSigningKeyLength(options.SigningKey), "Jwt:SigningKey must contain at least 32 bytes.")
             .ValidateOnStart();
         services.AddOptions<RedisOptions>()
             .Bind(configuration.GetRequiredSection(RedisOptions.SectionName))
@@ -93,5 +105,33 @@ public static class DependencyInjection
         {
             return false;
         }
+    }
+
+    private static bool IsBase64(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        try
+        {
+            Convert.FromBase64String(value);
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private static bool HasMinimumSigningKeyLength(string? value)
+    {
+        if (!IsBase64(value))
+        {
+            return false;
+        }
+
+        return Convert.FromBase64String(value!).Length >= 32;
     }
 }
