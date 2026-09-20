@@ -1,12 +1,11 @@
 using OrderSystem.Application.Common.Validation;
 using OrderSystem.Application.Inventories.Contracts;
+using OrderSystem.Domain.Inventories;
 
 namespace OrderSystem.Application.Inventories.Validation;
 
 public static class InventoryRequestValidators
 {
-    private const int MaximumReasonLength = 256;
-
     public static ValidationResult<AdjustInventoryRequest> Validate(AdjustInventoryRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -22,9 +21,10 @@ public static class InventoryRequestValidators
         {
             errors["reason"] = ["Reason is required."];
         }
-        else if (reason.Length > MaximumReasonLength)
+        else if (reason.Length > InventoryTransaction.MaximumReasonLength)
         {
-            errors["reason"] = [$"Reason cannot exceed {MaximumReasonLength} characters."];
+            errors["reason"] =
+                [$"Reason cannot exceed {InventoryTransaction.MaximumReasonLength} characters."];
         }
 
         return errors.Count == 0

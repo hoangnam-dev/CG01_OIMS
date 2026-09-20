@@ -2,7 +2,7 @@ using OrderSystem.Domain.Inventories;
 
 namespace OrderSystem.UnitTests.Inventories;
 
-public class InventoryTests
+public sealed class InventoryTests
 {
     [Fact]
     public void Constructor_WithValidData_ShouldCreateInventoryInstance()

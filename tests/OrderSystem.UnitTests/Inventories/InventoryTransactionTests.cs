@@ -2,7 +2,7 @@ using OrderSystem.Domain.Inventories;
 
 namespace OrderSystem.UnitTests.Inventories;
 
-public class InventoryTransactionTests
+public sealed class InventoryTransactionTests
 {
     [Fact]
     public void Constructor_WithValidAdjustment_CreatesTransaction()
@@ -17,8 +17,8 @@ public class InventoryTransactionTests
             id,
             productVariantId,
             InventoryTransactionType.Adjustment,
-        onHandQuantityDelta: 5,
-        reservedQuantityDelta: 0,
+            onHandQuantityDelta: 5,
+            reservedQuantityDelta: 0,
             referenceType: null,
             referenceId: null,
             reason: " Stock correction ",
@@ -28,8 +28,8 @@ public class InventoryTransactionTests
         Assert.Equal(id, transaction.Id);
         Assert.Equal(productVariantId, transaction.ProductVariantId);
         Assert.Equal(InventoryTransactionType.Adjustment, transaction.Type);
-    Assert.Equal(5, transaction.OnHandQuantityDelta);
-    Assert.Equal(0, transaction.ReservedQuantityDelta);
+        Assert.Equal(5, transaction.OnHandQuantityDelta);
+        Assert.Equal(0, transaction.ReservedQuantityDelta);
         Assert.Null(transaction.ReferenceType);
         Assert.Null(transaction.ReferenceId);
         Assert.Equal("Stock correction", transaction.Reason);
@@ -257,8 +257,8 @@ public class InventoryTransactionTests
             Guid.NewGuid(),
             Guid.NewGuid(),
             InventoryTransactionType.Adjustment,
-        onHandQuantityDelta: 5,
-        reservedQuantityDelta: 0,
+            onHandQuantityDelta: 5,
+            reservedQuantityDelta: 0,
             referenceType: null,
             referenceId: Guid.NewGuid(),
             reason: "Stock correction",
@@ -274,8 +274,8 @@ public class InventoryTransactionTests
             Guid.NewGuid(),
             Guid.NewGuid(),
             InventoryTransactionType.Adjustment,
-        onHandQuantityDelta: 5,
-        reservedQuantityDelta: 0,
+            onHandQuantityDelta: 5,
+            reservedQuantityDelta: 0,
             referenceType: InventoryReferenceType.Order,
             referenceId: Guid.Empty,
             reason: "Stock correction",
@@ -298,8 +298,8 @@ public class InventoryTransactionTests
             Guid.NewGuid(),
             Guid.NewGuid(),
             InventoryTransactionType.Adjustment,
-        onHandQuantityDelta: 5,
-        reservedQuantityDelta: 0,
+            onHandQuantityDelta: 5,
+            reservedQuantityDelta: 0,
             referenceType: invalidReferenceType,
             referenceId: Guid.NewGuid(),
             reason: "Stock correction",
@@ -311,14 +311,14 @@ public class InventoryTransactionTests
     [Fact]
     public void Constructor_AdjustmentWithReasonAtMaxLength_CreatesTransaction()
     {
-        var reason = new string('A', 256);
+        var reason = new string('A', InventoryTransaction.MaximumReasonLength);
 
         var transaction = new InventoryTransaction(
             Guid.NewGuid(),
             Guid.NewGuid(),
             InventoryTransactionType.Adjustment,
-        onHandQuantityDelta: 5,
-        reservedQuantityDelta: 0,
+            onHandQuantityDelta: 5,
+            reservedQuantityDelta: 0,
             referenceType: null,
             referenceId: null,
             reason: reason,
@@ -331,15 +331,15 @@ public class InventoryTransactionTests
     [Fact]
     public void Constructor_AdjustmentWithPaddedReasonAtMaxNormalizedLength_TrimsAndCreatesTransaction()
     {
-        var normalizedReason = new string('A', 256);
+        var normalizedReason = new string('A', InventoryTransaction.MaximumReasonLength);
         var paddedReason = $"  {normalizedReason}\t";
 
         var transaction = new InventoryTransaction(
             Guid.NewGuid(),
             Guid.NewGuid(),
             InventoryTransactionType.Adjustment,
-        onHandQuantityDelta: 5,
-        reservedQuantityDelta: 0,
+            onHandQuantityDelta: 5,
+            reservedQuantityDelta: 0,
             referenceType: null,
             referenceId: null,
             reason: paddedReason,
@@ -359,15 +359,15 @@ public class InventoryTransactionTests
             Guid.NewGuid(),
             Guid.NewGuid(),
             InventoryTransactionType.Adjustment,
-        onHandQuantityDelta,
-        reservedQuantityDelta: 0,
+            onHandQuantityDelta,
+            reservedQuantityDelta: 0,
             referenceType: null,
             referenceId: null,
             reason: "Stock count correction",
             createdAt: DateTimeOffset.UtcNow);
 
-    Assert.Equal(onHandQuantityDelta, transaction.OnHandQuantityDelta);
-    Assert.Equal(0, transaction.ReservedQuantityDelta);
+        Assert.Equal(onHandQuantityDelta, transaction.OnHandQuantityDelta);
+        Assert.Equal(0, transaction.ReservedQuantityDelta);
     }
 
     [Fact]
@@ -377,14 +377,14 @@ public class InventoryTransactionTests
             Guid.NewGuid(),
             Guid.NewGuid(),
             InventoryTransactionType.Adjustment,
-        onHandQuantityDelta: -5,
-        reservedQuantityDelta: 0,
+            onHandQuantityDelta: -5,
+            reservedQuantityDelta: 0,
             referenceType: null,
             referenceId: null,
             reason: "Stock count correction",
             createdAt: DateTimeOffset.UtcNow);
 
-    Assert.Equal(-5, transaction.OnHandQuantityDelta);
-    Assert.Equal(0, transaction.ReservedQuantityDelta);
+        Assert.Equal(-5, transaction.OnHandQuantityDelta);
+        Assert.Equal(0, transaction.ReservedQuantityDelta);
     }
 }

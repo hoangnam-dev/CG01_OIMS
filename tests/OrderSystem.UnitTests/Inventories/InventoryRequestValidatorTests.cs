@@ -34,7 +34,9 @@ public sealed class InventoryRequestValidatorTests
     [Fact]
     public void ValidateAdjustment_WithReasonLongerThanMaximum_IsInvalid()
     {
-        var request = new AdjustInventoryRequest(1, new string('a', 257));
+        var request = new AdjustInventoryRequest(
+            1,
+            new string('a', InventoryTransaction.MaximumReasonLength + 1));
 
         var result = InventoryRequestValidators.Validate(request);
 
@@ -59,7 +61,7 @@ public sealed class InventoryRequestValidatorTests
     [InlineData(0, 20, "page")]
     [InlineData(1, 0, "pageSize")]
     [InlineData(1, 101, "pageSize")]
-        public void ValidateHistory_WithInvalidPagination_IsInvalid(
+    public void ValidateHistory_WithInvalidPagination_IsInvalid(
         int page,
         int pageSize,
         string expectedField)
