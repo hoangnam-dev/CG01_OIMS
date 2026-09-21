@@ -3,6 +3,7 @@ using Npgsql;
 using OrderSystem.Application.Common.Models;
 using OrderSystem.Application.Products;
 using OrderSystem.Application.Products.Contracts;
+using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Products;
 using OrderSystem.Infrastructure.Persistence;
 
@@ -18,7 +19,8 @@ internal sealed class EfProductCatalogStore(OrderSystemDbContext dbContext) : IP
 
     public void Add(Product product) => dbContext.Products.Add(product);
 
-    public void Add(ProductVariant variant) => dbContext.ProductVariants.Add(variant);
+    public void Add(ProductVariant variant, Inventory inventory) =>
+        dbContext.AddRange(variant, inventory);
 
     public async Task<CatalogSaveOutcome> SaveChangesAsync(CancellationToken cancellationToken)
     {

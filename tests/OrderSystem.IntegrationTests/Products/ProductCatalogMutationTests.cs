@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Products;
 using OrderSystem.Application.Products.Contracts;
+using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Products;
 using OrderSystem.Infrastructure.Persistence;
 using OrderSystem.IntegrationTests.Infrastructure;
@@ -102,6 +103,45 @@ public sealed class ProductCatalogMutationTests(PostgreSqlFixture postgres)
     }
 
     [Fact]
+    public async Task CreateVariant_PersistsZeroQuantityInventoryForTheVariant()
+    {
+        await using var factory = CreateFactory();
+        using (var setupScope = factory.Services.CreateScope())
+        {
+            await setupScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>()
+                .Database.MigrateAsync();
+        }
+
+        Guid variantId;
+        using (var commandScope = factory.Services.CreateScope())
+        {
+            var service = commandScope.ServiceProvider.GetRequiredService<ProductCatalogService>();
+            var product = await service.CreateProductAsync(
+                new("Inventory parent", "Description"),
+                CancellationToken.None);
+            var variant = await service.CreateVariantAsync(
+                product.Value!.Id,
+                new(UniqueSku(), "Inventory variant", 15m),
+                CancellationToken.None);
+
+            Assert.True(variant.IsSuccess);
+            variantId = variant.Value!.Id;
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+        var inventory = await assertionScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>()
+            .Inventories
+            .AsNoTracking()
+            .SingleAsync(item => item.ProductVariantId == variantId);
+
+        Assert.Equal(variantId, inventory.ProductVariantId);
+        Assert.Equal(0, inventory.OnHandQuantity);
+        Assert.Equal(0, inventory.ReservedQuantity);
+        Assert.Equal(0, inventory.AvailableQuantity);
+    }
+
+    [Fact]
     public async Task CreateVariant_DuplicateCanonicalSku_ReturnsStableConflict()
     {
         await using var factory = CreateFactory();
@@ -126,6 +166,13 @@ public sealed class ProductCatalogMutationTests(PostgreSqlFixture postgres)
         Assert.True(first.IsSuccess);
         Assert.False(duplicate.IsSuccess);
         Assert.Equal("SKU_ALREADY_EXISTS", duplicate.Error!.Code);
+
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionContext = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        Assert.True(await assertionContext.ProductVariants.AnyAsync(variant => variant.Id == first.Value!.Id));
+        Assert.False(await assertionContext.ProductVariants.AnyAsync(variant => variant.ProductId == secondProduct.Value!.Id));
+        Assert.Equal(1, await assertionContext.Inventories.CountAsync(inventory =>
+            inventory.ProductVariantId == first.Value!.Id));
     }
 
     [Fact]
@@ -167,4 +214,6 @@ public sealed class ProductCatalogMutationTests(PostgreSqlFixture postgres)
                 services.AddSingleton<IClock>(new FakeClock(FixedNow));
             });
         });
+
+    private static string UniqueSku() => $"SKU-{Guid.NewGuid():N}"[..16];
 }

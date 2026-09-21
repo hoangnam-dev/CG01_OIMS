@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -62,6 +63,8 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy(AuthorizationPolicies.Admin, policy => policy.RequireRole("Admin"))
     .AddPolicy(AuthorizationPolicies.Customer, policy => policy.RequireRole("Customer"));
 builder.Services.AddHttpContextAccessor();
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddOptions<AuthenticationWebOptions>()
     .Bind(builder.Configuration.GetRequiredSection(AuthenticationWebOptions.SectionName))
@@ -193,6 +196,7 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 app.MapFoundationEndpoints();
 app.MapAuthenticationEndpoints();
 app.MapProductCatalogEndpoints();
+app.MapInventoryEndpoints();
 
 app.Run();
 

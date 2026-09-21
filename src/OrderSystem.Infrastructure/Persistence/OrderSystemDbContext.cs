@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using OrderSystem.Domain.Products;
 using OrderSystem.Domain.Users;
+using OrderSystem.Domain.Inventories;
 
 namespace OrderSystem.Infrastructure.Persistence;
 
@@ -11,6 +12,10 @@ public sealed class OrderSystemDbContext(DbContextOptions<OrderSystemDbContext> 
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
 
     public DbSet<User> Users => Set<User>();
+
+    public DbSet<Inventory> Inventories => Set<Inventory>();
+
+    public DbSet<InventoryTransaction> InventoryTransactions => Set<InventoryTransaction>();
 
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 

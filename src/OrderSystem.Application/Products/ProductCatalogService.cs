@@ -3,6 +3,7 @@ using OrderSystem.Application.Common.Models;
 using OrderSystem.Application.Common.Results;
 using OrderSystem.Application.Products.Contracts;
 using OrderSystem.Application.Products.Validation;
+using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Products;
 
 namespace OrderSystem.Application.Products;
@@ -138,7 +139,12 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IClock clo
             validRequest.CurrentPrice,
             CatalogStatus.Active,
             clock.UtcNow);
-        store.Add(variant);
+        var inventory = new Inventory(
+            Guid.NewGuid(),
+            variant.Id,
+            0,
+            clock.UtcNow);
+        store.Add(variant, inventory);
         var outcome = await store.SaveChangesAsync(cancellationToken);
         return outcome == CatalogSaveOutcome.DuplicateSku
             ? ApplicationResult.Failure<ProductVariantDto>(new(

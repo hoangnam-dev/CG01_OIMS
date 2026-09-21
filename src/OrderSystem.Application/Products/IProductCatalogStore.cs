@@ -1,5 +1,6 @@
 using OrderSystem.Application.Common.Models;
 using OrderSystem.Application.Products.Contracts;
+using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Products;
 
 namespace OrderSystem.Application.Products;
@@ -12,7 +13,7 @@ public interface IProductCatalogStore
 
     void Add(Product product);
 
-    void Add(ProductVariant variant);
+    void Add(ProductVariant variant, Inventory inventory);
 
     Task<CatalogSaveOutcome> SaveChangesAsync(CancellationToken cancellationToken);
 
