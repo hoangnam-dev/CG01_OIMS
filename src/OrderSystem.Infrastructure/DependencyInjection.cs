@@ -5,11 +5,13 @@ using Microsoft.Extensions.Options;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Authentication;
-using OrderSystem.Infrastructure.Authentication;
+using OrderSystem.Application.Inventories;
 using OrderSystem.Application.Products;
+using OrderSystem.Infrastructure.Authentication;
 using OrderSystem.Infrastructure.Common.Clock;
 using OrderSystem.Infrastructure.Common.Diagnostics;
 using OrderSystem.Infrastructure.Configuration;
+using OrderSystem.Infrastructure.Inventories;
 using OrderSystem.Infrastructure.Persistence;
 using OrderSystem.Infrastructure.Products;
 
@@ -34,6 +36,8 @@ public static class DependencyInjection
         services.AddScoped<DbContext>(provider => provider.GetRequiredService<OrderSystemDbContext>());
         services.AddScoped<IProductCatalogStore, EfProductCatalogStore>();
         services.AddScoped<ProductCatalogService>();
+        services.AddScoped<IInventoryStore, EfInventoryStore>();
+        services.AddScoped<InventoryService>();
         services.AddScoped<IAuthenticationStore, EfAuthenticationStore>();
         services.AddScoped<IRefreshTokenCleanupStore, EfRefreshTokenCleanupStore>();
         services.AddScoped<AuthenticationService>();
