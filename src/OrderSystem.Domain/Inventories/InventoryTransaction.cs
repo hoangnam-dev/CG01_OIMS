@@ -1,3 +1,5 @@
+using OrderSystem.Domain.Common;
+
 namespace OrderSystem.Domain.Inventories;
 
 public sealed class InventoryTransaction
@@ -19,16 +21,14 @@ public sealed class InventoryTransaction
         string? reason,
         DateTimeOffset createdAt)
     {
-        RequireNonEmptyGuid(id, nameof(id));
-        RequireNonEmptyGuid(productVariantId, nameof(productVariantId));
+        Id = DomainGuard.RequiredGuid(id);
+        ProductVariantId = DomainGuard.RequiredGuid(productVariantId);
 
         Type = RequireType(type);
         EnsureValidDelta(Type, onHandQuantityDelta, reservedQuantityDelta);
         EnsureReferenceConsistency(referenceType, referenceId);
         EnsureValidReferenceForType(Type, referenceType, referenceId);
 
-        Id = id;
-        ProductVariantId = productVariantId;
         OnHandQuantityDelta = onHandQuantityDelta;
         ReservedQuantityDelta = reservedQuantityDelta;
         ReferenceType = referenceType;
@@ -74,20 +74,9 @@ public sealed class InventoryTransaction
         return normalizedReason;
     }
 
-    private static void RequireNonEmptyGuid(Guid value, string propertyName)
-    {
-        if (value == Guid.Empty)
-        {
-            throw new ArgumentException($"{propertyName} cannot be empty.", propertyName);
-        }
-    }
-
     private static InventoryTransactionType RequireType(InventoryTransactionType type)
     {
-        if (!Enum.IsDefined(type))
-        {
-            throw new ArgumentOutOfRangeException(nameof(type), "Invalid inventory transaction type.");
-        }
+        DomainGuard.DefinedEnum(type);
 
         if (type != InventoryTransactionType.Adjustment)
         {
@@ -99,9 +88,7 @@ public sealed class InventoryTransaction
 
     private static string RequireReason(string? reason)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-
-        var normalizedReason = reason.Trim();
+        var normalizedReason = DomainGuard.RequiredText(reason);
 
         if (normalizedReason.Length > MaximumReasonLength)
         {
@@ -129,10 +116,7 @@ public sealed class InventoryTransaction
         switch (type)
         {
             case InventoryTransactionType.Adjustment:
-                if (onHandQuantityDelta == 0)
-                {
-                    throw new ArgumentOutOfRangeException(nameof(onHandQuantityDelta), "On-hand quantity delta cannot be zero for adjustment transactions.");
-                }
+                DomainGuard.NotZero(onHandQuantityDelta);
                 if (reservedQuantityDelta != 0)
                 {
                     throw new ArgumentException("Reserved quantity delta must be zero for adjustment transactions.", nameof(reservedQuantityDelta));
@@ -160,10 +144,7 @@ public sealed class InventoryTransaction
             throw new ArgumentException("Reference ID cannot be empty when reference type is provided.", nameof(referenceId));
         }
 
-        if (!Enum.IsDefined(referenceType.Value))
-        {
-            throw new ArgumentOutOfRangeException(nameof(referenceType), "Invalid inventory reference type.");
-        }
+        DomainGuard.DefinedEnum(referenceType.Value, nameof(referenceType));
     }
 
     private static void EnsureValidReferenceForType(InventoryTransactionType type, InventoryReferenceType? referenceType, Guid? referenceId)

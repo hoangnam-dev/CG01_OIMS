@@ -106,7 +106,10 @@ public sealed class InventoryTests
           updatedAt: now
         );
 
-        Assert.Throws<ArgumentOutOfRangeException>(exception);
+        var thrownException = Assert.Throws<ArgumentOutOfRangeException>(exception);
+
+        Assert.Equal("initialOnHand", thrownException.ParamName);
+        Assert.Equal(-10, thrownException.ActualValue);
     }
 
     [Fact]
