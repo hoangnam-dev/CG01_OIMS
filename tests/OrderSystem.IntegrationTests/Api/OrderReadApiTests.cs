@@ -176,6 +176,7 @@ public sealed class OrderReadApiTests(PostgreSqlFixture postgres)
         Assert.True(paths.TryGetProperty("/api/orders/{id}", out var detailPath));
         Assert.True(detailPath.TryGetProperty("get", out _));
         Assert.False(detailPath.TryGetProperty("post", out _));
+        Assert.False(paths.TryGetProperty("/api/orders/{id}/cancel", out _));
     }
 
     private WebApplicationFactory<Program> CreateFactory() =>
