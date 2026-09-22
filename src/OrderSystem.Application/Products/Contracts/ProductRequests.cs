@@ -1,3 +1,4 @@
+using OrderSystem.Application.Common.Models;
 using OrderSystem.Domain.Products;
 
 namespace OrderSystem.Application.Products.Contracts;
@@ -31,12 +32,6 @@ public enum ProductSortBy
     Name,
     CreatedAt,
     UpdatedAt
-}
-
-public enum SortDirection
-{
-    Ascending,
-    Descending
 }
 
 public enum CatalogVisibility

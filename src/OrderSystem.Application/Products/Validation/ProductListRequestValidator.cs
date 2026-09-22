@@ -1,3 +1,4 @@
+using OrderSystem.Application.Common.Models;
 using OrderSystem.Application.Common.Validation;
 using OrderSystem.Application.Products.Contracts;
 using OrderSystem.Domain.Products;
