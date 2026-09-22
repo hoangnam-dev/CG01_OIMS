@@ -1,4 +1,5 @@
 using OrderSystem.Application.Common.Clock;
+using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Application.Common.Models;
 using OrderSystem.Application.Common.Results;
 using OrderSystem.Application.Products.Contracts;
@@ -8,7 +9,7 @@ using OrderSystem.Domain.Products;
 
 namespace OrderSystem.Application.Products;
 
-public sealed class ProductCatalogService(IProductCatalogStore store, IClock clock)
+public sealed class ProductCatalogService(IProductCatalogStore store, IClock clock, IIdGenerator idGenerator)
 {
     public async Task<ApplicationResult<PagedResult<ProductDto>>> ListProductsAsync(
         ProductListRequest request,
@@ -65,7 +66,7 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IClock clo
 
         var validRequest = validation.Value!;
         var product = new Product(
-            Guid.NewGuid(),
+            idGenerator.NewId(),
             validRequest.Name!,
             validRequest.Description!,
             CatalogStatus.Active,
@@ -132,7 +133,7 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IClock clo
 
         var validRequest = validation.Value!;
         var variant = new ProductVariant(
-            Guid.NewGuid(),
+            idGenerator.NewId(),
             productId,
             validRequest.Sku!,
             validRequest.Name!,
@@ -140,7 +141,7 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IClock clo
             CatalogStatus.Active,
             clock.UtcNow);
         var inventory = new Inventory(
-            Guid.NewGuid(),
+            idGenerator.NewId(),
             variant.Id,
             0,
             clock.UtcNow);

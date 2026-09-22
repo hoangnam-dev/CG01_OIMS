@@ -1,4 +1,5 @@
 using OrderSystem.Application.Common.Clock;
+using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Domain.Users;
 
 namespace OrderSystem.Application.Authentication;
@@ -6,8 +7,11 @@ namespace OrderSystem.Application.Authentication;
 public sealed class AdminBootstrapService(
     IAuthenticationStore store,
     IPasswordHasher passwordHasher,
-    IClock clock)
+    IClock clock,
+    IIdGenerator? idGenerator = null)
 {
+    private readonly IIdGenerator ids = idGenerator ?? new Uuid7IdGenerator();
+
     public async Task<AdminBootstrapResult> EnsureAdminAsync(
         string email,
         string password,
@@ -22,7 +26,7 @@ public sealed class AdminBootstrapService(
         }
 
         var admin = new User(
-            Guid.NewGuid(),
+            ids.NewId(),
             displayEmail,
             normalizedEmail,
             passwordHasher.Hash(password),

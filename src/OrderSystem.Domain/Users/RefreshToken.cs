@@ -1,3 +1,5 @@
+using OrderSystem.Domain.Common;
+
 namespace OrderSystem.Domain.Users;
 
 public sealed class RefreshToken
@@ -15,15 +17,8 @@ public sealed class RefreshToken
         DateTimeOffset expiresAt,
         DateTimeOffset createdAt)
     {
-        if (id == Guid.Empty)
-        {
-            throw new ArgumentException("Refresh Token ID cannot be empty.", nameof(id));
-        }
-
-        if (userId == Guid.Empty)
-        {
-            throw new ArgumentException("User ID cannot be empty.", nameof(userId));
-        }
+        Id = DomainGuard.RequiredGuid(id);
+        UserId = DomainGuard.RequiredGuid(userId);
 
         if (tokenHash is null ||
             tokenHash.Length != Sha256HexLength ||
@@ -39,8 +34,6 @@ public sealed class RefreshToken
             throw new ArgumentOutOfRangeException(nameof(expiresAt), expiresAt, "Expiry must be after creation.");
         }
 
-        Id = id;
-        UserId = userId;
         TokenHash = tokenHash;
         ExpiresAt = expiresAt;
         CreatedAt = createdAt;

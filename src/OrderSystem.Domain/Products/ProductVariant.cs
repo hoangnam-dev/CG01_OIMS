@@ -1,3 +1,5 @@
+using OrderSystem.Domain.Common;
+
 namespace OrderSystem.Domain.Products;
 
 public sealed class ProductVariant
@@ -17,22 +19,12 @@ public sealed class ProductVariant
         CatalogStatus status,
         DateTimeOffset createdAt)
     {
-        if (id == Guid.Empty)
-        {
-            throw new ArgumentException("Product Variant ID cannot be empty.", nameof(id));
-        }
-
-        if (productId == Guid.Empty)
-        {
-            throw new ArgumentException("Product ID cannot be empty.", nameof(productId));
-        }
-
-        Id = id;
-        ProductId = productId;
+        Id = DomainGuard.RequiredGuid(id);
+        ProductId = DomainGuard.RequiredGuid(productId);
         Sku = CanonicalizeSku(sku);
-        Name = RequireName(name);
-        CurrentPrice = RequirePrice(currentPrice);
-        Status = RequireStatus(status);
+        Name = DomainGuard.RequiredText(name);
+        CurrentPrice = DomainGuard.NotNegative(currentPrice);
+        Status = DomainGuard.DefinedEnum(status);
         CreatedAt = createdAt;
         UpdatedAt = createdAt;
     }
@@ -57,52 +49,25 @@ public sealed class ProductVariant
 
     public void Update(string name, decimal currentPrice, DateTimeOffset updatedAt)
     {
-        Name = RequireName(name);
-        CurrentPrice = RequirePrice(currentPrice);
+        Name = DomainGuard.RequiredText(name);
+        CurrentPrice = DomainGuard.NotNegative(currentPrice);
         UpdatedAt = updatedAt;
     }
 
     public void ChangeStatus(CatalogStatus status, DateTimeOffset updatedAt)
     {
-        Status = RequireStatus(status);
+        Status = DomainGuard.DefinedEnum(status);
         UpdatedAt = updatedAt;
     }
 
     private static string CanonicalizeSku(string sku)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sku);
-        var canonicalSku = sku.Trim().ToUpperInvariant();
+        var canonicalSku = DomainGuard.RequiredText(sku).ToUpperInvariant();
         if (canonicalSku.Length > MaximumSkuLength)
         {
             throw new ArgumentException($"SKU cannot exceed {MaximumSkuLength} characters.", nameof(sku));
         }
 
         return canonicalSku;
-    }
-
-    private static string RequireName(string name)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        return name.Trim();
-    }
-
-    private static decimal RequirePrice(decimal currentPrice)
-    {
-        if (currentPrice < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(currentPrice), currentPrice, "Current price cannot be negative.");
-        }
-
-        return currentPrice;
-    }
-
-    private static CatalogStatus RequireStatus(CatalogStatus status)
-    {
-        if (!Enum.IsDefined(status))
-        {
-            throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported catalog status.");
-        }
-
-        return status;
     }
 }
