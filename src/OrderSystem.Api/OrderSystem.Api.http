@@ -11,3 +11,15 @@ GET {{OrderSystem.Api_HostAddress}}/health/live
 ###
 
 GET {{OrderSystem.Api_HostAddress}}/health/ready
+
+###
+
+GET {{OrderSystem.Api_HostAddress}}/api/orders?page=1&pageSize=20&status=PendingPayment&sortDirection=desc
+Accept: application/json
+Authorization: Bearer {{accessToken}}
+
+###
+
+GET {{OrderSystem.Api_HostAddress}}/api/orders/{{orderId}}
+Accept: application/json
+Authorization: Bearer {{accessToken}}

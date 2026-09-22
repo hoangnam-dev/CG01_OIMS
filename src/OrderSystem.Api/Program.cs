@@ -197,6 +197,7 @@ app.MapFoundationEndpoints();
 app.MapAuthenticationEndpoints();
 app.MapProductCatalogEndpoints();
 app.MapInventoryEndpoints();
+app.MapOrderEndpoints();
 
 app.Run();
 

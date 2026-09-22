@@ -1,4 +1,5 @@
 using OrderSystem.Application.Common.Clock;
+using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Application.Common.Models;
 using OrderSystem.Application.Common.Results;
 using OrderSystem.Application.Inventories.Contracts;
@@ -7,8 +8,10 @@ using OrderSystem.Domain.Inventories;
 
 namespace OrderSystem.Application.Inventories;
 
-public sealed class InventoryService(IInventoryStore store, IClock clock)
+public sealed class InventoryService(IInventoryStore store, IClock clock, IIdGenerator? idGenerator = null)
 {
+    private readonly IIdGenerator ids = idGenerator ?? new Uuid7IdGenerator();
+
     public async Task<ApplicationResult<InventoryDto>> GetInventoryAsync(
         Guid productVariantId,
         CancellationToken cancellationToken)
@@ -95,7 +98,7 @@ public sealed class InventoryService(IInventoryStore store, IClock clock)
         }
 
         store.AddTransaction(new InventoryTransaction(
-            Guid.NewGuid(),
+            ids.NewId(),
             productVariantId,
             InventoryTransactionType.Adjustment,
             validRequest.QuantityChange,

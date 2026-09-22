@@ -1,3 +1,5 @@
+using OrderSystem.Domain.Common;
+
 namespace OrderSystem.Domain.Products;
 
 public sealed class Product
@@ -13,15 +15,10 @@ public sealed class Product
         CatalogStatus status,
         DateTimeOffset createdAt)
     {
-        if (id == Guid.Empty)
-        {
-            throw new ArgumentException("Product ID cannot be empty.", nameof(id));
-        }
-
-        Id = id;
-        Name = RequireName(name);
+        Id = DomainGuard.RequiredGuid(id);
+        Name = DomainGuard.RequiredText(name);
         Description = description ?? throw new ArgumentNullException(nameof(description));
-        Status = RequireStatus(status);
+        Status = DomainGuard.DefinedEnum(status);
         CreatedAt = createdAt;
         UpdatedAt = createdAt;
     }
@@ -40,30 +37,14 @@ public sealed class Product
 
     public void Update(string name, string description, DateTimeOffset updatedAt)
     {
-        Name = RequireName(name);
+        Name = DomainGuard.RequiredText(name);
         Description = description ?? throw new ArgumentNullException(nameof(description));
         UpdatedAt = updatedAt;
     }
 
     public void ChangeStatus(CatalogStatus status, DateTimeOffset updatedAt)
     {
-        Status = RequireStatus(status);
+        Status = DomainGuard.DefinedEnum(status);
         UpdatedAt = updatedAt;
-    }
-
-    private static string RequireName(string name)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        return name.Trim();
-    }
-
-    private static CatalogStatus RequireStatus(CatalogStatus status)
-    {
-        if (!Enum.IsDefined(status))
-        {
-            throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported catalog status.");
-        }
-
-        return status;
     }
 }

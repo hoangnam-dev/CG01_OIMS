@@ -1,3 +1,5 @@
+using OrderSystem.Domain.Common;
+
 namespace OrderSystem.Domain.Inventories;
 
 public sealed class Inventory
@@ -12,19 +14,9 @@ public sealed class Inventory
         int initialOnHand,
         DateTimeOffset updatedAt)
     {
-        if (id == Guid.Empty)
-        {
-            throw new ArgumentException("Inventory ID cannot be empty.", nameof(id));
-        }
-
-        if (productVariantId == Guid.Empty)
-        {
-            throw new ArgumentException("Product Variant ID cannot be empty.", nameof(productVariantId));
-        }
-
-        Id = id;
-        ProductVariantId = productVariantId;
-        OnHandQuantity = RequireNonNegativeQuantity(initialOnHand, nameof(initialOnHand));
+        Id = DomainGuard.RequiredGuid(id);
+        ProductVariantId = DomainGuard.RequiredGuid(productVariantId);
+        OnHandQuantity = DomainGuard.NotNegative(initialOnHand);
         ReservedQuantity = 0;
         UpdatedAt = updatedAt;
     }
@@ -43,7 +35,7 @@ public sealed class Inventory
 
     public void AdjustOnHand(int quantityDelta, DateTimeOffset updatedAt)
     {
-        EnsureNonZeroDelta(quantityDelta);
+        DomainGuard.NotZero(quantityDelta);
 
         int newOnHandQuantity;
 
@@ -62,24 +54,6 @@ public sealed class Inventory
 
         OnHandQuantity = newOnHandQuantity;
         UpdatedAt = updatedAt;
-    }
-
-    private static int RequireNonNegativeQuantity(int quantity, string propertyName)
-    {
-        if (quantity < 0)
-        {
-            throw new ArgumentOutOfRangeException(propertyName, "Quantity cannot be negative.");
-        }
-
-        return quantity;
-    }
-
-    private static void EnsureNonZeroDelta(int quantityDelta)
-    {
-        if (quantityDelta == 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(quantityDelta), "Quantity delta cannot be zero.");
-        }
     }
 
     private static void EnsureNonNegativeOnHand(int onHandQuantity)
