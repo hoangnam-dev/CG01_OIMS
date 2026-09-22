@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
+using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Inventories;
 using OrderSystem.Application.Products;
@@ -46,6 +47,7 @@ public static class DependencyInjection
         services.AddSingleton<IRefreshTokenProtector, SecureRefreshTokenProtector>();
         services.AddSingleton<IAccessTokenIssuer, JwtAccessTokenIssuer>();
         services.AddSingleton<IClock, SystemClock>();
+        services.AddSingleton<IIdGenerator, Uuid7IdGenerator>();
         services.AddSingleton<IOperationHook, NoOpOperationHook>();
         services.AddHealthChecks()
             .AddDbContextCheck<OrderSystemDbContext>("postgresql", tags: ["ready"]);

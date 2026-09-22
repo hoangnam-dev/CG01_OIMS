@@ -1,6 +1,7 @@
 using System.Net.Mail;
 using OrderSystem.Application.Authentication.Contracts;
 using OrderSystem.Application.Common.Clock;
+using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Application.Common.Results;
 using OrderSystem.Domain.Users;
 
@@ -11,9 +12,11 @@ public sealed class AuthenticationService(
     IPasswordHasher passwordHasher,
     IAccessTokenIssuer accessTokenIssuer,
     IRefreshTokenProtector refreshTokenProtector,
-    IClock clock)
+    IClock clock,
+    IIdGenerator? idGenerator = null)
 {
     private static readonly TimeSpan RefreshTokenLifetime = TimeSpan.FromDays(30);
+    private readonly IIdGenerator ids = idGenerator ?? new Uuid7IdGenerator();
 
     public async Task<ApplicationResult<UserDto>> RegisterAsync(
         RegisterRequest request,
@@ -28,7 +31,7 @@ public sealed class AuthenticationService(
         var email = request.Email!.Trim();
         var now = clock.UtcNow;
         var user = new User(
-            Guid.NewGuid(),
+            ids.NewId(),
             email,
             NormalizeEmail(email),
             passwordHasher.Hash(request.Password!),
@@ -67,7 +70,7 @@ public sealed class AuthenticationService(
         var now = clock.UtcNow;
         var generatedRefreshToken = refreshTokenProtector.Generate();
         var refreshToken = new RefreshToken(
-            Guid.NewGuid(),
+            ids.NewId(),
             user.Id,
             generatedRefreshToken.Hash,
             now.Add(RefreshTokenLifetime),
@@ -97,7 +100,7 @@ public sealed class AuthenticationService(
         var replacement = refreshTokenProtector.Generate();
         var rotation = await store.RotateRefreshTokenAsync(
             refreshTokenProtector.Hash(refreshToken),
-            Guid.NewGuid(),
+            ids.NewId(),
             replacement.Hash,
             now,
             cancellationToken);
