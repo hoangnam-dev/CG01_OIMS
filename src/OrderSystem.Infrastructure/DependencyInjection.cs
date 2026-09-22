@@ -8,6 +8,7 @@ using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Inventories;
 using OrderSystem.Application.Products;
+using OrderSystem.Application.Orders;
 using OrderSystem.Infrastructure.Authentication;
 using OrderSystem.Infrastructure.Common.Clock;
 using OrderSystem.Infrastructure.Common.Diagnostics;
@@ -15,6 +16,7 @@ using OrderSystem.Infrastructure.Configuration;
 using OrderSystem.Infrastructure.Inventories;
 using OrderSystem.Infrastructure.Persistence;
 using OrderSystem.Infrastructure.Products;
+using OrderSystem.Infrastructure.Orders;
 
 namespace OrderSystem.Infrastructure;
 
@@ -39,6 +41,8 @@ public static class DependencyInjection
         services.AddScoped<ProductCatalogService>();
         services.AddScoped<IInventoryStore, EfInventoryStore>();
         services.AddScoped<InventoryService>();
+        services.AddScoped<IOrderReadStore, EfOrderReadStore>();
+        services.AddScoped<OrderQueryService>();
         services.AddScoped<IAuthenticationStore, EfAuthenticationStore>();
         services.AddScoped<IRefreshTokenCleanupStore, EfRefreshTokenCleanupStore>();
         services.AddScoped<AuthenticationService>();

@@ -1,10 +1,41 @@
 using OrderSystem.Application.Common.Validation;
+using OrderSystem.Application.Common.Models;
 using OrderSystem.Application.Orders.Contracts;
 
 namespace OrderSystem.Application.Orders.Validation;
 
 public static class OrderRequestValidators
 {
+    public static ValidationResult<OrderListRequest> ValidateList(OrderListRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        if (request.Page < 1)
+        {
+            errors["page"] = ["Page must be at least 1."];
+        }
+
+        if (request.PageSize is < 1 or > 100)
+        {
+            errors["pageSize"] = ["Page size must be between 1 and 100."];
+        }
+
+        if (request.Status is { } status && !Enum.IsDefined(status))
+        {
+            errors["status"] = ["Order status is invalid."];
+        }
+
+        if (!Enum.IsDefined(request.SortDirection))
+        {
+            errors["sortDirection"] = ["Sort direction is invalid."];
+        }
+
+        return errors.Count == 0
+            ? ValidationResult.Success(request)
+            : ValidationResult.Failure<OrderListRequest>(errors);
+    }
+
     public static ValidationResult<CreateOrderRequest> Validate(CreateOrderRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
