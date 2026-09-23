@@ -37,6 +37,7 @@ public static class DependencyInjection
                 npgsql.MigrationsAssembly(typeof(OrderSystemDbContext).Assembly.FullName));
         });
         services.AddScoped<DbContext>(provider => provider.GetRequiredService<OrderSystemDbContext>());
+        services.AddScoped<IOrderCommandStore, EfOrderCommandStore>();
         services.AddScoped<IProductCatalogStore, EfProductCatalogStore>();
         services.AddScoped<ProductCatalogService>();
         services.AddScoped<IInventoryStore, EfInventoryStore>();
