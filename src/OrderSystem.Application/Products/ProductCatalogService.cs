@@ -25,10 +25,9 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IClock clo
         var query = validation.Value!;
         if (visibility == CatalogVisibility.ActiveOnly && query.Status == CatalogStatus.Inactive)
         {
-            return ApplicationResult.Failure<PagedResult<ProductDto>>(new(
-                ApplicationErrorKind.Forbidden,
-                "FORBIDDEN",
-                "Inactive catalog data requires Admin access."));
+            return ApplicationResult.Failure<PagedResult<ProductDto>>(
+                ApplicationErrors.Forbidden.Create(
+                    message: "Inactive catalog data requires Admin access."));
         }
 
         var page = await store.ListProductsAsync(query, visibility, cancellationToken);
@@ -148,10 +147,8 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IClock clo
         store.Add(variant, inventory);
         var outcome = await store.SaveChangesAsync(cancellationToken);
         return outcome == CatalogSaveOutcome.DuplicateSku
-            ? ApplicationResult.Failure<ProductVariantDto>(new(
-                ApplicationErrorKind.Conflict,
-                "SKU_ALREADY_EXISTS",
-                "The SKU is already in use."))
+            ? ApplicationResult.Failure<ProductVariantDto>(
+                ApplicationErrors.Products.SkuAlreadyExists.Create())
             : ApplicationResult.Success(variant.ToDto());
     }
 
@@ -195,21 +192,12 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IClock clo
     }
 
     private static ApplicationResult<T> ValidationFailure<T>(IReadOnlyDictionary<string, string[]> errors) =>
-        ApplicationResult.Failure<T>(new(
-            ApplicationErrorKind.Validation,
-            "VALIDATION_FAILED",
-            "One or more validation errors occurred.",
-            errors));
+        ApplicationResult.Failure<T>(
+            ApplicationErrors.ValidationFailed.Create(validationErrors: errors));
 
     private static ApplicationResult<T> ProductNotFound<T>() =>
-        ApplicationResult.Failure<T>(new(
-            ApplicationErrorKind.NotFound,
-            "PRODUCT_NOT_FOUND",
-            "The Product was not found."));
+        ApplicationResult.Failure<T>(ApplicationErrors.Products.NotFound.Create());
 
     private static ApplicationResult<T> VariantNotFound<T>() =>
-        ApplicationResult.Failure<T>(new(
-            ApplicationErrorKind.NotFound,
-            "PRODUCT_VARIANT_NOT_FOUND",
-            "The Product Variant was not found."));
+        ApplicationResult.Failure<T>(ApplicationErrors.Products.VariantNotFound.Create());
 }

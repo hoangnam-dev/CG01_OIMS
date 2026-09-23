@@ -81,29 +81,19 @@ public sealed class OrderQueryService(IOrderReadStore store, ICurrentUser curren
     }
 
     private static ApplicationResult<T> ValidationFailure<T>(IReadOnlyDictionary<string, string[]> errors) =>
-        ApplicationResult.Failure<T>(new(
-            ApplicationErrorKind.Validation,
-            "VALIDATION_FAILED",
-            "One or more validation errors occurred.",
-            errors));
+        ApplicationResult.Failure<T>(
+            ApplicationErrors.ValidationFailed.Create(validationErrors: errors));
 
     private static ApplicationResult<T> Unauthorized<T>() =>
-        ApplicationResult.Failure<T>(new(
-            ApplicationErrorKind.Unauthorized,
-            "UNAUTHORIZED",
-            "Authentication is required."));
+        ApplicationResult.Failure<T>(ApplicationErrors.Unauthorized.Create());
 
     private static ApplicationResult<T> Forbidden<T>() =>
-        ApplicationResult.Failure<T>(new(
-            ApplicationErrorKind.Forbidden,
-            "FORBIDDEN",
-            "The current user role is not authorized to read Orders."));
+        ApplicationResult.Failure<T>(
+            ApplicationErrors.Forbidden.Create(
+                message: "The current user role is not authorized to read Orders."));
 
     private static ApplicationResult<OrderDto> OrderNotFound() =>
-        ApplicationResult.Failure<OrderDto>(new(
-            ApplicationErrorKind.NotFound,
-            "ORDER_NOT_FOUND",
-            "The Order was not found."));
+        ApplicationResult.Failure<OrderDto>(ApplicationErrors.Orders.NotFound.Create());
 
     private sealed record CallerResolution<T>(OrderReadScope? Scope, Guid? UserId, ApplicationError? Error);
 }

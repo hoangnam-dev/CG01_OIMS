@@ -14,6 +14,7 @@ using OrderSystem.Api.Endpoints;
 using OrderSystem.Api.Errors;
 using OrderSystem.Api.OpenApi;
 using OrderSystem.Application.Authentication;
+using OrderSystem.Application.Common.Results;
 using OrderSystem.Infrastructure;
 using OrderSystem.Infrastructure.Logging;
 using OrderSystem.Infrastructure.Configuration;
@@ -139,7 +140,7 @@ builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails(options => options.CustomizeProblemDetails = context =>
 {
     context.ProblemDetails.Extensions.TryAdd("code", context.HttpContext.Response.StatusCode == 400
-        ? "VALIDATION_FAILED"
+        ? ApplicationErrors.ValidationFailed.Code
         : "HTTP_ERROR");
     context.ProblemDetails.Extensions.TryAdd("message", context.ProblemDetails.Detail ?? context.ProblemDetails.Title);
     context.ProblemDetails.Extensions.TryAdd("traceId", context.HttpContext.TraceIdentifier);
