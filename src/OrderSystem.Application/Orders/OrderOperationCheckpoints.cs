@@ -7,4 +7,5 @@ public static class OrderOperationCheckpoints
     public const string AfterCreateCommit = "orders.create.after-commit";
     public const string BeforeCancellationLock = "orders.cancel.before-lock";
     public const string AfterCancellationLock = "orders.cancel.after-lock";
+    public const string AfterCancellationRelease = "orders.cancel.after-release";
 }

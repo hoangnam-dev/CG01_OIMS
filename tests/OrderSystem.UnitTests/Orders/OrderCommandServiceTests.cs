@@ -325,7 +325,12 @@ public sealed class OrderCommandServiceTests
         Assert.Equal(1, store.SaveChangesCalls);
         Assert.Equal(1, store.Transaction.CommitCalls);
         Assert.Equal(
-            [OrderOperationCheckpoints.BeforeCancellationLock, OrderOperationCheckpoints.AfterCancellationLock],
+            [
+                OrderOperationCheckpoints.BeforeCancellationLock,
+                OrderOperationCheckpoints.AfterCancellationLock,
+                OrderOperationCheckpoints.AfterCancellationRelease,
+                OrderOperationCheckpoints.AfterCancellationRelease
+            ],
             hook.Checkpoints);
         Assert.Equal(order.Id, result.Value!.Id);
         Assert.Equal(OrderStatus.Cancelled, result.Value.Status);

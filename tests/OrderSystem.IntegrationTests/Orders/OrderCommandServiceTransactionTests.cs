@@ -110,6 +110,95 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
     }
 
     [Fact]
+    public async Task CancelAsync_WhenFailureOccursAfterFirstRelease_RollsBackAllReservationEffects()
+    {
+        // This fails if cancellation stops invoking the post-release checkpoint,
+        // or if the transaction is committed after a partial inventory release.
+        await using var factory = CreateFactory();
+        var seeded = await SeedReservedMultiItemOrderAsync(factory);
+
+        using var commandScope = factory.Services.CreateScope();
+        var service = CreateService(
+            commandScope,
+            seeded.OwnerId,
+            [Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()],
+            new ThrowingCheckpointHook(OrderOperationCheckpoints.AfterCancellationRelease));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CancelAsync(
+            seeded.OrderId,
+            new CancelOrderRequest(Reason: "Customer requested cancellation"),
+            CancellationToken.None));
+
+        using var assertionScope = factory.Services.CreateScope();
+        var dbContext = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var order = await dbContext.Orders.AsNoTracking().SingleAsync(order => order.Id == seeded.OrderId);
+        var inventories = await dbContext.Inventories.AsNoTracking()
+            .Where(inventory => inventory.ProductVariantId == seeded.FirstVariantId || inventory.ProductVariantId == seeded.SecondVariantId)
+            .ToDictionaryAsync(inventory => inventory.ProductVariantId);
+
+        Assert.Equal(OrderStatus.PendingPayment, order.Status);
+        Assert.Equal(2, inventories[seeded.FirstVariantId].ReservedQuantity);
+        Assert.Equal(1, inventories[seeded.SecondVariantId].ReservedQuantity);
+        Assert.Equal(5, inventories[seeded.FirstVariantId].OnHandQuantity);
+        Assert.Equal(3, inventories[seeded.SecondVariantId].OnHandQuantity);
+        Assert.False(await dbContext.InventoryTransactions.AnyAsync(transaction =>
+            transaction.ReferenceId == seeded.OrderId &&
+            transaction.Type == InventoryTransactionType.Release));
+        Assert.False(await dbContext.OrderStatusHistories.AnyAsync(history => history.OrderId == seeded.OrderId));
+    }
+
+    [Fact]
+    public async Task CancelAsync_WithMultipleReservedItems_ReleasesEveryVariantAndWritesOneAuditTrail()
+    {
+        // This fails if a cancellation omits a line, changes on-hand stock, or writes duplicate effects.
+        await using var factory = CreateFactory();
+        var seeded = await SeedReservedMultiItemOrderAsync(factory);
+
+        using var commandScope = factory.Services.CreateScope();
+        var service = CreateService(
+            commandScope,
+            seeded.OwnerId,
+            [Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()],
+            new ThrowingCheckpointHook("not-reached"));
+
+        var result = await service.CancelAsync(
+            seeded.OrderId,
+            new CancelOrderRequest(Reason: "Customer requested cancellation"),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        using var assertionScope = factory.Services.CreateScope();
+        var dbContext = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var order = await dbContext.Orders.AsNoTracking().SingleAsync(order => order.Id == seeded.OrderId);
+        var inventories = await dbContext.Inventories.AsNoTracking()
+            .Where(inventory => inventory.ProductVariantId == seeded.FirstVariantId || inventory.ProductVariantId == seeded.SecondVariantId)
+            .ToDictionaryAsync(inventory => inventory.ProductVariantId);
+        var releases = await dbContext.InventoryTransactions.AsNoTracking()
+            .Where(transaction => transaction.ReferenceId == seeded.OrderId && transaction.Type == InventoryTransactionType.Release)
+            .OrderBy(transaction => transaction.ProductVariantId)
+            .ToListAsync();
+        var histories = await dbContext.OrderStatusHistories.AsNoTracking()
+            .Where(history => history.OrderId == seeded.OrderId)
+            .ToListAsync();
+
+        Assert.Equal(OrderStatus.Cancelled, order.Status);
+        Assert.Equal(0, inventories[seeded.FirstVariantId].ReservedQuantity);
+        Assert.Equal(0, inventories[seeded.SecondVariantId].ReservedQuantity);
+        Assert.Equal(5, inventories[seeded.FirstVariantId].OnHandQuantity);
+        Assert.Equal(3, inventories[seeded.SecondVariantId].OnHandQuantity);
+        var releasesByVariantId = releases.ToDictionary(release => release.ProductVariantId);
+        AssertRelease(releasesByVariantId[seeded.FirstVariantId], seeded.OrderId, seeded.FirstVariantId, 2);
+        AssertRelease(releasesByVariantId[seeded.SecondVariantId], seeded.OrderId, seeded.SecondVariantId, 1);
+        var history = Assert.Single(histories);
+        Assert.Equal(OrderStatus.PendingPayment, history.FromStatus);
+        Assert.Equal(OrderStatus.Cancelled, history.ToStatus);
+        Assert.Equal(OrderStatusHistoryActorType.Customer, history.ActorType);
+        Assert.Equal(seeded.OwnerId, history.ActorUserId);
+        Assert.Equal(OrderCancellationReasonCode.CustomerRequested, history.ReasonCode);
+    }
+
+    [Fact]
     public void OrderCommandService_IsScopedAndResolvesWithProductionDependencies()
     {
         using var factory = CreateFactory();
@@ -181,6 +270,65 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         return (userId, productVariant.Id);
     }
 
+    private static async Task<SeededCancellableOrder> SeedReservedMultiItemOrderAsync(
+        WebApplicationFactory<Program> factory)
+    {
+        var ownerId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var firstProductId = Guid.NewGuid();
+        var secondProductId = Guid.NewGuid();
+        var firstVariantId = Guid.NewGuid();
+        var secondVariantId = Guid.NewGuid();
+
+        using (var seedScope = factory.Services.CreateScope())
+        {
+            var dbContext = seedScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+            await dbContext.Database.MigrateAsync();
+
+            var firstProduct = new Product(firstProductId, "Cancellation rollback product A", "Integration test product", CatalogStatus.Active, FixedNow);
+            var secondProduct = new Product(secondProductId, "Cancellation rollback product B", "Integration test product", CatalogStatus.Active, FixedNow);
+            var firstVariant = new ProductVariant(firstVariantId, firstProductId, $"CAN-{Guid.NewGuid():N}"[..16], "Variant A", 10m, CatalogStatus.Active, FixedNow);
+            var secondVariant = new ProductVariant(secondVariantId, secondProductId, $"CAN-{Guid.NewGuid():N}"[..16], "Variant B", 20m, CatalogStatus.Active, FixedNow);
+            var order = new Order(orderId, ownerId, 40m, FixedNow.Add(ReservationDuration), FixedNow);
+
+            dbContext.AddRange(
+                new User(ownerId, $"{ownerId:N}@example.com", $"{ownerId:N}@example.com", "test-password-hash", UserRole.Customer, FixedNow),
+                firstProduct,
+                secondProduct,
+                firstVariant,
+                secondVariant,
+                new Inventory(Guid.NewGuid(), firstVariantId, initialOnHand: 5, FixedNow),
+                new Inventory(Guid.NewGuid(), secondVariantId, initialOnHand: 3, FixedNow),
+                order,
+                new OrderItem(Guid.NewGuid(), orderId, firstVariantId, quantity: 2, unitPrice: 10m),
+                new OrderItem(Guid.NewGuid(), orderId, secondVariantId, quantity: 1, unitPrice: 20m),
+                new InventoryTransaction(Guid.NewGuid(), firstVariantId, InventoryTransactionType.Reserve, 0, 2, InventoryReferenceType.Order, orderId, null, FixedNow),
+                new InventoryTransaction(Guid.NewGuid(), secondVariantId, InventoryTransactionType.Reserve, 0, 1, InventoryReferenceType.Order, orderId, null, FixedNow));
+            await dbContext.SaveChangesAsync();
+        }
+
+        using (var reservationScope = factory.Services.CreateScope())
+        {
+            var store = reservationScope.ServiceProvider.GetRequiredService<IOrderCommandStore>();
+            await using var transaction = await store.BeginTransactionAsync(CancellationToken.None);
+            Assert.Equal(InventoryReservationResult.Reserved, await store.TryReserveAsync(firstVariantId, 2, FixedNow, CancellationToken.None));
+            Assert.Equal(InventoryReservationResult.Reserved, await store.TryReserveAsync(secondVariantId, 1, FixedNow, CancellationToken.None));
+            await transaction.CommitAsync(CancellationToken.None);
+        }
+
+        return new SeededCancellableOrder(orderId, ownerId, firstVariantId, secondVariantId);
+    }
+
+    private static void AssertRelease(InventoryTransaction transaction, Guid orderId, Guid variantId, int quantity)
+    {
+        Assert.Equal(variantId, transaction.ProductVariantId);
+        Assert.Equal(InventoryTransactionType.Release, transaction.Type);
+        Assert.Equal(0, transaction.OnHandQuantityDelta);
+        Assert.Equal(-quantity, transaction.ReservedQuantityDelta);
+        Assert.Equal(InventoryReferenceType.Order, transaction.ReferenceType);
+        Assert.Equal(orderId, transaction.ReferenceId);
+    }
+
     private WebApplicationFactory<Program> CreateFactory() =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             builder.ConfigureAppConfiguration((_, configuration) =>
@@ -223,4 +371,10 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
             return Task.CompletedTask;
         }
     }
+
+    private sealed record SeededCancellableOrder(
+        Guid OrderId,
+        Guid OwnerId,
+        Guid FirstVariantId,
+        Guid SecondVariantId);
 }

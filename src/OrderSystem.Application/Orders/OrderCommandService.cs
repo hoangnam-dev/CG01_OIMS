@@ -249,6 +249,10 @@ public sealed class OrderCommandService(
         throw new InvalidOperationException(
           $"Unable to release the inventory reservation for Product Variant '{item.ProductVariantId}'.");
       }
+
+      await operationHook.ReachAsync(
+        OrderOperationCheckpoints.AfterCancellationRelease,
+        cancellationToken);
     }
 
     order.Cancel(now);
