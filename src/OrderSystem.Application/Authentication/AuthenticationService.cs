@@ -40,10 +40,8 @@ public sealed class AuthenticationService(
 
         if (!await store.TryCreateUserAsync(user, cancellationToken))
         {
-            return ApplicationResult.Failure<UserDto>(new(
-                ApplicationErrorKind.Conflict,
-                "REGISTRATION_CONFLICT",
-                "The registration identity is unavailable."));
+            return ApplicationResult.Failure<UserDto>(
+                ApplicationErrors.Authentication.RegistrationConflict.Create());
         }
 
         return ApplicationResult.Success(ToUserDto(user));
@@ -90,10 +88,8 @@ public sealed class AuthenticationService(
     {
         if (string.IsNullOrWhiteSpace(refreshToken))
         {
-            return ApplicationResult.Failure<AuthenticationSession>(new(
-                ApplicationErrorKind.Unauthorized,
-                "INVALID_REFRESH_TOKEN",
-                "The refresh token is invalid."));
+            return ApplicationResult.Failure<AuthenticationSession>(
+                ApplicationErrors.Authentication.InvalidRefreshToken.Create());
         }
 
         var now = clock.UtcNow;
@@ -108,10 +104,8 @@ public sealed class AuthenticationService(
             rotation.User is null ||
             rotation.RefreshTokenExpiresAt is null)
         {
-            return ApplicationResult.Failure<AuthenticationSession>(new(
-                ApplicationErrorKind.Unauthorized,
-                "INVALID_REFRESH_TOKEN",
-                "The refresh token is invalid."));
+            return ApplicationResult.Failure<AuthenticationSession>(
+                ApplicationErrors.Authentication.InvalidRefreshToken.Create());
         }
 
         return ApplicationResult.Success(CreateTokenResponse(
@@ -148,18 +142,13 @@ public sealed class AuthenticationService(
 
         return errors.Count == 0
             ? null
-            : new(
-                ApplicationErrorKind.Validation,
-                "VALIDATION_FAILED",
-                "One or more validation errors occurred.",
-                errors);
+            : ApplicationErrors.ValidationFailed.Create(validationErrors: errors);
     }
 
     private static ApplicationResult<AuthenticationSession> InvalidCredentials() =>
-        ApplicationResult.Failure<AuthenticationSession>(new(
-            ApplicationErrorKind.Unauthorized,
-            "UNAUTHORIZED",
-            "The email or password is invalid."));
+        ApplicationResult.Failure<AuthenticationSession>(
+            ApplicationErrors.Unauthorized.Create(
+                message: "The email or password is invalid."));
 
     private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
 

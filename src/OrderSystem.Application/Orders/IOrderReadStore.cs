@@ -22,4 +22,9 @@ public interface IOrderReadStore
         OrderReadScope scope,
         Guid? currentUserId,
         CancellationToken cancellationToken);
+
+    Task<PagedResult<OrderStatusHistoryDto>?> ListStatusHistoryAsync(
+        Guid orderId,
+        OrderStatusHistoryListRequest request,
+        CancellationToken cancellationToken);
 }

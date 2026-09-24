@@ -22,6 +22,8 @@ public sealed class OrderSystemDbContext(DbContextOptions<OrderSystemDbContext> 
 
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
 
+    public DbSet<OrderStatusHistory> OrderStatusHistories => Set<OrderStatusHistory>();
+
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

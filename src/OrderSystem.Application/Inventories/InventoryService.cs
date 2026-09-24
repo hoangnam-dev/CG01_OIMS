@@ -120,21 +120,12 @@ public sealed class InventoryService(IInventoryStore store, IClock clock, IIdGen
 
     private static ApplicationResult<T> ValidationFailure<T>(
         IReadOnlyDictionary<string, string[]> errors) =>
-        ApplicationResult.Failure<T>(new(
-            ApplicationErrorKind.Validation,
-            "VALIDATION_FAILED",
-            "One or more validation errors occurred.",
-            errors));
+        ApplicationResult.Failure<T>(
+            ApplicationErrors.ValidationFailed.Create(validationErrors: errors));
 
     private static ApplicationResult<T> InventoryNotFound<T>() =>
-        ApplicationResult.Failure<T>(new(
-            ApplicationErrorKind.NotFound,
-            "INVENTORY_NOT_FOUND",
-            "Inventory was not found."));
+        ApplicationResult.Failure<T>(ApplicationErrors.Inventories.NotFound.Create());
 
     private static ApplicationResult<T> InventoryInvariantViolation<T>() =>
-        ApplicationResult.Failure<T>(new(
-            ApplicationErrorKind.Conflict,
-            "INVENTORY_INVARIANT_VIOLATION",
-            "The adjustment would leave Inventory in an invalid state."));
+        ApplicationResult.Failure<T>(ApplicationErrors.Inventories.InvariantViolation.Create());
 }

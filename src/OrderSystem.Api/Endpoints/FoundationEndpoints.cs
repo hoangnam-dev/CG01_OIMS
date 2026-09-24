@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using OrderSystem.Application.Common.Diagnostics;
+using OrderSystem.Application.Common.Results;
 using OrderSystem.Api.Contracts;
 
 namespace OrderSystem.Api.Endpoints;
@@ -37,11 +38,11 @@ public static class FoundationEndpoints
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Validation failed",
-                Detail = "One or more validation errors occurred.",
+                Detail = ApplicationErrors.ValidationFailed.DefaultMessage,
                 Type = "https://oims.example/problems/validation-failed",
                 Instance = context.Request.Path
             };
-            problem.Extensions["code"] = "VALIDATION_FAILED";
+            problem.Extensions["code"] = ApplicationErrors.ValidationFailed.Code;
             problem.Extensions["message"] = problem.Detail;
             problem.Extensions["traceId"] = context.TraceIdentifier;
             problem.Extensions["correlationId"] = context.TraceIdentifier;

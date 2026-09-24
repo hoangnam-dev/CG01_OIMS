@@ -160,7 +160,7 @@ public sealed class OrderReadApiTests(PostgreSqlFixture postgres)
     }
 
     [Fact]
-    public async Task OpenApi_ExposesOnlyOrderReadOperations()
+    public async Task OpenApi_ExposesOrderReadCreateCancelAndStatusHistoryOperations()
     {
         await using var factory = CreateFactory();
         using var client = factory.CreateClient();
@@ -168,15 +168,87 @@ public sealed class OrderReadApiTests(PostgreSqlFixture postgres)
         using var response = await client.GetAsync("/openapi/v1.json");
 
         response.EnsureSuccessStatusCode();
+
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         var paths = document.RootElement.GetProperty("paths");
-        Assert.True(paths.TryGetProperty("/api/orders", out var listPath));
-        Assert.True(listPath.TryGetProperty("get", out _));
-        Assert.False(listPath.TryGetProperty("post", out _));
+
+        Assert.True(paths.TryGetProperty("/api/orders", out var ordersPath));
+        Assert.True(ordersPath.TryGetProperty("get", out _));
+        Assert.True(ordersPath.TryGetProperty("post", out var createOperation));
+
         Assert.True(paths.TryGetProperty("/api/orders/{id}", out var detailPath));
         Assert.True(detailPath.TryGetProperty("get", out _));
         Assert.False(detailPath.TryGetProperty("post", out _));
-        Assert.False(paths.TryGetProperty("/api/orders/{id}/cancel", out _));
+
+        Assert.True(paths.TryGetProperty("/api/orders/{id}/cancel", out var cancelPath));
+        Assert.True(cancelPath.TryGetProperty("post", out var cancelOperation));
+        var idempotencyKeyParameter = createOperation
+            .GetProperty("parameters")
+            .EnumerateArray()
+            .Single(p =>
+                p.GetProperty("name").GetString() == "Idempotency-Key" &&
+                p.GetProperty("in").GetString() == "header"
+            );
+
+        Assert.True(idempotencyKeyParameter.GetProperty("required").GetBoolean());
+
+        var schema = idempotencyKeyParameter.GetProperty("schema");
+        Assert.Equal("string", schema.GetProperty("type").GetString());
+        Assert.Equal("uuid", schema.GetProperty("format").GetString());
+
+        var responses = createOperation.GetProperty("responses");
+        foreach (var expectedStatus in new[] { "201", "400", "401", "403", "404", "409", "500" })
+        {
+            Assert.True(
+                responses.TryGetProperty(expectedStatus, out _),
+                $"Create Order OpenAPI contract must document HTTP {expectedStatus}.");
+        }
+
+        var cancelRequestBody = cancelOperation.GetProperty("requestBody");
+        Assert.True(cancelRequestBody.GetProperty("required").GetBoolean());
+
+        var cancelContent = cancelRequestBody
+            .GetProperty("content")
+            .GetProperty("application/json");
+
+        Assert.True(cancelContent.TryGetProperty("schema", out _));
+
+        var cancelResponses = cancelOperation.GetProperty("responses");
+        foreach (var expectedStatus in new[] { "200", "400", "401", "403", "404", "409", "500" })
+        {
+            Assert.True(
+                cancelResponses.TryGetProperty(expectedStatus, out _),
+                $"Cancel Order OpenAPI contract must document HTTP {expectedStatus}.");
+        }
+
+        Assert.True(paths.TryGetProperty("/api/orders/{id}/status-history", out var historyPath));
+        Assert.True(historyPath.TryGetProperty("get", out var historyOperation));
+        Assert.False(historyPath.TryGetProperty("post", out _));
+
+        var historyParameters = historyOperation
+            .GetProperty("parameters")
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Contains(historyParameters, parameter =>
+            parameter.GetProperty("name").GetString() == "id" &&
+            parameter.GetProperty("in").GetString() == "path");
+
+        Assert.Contains(historyParameters, parameter =>
+            parameter.GetProperty("name").GetString() == "page" &&
+            parameter.GetProperty("in").GetString() == "query");
+
+        Assert.Contains(historyParameters, parameter =>
+            parameter.GetProperty("name").GetString() == "pageSize" &&
+            parameter.GetProperty("in").GetString() == "query");
+
+        var historyResponses = historyOperation.GetProperty("responses");
+        foreach (var expectedStatus in new[] { "200", "400", "401", "403", "404" })
+        {
+            Assert.True(
+                historyResponses.TryGetProperty(expectedStatus, out _),
+                $"Order status history OpenAPI contract must document HTTP {expectedStatus}.");
+        }
     }
 
     private WebApplicationFactory<Program> CreateFactory() =>

@@ -7,9 +7,17 @@ public sealed record CreateOrderItemRequest(Guid ProductVariantId, int Quantity)
 
 public sealed record CreateOrderRequest(IReadOnlyList<CreateOrderItemRequest> Items);
 
+public sealed record CancelOrderRequest(
+    OrderCancellationReasonCode? ReasonCode = null,
+    string? Reason = null);
+
 public sealed record OrderListRequest(
     int Page = 1,
     int PageSize = 20,
     OrderStatus? Status = null,
     SortDirection SortDirection = SortDirection.Descending,
     Guid? UserId = null);
+
+public sealed record OrderStatusHistoryListRequest(
+    int Page = 1,
+    int PageSize = 50);
