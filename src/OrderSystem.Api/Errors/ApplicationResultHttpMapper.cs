@@ -44,49 +44,22 @@ public static class ApplicationResultHttpMapper
             : AuthenticationRequired(context);
 
     public static IResult AuthenticationRequired(HttpContext context) =>
-        AccessProblem(
-            context,
-            StatusCodes.Status401Unauthorized,
-            "Unauthorized",
-            "UNAUTHORIZED",
-            "Authentication is required.");
+        ToProblem(context, ApplicationErrors.Unauthorized.Create());
 
     public static IResult AccessForbidden(HttpContext context) =>
-        AccessProblem(
+        ToProblem(
             context,
-            StatusCodes.Status403Forbidden,
-            "Forbidden",
-            "FORBIDDEN",
-            "The authenticated user is not authorized to access this resource.");
+            ApplicationErrors.Forbidden.Create(
+                message: "The authenticated user is not authorized to access this resource."));
 
     public static IResult InvalidUuid(HttpContext context, string fieldName) =>
-        ToProblem(context, new(
-            ApplicationErrorKind.Validation,
-            "VALIDATION_FAILED",
-            "One or more validation errors occurred.",
-            new Dictionary<string, string[]>(StringComparer.Ordinal)
-            {
-                [fieldName] = ["A valid UUID is required."]
-            }));
-
-    private static IResult AccessProblem(
-        HttpContext context,
-        int status,
-        string title,
-        string code,
-        string message)
-    {
-        var problem = new ProblemDetails
-        {
-            Status = status,
-            Title = title,
-            Detail = message,
-            Type = $"https://oims.example/problems/{ToProblemSlug(code)}",
-            Instance = context.Request.Path
-        };
-        AddExtensions(context, problem, code, message);
-        return Results.Problem(problem);
-    }
+        ToProblem(
+            context,
+            ApplicationErrors.ValidationFailed.Create(
+                validationErrors: new Dictionary<string, string[]>(StringComparer.Ordinal)
+                {
+                    [fieldName] = ["A valid UUID is required."]
+                }));
 
     private static void AddExtensions(HttpContext context, ProblemDetails problem, string code, string message)
     {

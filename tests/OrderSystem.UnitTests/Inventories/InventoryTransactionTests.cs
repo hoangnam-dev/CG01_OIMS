@@ -95,8 +95,6 @@ public sealed class InventoryTransactionTests
 
     [Theory]
     [InlineData(InventoryTransactionType.Receipt)]
-    [InlineData(InventoryTransactionType.Reserve)]
-    [InlineData(InventoryTransactionType.Release)]
     [InlineData(InventoryTransactionType.Issue)]
     public void Constructor_WithDefinedButUnsupportedType_ThrowsArgumentException(
         InventoryTransactionType unsupportedType)
@@ -386,5 +384,70 @@ public sealed class InventoryTransactionTests
 
         Assert.Equal(-5, transaction.OnHandQuantityDelta);
         Assert.Equal(0, transaction.ReservedQuantityDelta);
+    }
+
+    [Fact]
+    public void Constructor_ReserveWithPositiveReservedDeltaAndOrderReference_CreatesTransaction()
+    {
+        // Arrange
+        var id = Guid.NewGuid();
+        var productVariantId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var createdAt = DateTimeOffset.UtcNow;
+
+        // Act
+        var transaction = new InventoryTransaction(
+            id,
+            productVariantId,
+            InventoryTransactionType.Reserve,
+            onHandQuantityDelta: 0,
+            reservedQuantityDelta: 2,
+            referenceType: InventoryReferenceType.Order,
+            referenceId: orderId,
+            reason: null,
+            createdAt
+        );
+
+        // Assert
+        Assert.Equal(id, transaction.Id);
+        Assert.Equal(productVariantId, transaction.ProductVariantId);
+        Assert.Equal(InventoryTransactionType.Reserve, transaction.Type);
+        Assert.Equal(0, transaction.OnHandQuantityDelta);
+        Assert.Equal(2, transaction.ReservedQuantityDelta);
+        Assert.Equal(InventoryReferenceType.Order, transaction.ReferenceType);
+        Assert.Equal(orderId, transaction.ReferenceId);
+        Assert.Null(transaction.Reason);
+        Assert.Equal(createdAt, transaction.CreatedAt);
+    }
+
+    [Fact]
+    public void Constructor_ReleaseWithNegativeReservedDeltaAndOrderReference_CreatesTransaction()
+    {
+        // Arrange
+        var id = Guid.NewGuid();
+        var productVariantId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var createdAt = DateTimeOffset.UtcNow;
+
+        // Act
+        var transaction = new InventoryTransaction(
+            id,
+            productVariantId,
+            InventoryTransactionType.Release,
+            onHandQuantityDelta: 0,
+            reservedQuantityDelta: -2,
+            referenceType: InventoryReferenceType.Order,
+            referenceId: orderId,
+            reason: null,
+            createdAt);
+
+        // Assert
+        Assert.Equal(InventoryTransactionType.Release, transaction.Type);
+        Assert.Equal(0, transaction.OnHandQuantityDelta);
+        Assert.Equal(-2, transaction.ReservedQuantityDelta);
+        Assert.Equal(InventoryReferenceType.Order, transaction.ReferenceType);
+        Assert.Equal(orderId, transaction.ReferenceId);
+        Assert.Null(transaction.Reason);
+        Assert.Equal(createdAt, transaction.CreatedAt);
     }
 }

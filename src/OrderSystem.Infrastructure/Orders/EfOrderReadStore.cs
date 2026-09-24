@@ -50,6 +50,50 @@ internal sealed class EfOrderReadStore(OrderSystemDbContext dbContext) : IOrderR
         return order.ToDto(itemsByOrderId.GetValueOrDefault(order.Id, []));
     }
 
+    public async Task<PagedResult<OrderStatusHistoryDto>?> ListStatusHistoryAsync(
+        Guid orderId,
+        OrderStatusHistoryListRequest request,
+        CancellationToken cancellationToken
+    )
+    {
+        var orderExists = await dbContext.Orders.AsNoTracking().AnyAsync(o => o.Id == orderId, cancellationToken);
+
+        if (!orderExists)
+        {
+            return null;
+        }
+
+        var history = dbContext.OrderStatusHistories.AsNoTracking().Where(h => h.OrderId == orderId);
+
+        var totalCount = await history.LongCountAsync(cancellationToken);
+        var totalPage = (int)Math.Ceiling(totalCount / (double)request.PageSize);
+        var offset = (long)(request.Page - 1) *  request.PageSize;
+
+        if(offset >= totalCount)
+        {
+            return new([], request.Page, request.PageSize, totalCount, totalPage);
+        }
+
+        var items = await history.OrderByDescending(h => h.OccurredAt)
+            .ThenByDescending(h => h.Id)
+            .Skip((int)offset)
+            .Take(request.PageSize)
+            .Select(h => new OrderStatusHistoryDto(
+                h.Id,
+                h.OrderId,
+                h.FromStatus,
+                h.ToStatus,
+                h.ActorType,
+                h.ActorUserId,
+                h.ReasonCode,
+                h.Reason,
+                h.OccurredAt
+            ))
+            .ToArrayAsync(cancellationToken);
+
+        return new(items, request.Page, request.PageSize, totalCount, totalPage);
+    }
+
     private static IQueryable<Order> ApplyFilters(
         IQueryable<Order> orders,
         OrderListRequest request,

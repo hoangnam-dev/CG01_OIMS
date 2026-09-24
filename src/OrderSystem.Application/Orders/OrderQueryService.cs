@@ -65,6 +65,46 @@ public sealed class OrderQueryService(IOrderReadStore store, ICurrentUser curren
             : ApplicationResult.Success(order);
     }
 
+    public async Task<ApplicationResult<PagedResult<OrderStatusHistoryDto>>> ListStatusHistoryAsync(
+        Guid orderId,
+        OrderStatusHistoryListRequest request,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!currentUser.IsAuthenticated ||
+        currentUser.UserId is not { } userId ||
+        userId == Guid.Empty ||
+        currentUser.Role is not UserRole.Admin)
+        {
+            return ApplicationResult.Failure<PagedResult<OrderStatusHistoryDto>>(
+                currentUser.IsAuthenticated
+                    ? ApplicationErrors.Forbidden.Create(
+                        message: "Only administrators may read Order status history.")
+                    : ApplicationErrors.Unauthorized.Create());
+        }
+
+        if (orderId == Guid.Empty)
+        {
+            return ValidationFailure<PagedResult<OrderStatusHistoryDto>>(
+                new Dictionary<string, string[]>(StringComparer.Ordinal)
+                {
+                    ["id"] = ["Order ID is required."]
+                });
+        }
+
+        var validation = OrderRequestValidators.ValidateStatusHistory(request);
+        if (!validation.IsValid)
+        {
+            return ValidationFailure<PagedResult<OrderStatusHistoryDto>>(validation.Errors);
+        }
+
+        var page = await store.ListStatusHistoryAsync(orderId, request, cancellationToken);
+
+        return page is null
+            ? ApplicationResult.Failure<PagedResult<OrderStatusHistoryDto>>(ApplicationErrors.Orders.NotFound.Create())
+            : ApplicationResult.Success(page);
+    }
+
     private CallerResolution<T> ResolveCaller<T>()
     {
         if (!currentUser.IsAuthenticated || currentUser.UserId is not { } userId || userId == Guid.Empty || currentUser.Role is not { } role)
@@ -81,29 +121,19 @@ public sealed class OrderQueryService(IOrderReadStore store, ICurrentUser curren
     }
 
     private static ApplicationResult<T> ValidationFailure<T>(IReadOnlyDictionary<string, string[]> errors) =>
-        ApplicationResult.Failure<T>(new(
-            ApplicationErrorKind.Validation,
-            "VALIDATION_FAILED",
-            "One or more validation errors occurred.",
-            errors));
+        ApplicationResult.Failure<T>(
+            ApplicationErrors.ValidationFailed.Create(validationErrors: errors));
 
     private static ApplicationResult<T> Unauthorized<T>() =>
-        ApplicationResult.Failure<T>(new(
-            ApplicationErrorKind.Unauthorized,
-            "UNAUTHORIZED",
-            "Authentication is required."));
+        ApplicationResult.Failure<T>(ApplicationErrors.Unauthorized.Create());
 
     private static ApplicationResult<T> Forbidden<T>() =>
-        ApplicationResult.Failure<T>(new(
-            ApplicationErrorKind.Forbidden,
-            "FORBIDDEN",
-            "The current user role is not authorized to read Orders."));
+        ApplicationResult.Failure<T>(
+            ApplicationErrors.Forbidden.Create(
+                message: "The current user role is not authorized to read Orders."));
 
     private static ApplicationResult<OrderDto> OrderNotFound() =>
-        ApplicationResult.Failure<OrderDto>(new(
-            ApplicationErrorKind.NotFound,
-            "ORDER_NOT_FOUND",
-            "The Order was not found."));
+        ApplicationResult.Failure<OrderDto>(ApplicationErrors.Orders.NotFound.Create());
 
     private sealed record CallerResolution<T>(OrderReadScope? Scope, Guid? UserId, ApplicationError? Error);
 }

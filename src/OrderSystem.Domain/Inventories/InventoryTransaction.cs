@@ -78,7 +78,9 @@ public sealed class InventoryTransaction
     {
         DomainGuard.DefinedEnum(type);
 
-        if (type != InventoryTransactionType.Adjustment)
+        if (type is not InventoryTransactionType.Adjustment
+            and not InventoryTransactionType.Reserve
+            and not InventoryTransactionType.Release)
         {
             throw new ArgumentException($"Inventory transaction type '{type}' is not supported yet.");
         }
@@ -122,6 +124,30 @@ public sealed class InventoryTransaction
                     throw new ArgumentException("Reserved quantity delta must be zero for adjustment transactions.", nameof(reservedQuantityDelta));
                 }
                 break;
+            case InventoryTransactionType.Reserve:
+                if (onHandQuantityDelta != 0)
+                {
+                    throw new ArgumentException("On-hand quantity delta must be zero for reserve transactions.", nameof(onHandQuantityDelta));
+                }
+
+                if (reservedQuantityDelta <= 0)
+                {
+                    throw new ArgumentException("Reserved quantity delta must be greater than zero for reserve transactions.", nameof(reservedQuantityDelta));
+                }
+
+                break;
+            case InventoryTransactionType.Release:
+                if (onHandQuantityDelta != 0)
+                {
+                    throw new ArgumentException("On-hand quantity delta must be zero for release transactions.", nameof(onHandQuantityDelta));
+                }
+
+                if (reservedQuantityDelta >= 0)
+                {
+                    throw new ArgumentException("Reserved quantity delta must be less than zero for release transactions.", nameof(reservedQuantityDelta));
+                }
+
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(type), "Unsupported inventory transaction type.");
         }
@@ -156,6 +182,30 @@ public sealed class InventoryTransaction
                 {
                     throw new ArgumentException("Reference type and ID must be null for adjustment transactions.");
                 }
+                break;
+            case InventoryTransactionType.Reserve:
+                if (referenceType != InventoryReferenceType.Order)
+                {
+                    throw new ArgumentException("Reference type must be 'Order' for reserve transactions.", nameof(referenceType));
+                }
+
+                if (referenceId is null)
+                {
+                    throw new ArgumentException("Reference ID is required for reserve transactions.", nameof(referenceId));
+                }
+
+                break;
+            case InventoryTransactionType.Release:
+                if (referenceType != InventoryReferenceType.Order)
+                {
+                    throw new ArgumentException("Reference type must be 'Order' for release transactions.", nameof(referenceType));
+                }
+
+                if (referenceId is null)
+                {
+                    throw new ArgumentException("Reference ID is required for release transactions.", nameof(referenceId));
+                }
+
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(type), "Unsupported inventory transaction type.");

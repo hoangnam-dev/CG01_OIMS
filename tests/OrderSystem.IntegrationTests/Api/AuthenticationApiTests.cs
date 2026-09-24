@@ -285,11 +285,24 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
             firstClient.SendAsync(firstRequest),
             secondClient.SendAsync(secondRequest));
 
-        Assert.Equal(1, responses.Count(response => response.StatusCode == HttpStatusCode.OK));
-        Assert.Equal(1, responses.Count(response => response.StatusCode == HttpStatusCode.Unauthorized));
-        foreach (var response in responses)
+        try
         {
-            response.Dispose();
+            var statuses = string.Join(", ", responses.Select(response =>
+                $"{(int)response.StatusCode} {response.StatusCode}"));
+
+            Assert.True(
+                responses.Count(response => response.StatusCode == HttpStatusCode.OK) == 1,
+                $"Exactly one concurrent refresh must succeed. Actual statuses: {statuses}");
+            Assert.True(
+                responses.Count(response => response.StatusCode == HttpStatusCode.Unauthorized) == 1,
+                $"Exactly one concurrent refresh must be rejected. Actual statuses: {statuses}");
+        }
+        finally
+        {
+            foreach (var response in responses)
+            {
+                response.Dispose();
+            }
         }
     }
 
