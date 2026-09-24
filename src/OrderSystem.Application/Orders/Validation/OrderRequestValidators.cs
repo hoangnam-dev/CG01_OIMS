@@ -97,4 +97,25 @@ public static class OrderRequestValidators
             }
         }
     }
+    public static ValidationResult<OrderStatusHistoryListRequest> ValidateStatusHistory(
+    OrderStatusHistoryListRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+
+        if (request.Page < 1)
+        {
+            errors["page"] = ["Page must be at least 1."];
+        }
+
+        if (request.PageSize is < 1 or > 100)
+        {
+            errors["pageSize"] = ["Page size must be between 1 and 100."];
+        }
+
+        return errors.Count == 0
+            ? ValidationResult.Success(request)
+            : ValidationResult.Failure<OrderStatusHistoryListRequest>(errors);
+    }
 }

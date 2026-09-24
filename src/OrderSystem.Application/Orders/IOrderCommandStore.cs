@@ -48,5 +48,6 @@ public interface IOrderCommandStore
   void AddOrder(Order order);
   void AddOrderItems(IEnumerable<OrderItem> items);
   void AddInventoryTransactions(IEnumerable<InventoryTransaction> transactions);
+  void AddOrderStatusHistory(OrderStatusHistory history);
   Task SaveChangesAsync(CancellationToken cancellationToken);
 }

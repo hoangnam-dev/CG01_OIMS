@@ -36,6 +36,21 @@ public static class OrderEndpoints
             .ProducesProblem(StatusCodes.Status404NotFound)
             .ProducesProblem(StatusCodes.Status409Conflict)
             .ProducesProblem(StatusCodes.Status500InternalServerError);
+        orders.MapPost("/{id}/cancel", CancelOrder)
+            .Produces<ApiResponse<OrderDto>>()
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status500InternalServerError);
+        orders.MapGet("/{id}/status-history", ListStatusHistory)
+            .RequireAuthorization(AuthorizationPolicies.Admin)
+            .Produces<ApiResponse<OrderStatusHistoryDto[]>>()
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound);
 
         return endpoints;
     }
@@ -115,6 +130,65 @@ public static class OrderEndpoints
             : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
     }
 
+    private static async Task<IResult> CancelOrder(
+        string id,
+        CancelOrderRequest request,
+        HttpContext context,
+        OrderCommandService service,
+        CancellationToken cancellationToken
+    )
+    {
+        if(!Guid.TryParse(id, out var orderId) || orderId == Guid.Empty)
+        {
+            return ApplicationResultHttpMapper.InvalidUuid(context, "id");
+        }
+
+        var result = await service.CancelAsync(orderId, request, cancellationToken);
+
+        return result.IsSuccess
+            ? Results.Ok(new ApiResponse<OrderDto>(result.Value!, null))
+            : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
+    }
+
+    private static async Task<IResult> ListStatusHistory(
+        string id,
+        [AsParameters] OrderStatusHistoryParameters parameters,
+        HttpContext context,
+        OrderQueryService  service,
+        CancellationToken cancellationToken
+    )
+    {
+        if(!Guid.TryParse(id, out var orderId) || orderId == Guid.Empty)
+        {
+            return ApplicationResultHttpMapper.InvalidUuid(context, "id");
+        }
+
+        var result = await service.ListStatusHistoryAsync(
+            orderId,
+            new(
+                parameters.Page ?? 1,
+                parameters.PageSize ?? 50
+            ),
+            cancellationToken
+        );
+        if (!result.IsSuccess)
+        {
+            return ApplicationResultHttpMapper.ToProblem(context, result.Error!);
+        }
+
+        var page = result.Value!;
+
+        return Results.Ok(new ApiResponse<OrderStatusHistoryDto[]>(
+            page.Items.ToArray(),
+            new(new PaginationMetadata(
+                page.Page,
+                page.PageSize,
+                page.TotalCount,
+                page.TotalPages
+            ))
+        ));
+    }
+
     private static OrderStatus? ParseStatus(string? status) =>
         string.IsNullOrWhiteSpace(status)
             ? null
@@ -140,5 +214,14 @@ public static class OrderEndpoints
         public string? SortDirection { get; init; }
 
         public Guid? UserId { get; init; }
+    }
+
+    public sealed class OrderStatusHistoryParameters
+    {
+        [FromQuery(Name = "page")]
+        public int? Page { get; init; }
+
+        [FromQuery(Name = "pageSize")]
+        public int? PageSize { get; init; }
     }
 }

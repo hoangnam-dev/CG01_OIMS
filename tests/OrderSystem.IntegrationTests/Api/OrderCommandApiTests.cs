@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using OrderSystem.Application.Authentication;
+using OrderSystem.Application.Orders;
 using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Orders;
 using OrderSystem.Domain.Products;
@@ -20,6 +21,180 @@ namespace OrderSystem.IntegrationTests.Api;
 [Collection(PostgreSqlCollectionDefinition.Name)]
 public sealed class OrderCommandApiTests(PostgreSqlFixture postgres)
 {
+    [Fact]
+    [Trait("Requirement", "API-ORD-011")]
+    public async Task CancelOrder_AdminWithValidReason_CancelsReleasesAndWritesAuthenticatedHistory()
+    {
+        // Arrange
+        await using var factory = CreateFactory();
+        var owner = await CreateUserAsync(factory, UserRole.Customer);
+        var admin = await CreateUserAsync(factory, UserRole.Admin);
+        var variant = await SeedVariantWithInventoryAsync(factory, onHandQuantity: 2, currentPrice: 12.50m);
+        var orderId = await SeedReservedPendingOrderAsync(factory, owner.Id, variant.Id, quantity: 1, unitPrice: 12.50m);
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, admin.Email);
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/orders/{orderId}/cancel")
+        {
+            Content = JsonContent.Create(new
+            {
+                reasonCode = "FraudSuspected",
+                reason = "  Risk review case FR-2026-0042  ",
+                actorType = "Customer",
+                actorUserId = owner.Id
+            })
+        };
+
+        // Act
+        using var response = await client.SendAsync(request);
+
+        // Assert HTTP contract.
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(orderId, document.RootElement.GetProperty("data").GetProperty("id").GetGuid());
+        Assert.Equal("Cancelled", document.RootElement.GetProperty("data").GetProperty("status").GetString());
+
+        // Assert durable state using a fresh DbContext.
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var order = await dbContext.Orders.AsNoTracking().SingleAsync(order => order.Id == orderId);
+        var inventory = await dbContext.Inventories.AsNoTracking().SingleAsync(inventory => inventory.ProductVariantId == variant.Id);
+        var releaseLedger = await dbContext.InventoryTransactions.AsNoTracking().SingleAsync(transaction =>
+            transaction.ReferenceId == orderId &&
+            transaction.ProductVariantId == variant.Id &&
+            transaction.Type == InventoryTransactionType.Release);
+        var history = await dbContext.OrderStatusHistories.AsNoTracking().SingleAsync(history => history.OrderId == orderId);
+
+        Assert.Equal(OrderStatus.Cancelled, order.Status);
+        Assert.Equal(2, inventory.OnHandQuantity);
+        Assert.Equal(0, inventory.ReservedQuantity);
+        Assert.Equal(0, releaseLedger.OnHandQuantityDelta);
+        Assert.Equal(-1, releaseLedger.ReservedQuantityDelta);
+        Assert.Equal(OrderStatus.PendingPayment, history.FromStatus);
+        Assert.Equal(OrderStatus.Cancelled, history.ToStatus);
+        Assert.Equal(OrderStatusHistoryActorType.Admin, history.ActorType);
+        Assert.Equal(admin.Id, history.ActorUserId);
+        Assert.Equal(OrderCancellationReasonCode.FraudSuspected, history.ReasonCode);
+        Assert.Equal("Risk review case FR-2026-0042", history.Reason);
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-ORD-012")]
+    public async Task CancelOrder_CustomerOwner_UsesServerOwnedReasonCodeAndAuthenticatedActor()
+    {
+        await using var factory = CreateFactory();
+        var customer = await CreateUserAsync(factory, UserRole.Customer);
+        var variant = await SeedVariantWithInventoryAsync(factory, onHandQuantity: 1, currentPrice: 10m);
+        var orderId = await SeedReservedPendingOrderAsync(factory, customer.Id, variant.Id, quantity: 1, unitPrice: 10m);
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, customer.Email);
+        using var request = CreateCancelRequest(orderId, new { reason = "  Changed my mind  " });
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var history = await dbContext.OrderStatusHistories.AsNoTracking().SingleAsync(entry => entry.OrderId == orderId);
+        Assert.Equal(OrderStatusHistoryActorType.Customer, history.ActorType);
+        Assert.Equal(customer.Id, history.ActorUserId);
+        Assert.Equal(OrderCancellationReasonCode.CustomerRequested, history.ReasonCode);
+        Assert.Equal("Changed my mind", history.Reason);
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("FraudSuspected", null)]
+    [InlineData(null, " ")]
+    [Trait("Requirement", "API-ORD-010")]
+    public async Task CancelOrder_AdminWithoutRequiredReason_ReturnsValidationWithoutMutation(string? reasonCode, string? reason)
+    {
+        await using var factory = CreateFactory();
+        var owner = await CreateUserAsync(factory, UserRole.Customer);
+        var admin = await CreateUserAsync(factory, UserRole.Admin);
+        var variant = await SeedVariantWithInventoryAsync(factory, onHandQuantity: 1, currentPrice: 10m);
+        var orderId = await SeedReservedPendingOrderAsync(factory, owner.Id, variant.Id, quantity: 1, unitPrice: 10m);
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, admin.Email);
+        using var request = CreateCancelRequest(orderId, new { reasonCode, reason });
+
+        using var response = await client.SendAsync(request);
+
+        await AssertCancelRejectedWithoutMutationAsync(
+            factory, response, orderId, variant.Id, OrderStatus.PendingPayment, HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-ORD-015")]
+    public async Task CancelOrder_CustomerSuppliedReasonCode_ReturnsValidationWithoutMutation()
+    {
+        await using var factory = CreateFactory();
+        var customer = await CreateUserAsync(factory, UserRole.Customer);
+        var variant = await SeedVariantWithInventoryAsync(factory, onHandQuantity: 1, currentPrice: 10m);
+        var orderId = await SeedReservedPendingOrderAsync(factory, customer.Id, variant.Id, quantity: 1, unitPrice: 10m);
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, customer.Email);
+        using var request = CreateCancelRequest(orderId, new { reasonCode = "FraudSuspected", reason = "Untrusted classification" });
+
+        using var response = await client.SendAsync(request);
+
+        await AssertCancelRejectedWithoutMutationAsync(
+            factory, response, orderId, variant.Id, OrderStatus.PendingPayment, HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+    }
+
+    [Fact]
+    public async Task CancelOrder_CustomerDoesNotOwnOrder_ReturnsNotFoundWithoutMutation()
+    {
+        await using var factory = CreateFactory();
+        var owner = await CreateUserAsync(factory, UserRole.Customer);
+        var otherCustomer = await CreateUserAsync(factory, UserRole.Customer);
+        var variant = await SeedVariantWithInventoryAsync(factory, onHandQuantity: 1, currentPrice: 10m);
+        var orderId = await SeedReservedPendingOrderAsync(factory, owner.Id, variant.Id, quantity: 1, unitPrice: 10m);
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, otherCustomer.Email);
+        using var request = CreateCancelRequest(orderId, new { reason = "Attempted IDOR" });
+
+        using var response = await client.SendAsync(request);
+
+        await AssertCancelRejectedWithoutMutationAsync(
+            factory, response, orderId, variant.Id, OrderStatus.PendingPayment, HttpStatusCode.NotFound, "ORDER_NOT_FOUND");
+    }
+
+    [Fact]
+    public async Task CancelOrder_ConfirmedOrder_ReturnsConflictWithoutMutation()
+    {
+        await using var factory = CreateFactory();
+        var customer = await CreateUserAsync(factory, UserRole.Customer);
+        var variant = await SeedVariantWithInventoryAsync(factory, onHandQuantity: 1, currentPrice: 10m);
+        var orderId = await SeedReservedPendingOrderAsync(
+            factory, customer.Id, variant.Id, quantity: 1, unitPrice: 10m, status: OrderStatus.Confirmed);
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, customer.Email);
+        using var request = CreateCancelRequest(orderId, new { reason = "Too late" });
+
+        using var response = await client.SendAsync(request);
+
+        await AssertCancelRejectedWithoutMutationAsync(
+            factory, response, orderId, variant.Id, OrderStatus.Confirmed, HttpStatusCode.Conflict, "ORDER_NOT_CANCELLABLE");
+    }
+
+    [Fact]
+    public async Task CancelOrder_AdminWithOverlongReason_ReturnsValidationWithoutMutation()
+    {
+        await using var factory = CreateFactory();
+        var owner = await CreateUserAsync(factory, UserRole.Customer);
+        var admin = await CreateUserAsync(factory, UserRole.Admin);
+        var variant = await SeedVariantWithInventoryAsync(factory, onHandQuantity: 1, currentPrice: 10m);
+        var orderId = await SeedReservedPendingOrderAsync(factory, owner.Id, variant.Id, quantity: 1, unitPrice: 10m);
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, admin.Email);
+        using var request = CreateCancelRequest(orderId, new { reasonCode = "Other", reason = new string('x', 501) });
+
+        using var response = await client.SendAsync(request);
+
+        await AssertCancelRejectedWithoutMutationAsync(
+            factory, response, orderId, variant.Id, OrderStatus.PendingPayment, HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+    }
+
     [Fact]
     [Trait("Requirement", "API-ORD-001")]
     [Trait("Requirement", "API-ORD-009")]
@@ -246,6 +421,86 @@ public sealed class OrderCommandApiTests(PostgreSqlFixture postgres)
         }
 
         return request;
+    }
+
+    private static HttpRequestMessage CreateCancelRequest(Guid orderId, object payload) =>
+        new(HttpMethod.Post, $"/api/orders/{orderId}/cancel")
+        {
+            Content = JsonContent.Create(payload)
+        };
+
+    private static async Task<Guid> SeedReservedPendingOrderAsync(
+        WebApplicationFactory<Program> factory,
+        Guid ownerId,
+        Guid productVariantId,
+        int quantity,
+        decimal unitPrice,
+        OrderStatus status = OrderStatus.PendingPayment)
+    {
+        await MigrateDatabaseAsync(factory);
+        var now = DateTimeOffset.UtcNow;
+        var orderId = Guid.NewGuid();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+            var order = new Order(orderId, ownerId, quantity * unitPrice, now.AddMinutes(15), now);
+            if (status == OrderStatus.Confirmed)
+            {
+                order.Confirm(now.AddTicks(1));
+            }
+
+            dbContext.AddRange(
+                order,
+                new OrderItem(Guid.NewGuid(), orderId, productVariantId, quantity, unitPrice),
+                new InventoryTransaction(
+                    Guid.NewGuid(),
+                    productVariantId,
+                    InventoryTransactionType.Reserve,
+                    onHandQuantityDelta: 0,
+                    reservedQuantityDelta: quantity,
+                    InventoryReferenceType.Order,
+                    orderId,
+                    reason: null,
+                    now));
+            await dbContext.SaveChangesAsync();
+        }
+
+        using var reservationScope = factory.Services.CreateScope();
+        var store = reservationScope.ServiceProvider.GetRequiredService<IOrderCommandStore>();
+        await using var transaction = await store.BeginTransactionAsync(CancellationToken.None);
+        var result = await store.TryReserveAsync(productVariantId, quantity, now, CancellationToken.None);
+        Assert.Equal(InventoryReservationResult.Reserved, result);
+        await transaction.CommitAsync(CancellationToken.None);
+
+        return orderId;
+    }
+
+    private static async Task AssertCancelRejectedWithoutMutationAsync(
+        WebApplicationFactory<Program> factory,
+        HttpResponseMessage response,
+        Guid orderId,
+        Guid productVariantId,
+        OrderStatus expectedOrderStatus,
+        HttpStatusCode expectedHttpStatus,
+        string expectedErrorCode)
+    {
+        Assert.Equal(expectedHttpStatus, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(expectedErrorCode, document.RootElement.GetProperty("code").GetString());
+
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var order = await dbContext.Orders.AsNoTracking().SingleAsync(order => order.Id == orderId);
+        var inventory = await dbContext.Inventories.AsNoTracking().SingleAsync(inventory => inventory.ProductVariantId == productVariantId);
+        var releaseCount = await dbContext.InventoryTransactions.AsNoTracking().CountAsync(transaction =>
+            transaction.ReferenceId == orderId && transaction.Type == InventoryTransactionType.Release);
+        var historyCount = await dbContext.OrderStatusHistories.AsNoTracking().CountAsync(history => history.OrderId == orderId);
+
+        Assert.Equal(expectedOrderStatus, order.Status);
+        Assert.Equal(1, inventory.ReservedQuantity);
+        Assert.Equal(0, releaseCount);
+        Assert.Equal(0, historyCount);
     }
 
     private static async Task AssertFailureAndNoCreateEffectsAsync(

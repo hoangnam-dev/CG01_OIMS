@@ -20,3 +20,14 @@ public sealed record OrderDto(
     IReadOnlyList<OrderItemDto> Items,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
+
+public sealed record OrderStatusHistoryDto(
+    Guid Id,
+    Guid OrderId,
+    OrderStatus FromStatus,
+    OrderStatus ToStatus,
+    OrderStatusHistoryActorType ActorType,
+    Guid? ActorUserId,
+    OrderCancellationReasonCode ReasonCode,
+    string? Reason,
+    DateTimeOffset OccurredAt);

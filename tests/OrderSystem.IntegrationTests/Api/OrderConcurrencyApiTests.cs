@@ -219,10 +219,16 @@ public sealed class OrderConcurrencyApiTests(PostgreSqlFixture postgres)
     await LoginAndSetBearerAsync(secondClient, seededOrder.Email, TestCredentials.ValidPassword);
     using var firstRequest = new HttpRequestMessage(
       HttpMethod.Post,
-      $"/api/orders/{seededOrder.OrderId}/cancel");
+      $"/api/orders/{seededOrder.OrderId}/cancel")
+    {
+      Content = JsonContent.Create(new { reason = "Customer requested cancellation" })
+    };
     using var secondRequest = new HttpRequestMessage(
       HttpMethod.Post,
-      $"/api/orders/{seededOrder.OrderId}/cancel");
+      $"/api/orders/{seededOrder.OrderId}/cancel")
+    {
+      Content = JsonContent.Create(new { reason = "Customer requested cancellation" })
+    };
 
     // Act
     var responses = await SendAtCheckpointAsync(
@@ -267,6 +273,14 @@ public sealed class OrderConcurrencyApiTests(PostgreSqlFixture postgres)
     var releaseLedger = Assert.Single(releaseLedgers);
     Assert.Equal(0, releaseLedger.OnHandQuantityDelta);
     Assert.Equal(-1, releaseLedger.ReservedQuantityDelta);
+
+    var histories = await dbContext.OrderStatusHistories
+      .AsNoTracking()
+      .Where(history => history.OrderId == seededOrder.OrderId)
+      .ToListAsync();
+    var history = Assert.Single(histories);
+    Assert.Equal(OrderStatusHistoryActorType.Customer, history.ActorType);
+    Assert.Equal(OrderCancellationReasonCode.CustomerRequested, history.ReasonCode);
   }
 
   private static async Task<Guid> SeedInventoryAsync(

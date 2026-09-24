@@ -210,6 +210,12 @@ internal sealed class EfOrderCommandStore(OrderSystemDbContext dbContext) : IOrd
         dbContext.InventoryTransactions.AddRange(transactions);
     }
 
+    public void AddOrderStatusHistory(OrderStatusHistory history)
+    {
+        ArgumentNullException.ThrowIfNull(history);
+        dbContext.OrderStatusHistories.Add(history);
+    }
+
     public async Task SaveChangesAsync(CancellationToken cancellationToken)
     {
         await dbContext.SaveChangesAsync(cancellationToken);

@@ -65,6 +65,46 @@ public sealed class OrderQueryService(IOrderReadStore store, ICurrentUser curren
             : ApplicationResult.Success(order);
     }
 
+    public async Task<ApplicationResult<PagedResult<OrderStatusHistoryDto>>> ListStatusHistoryAsync(
+        Guid orderId,
+        OrderStatusHistoryListRequest request,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!currentUser.IsAuthenticated ||
+        currentUser.UserId is not { } userId ||
+        userId == Guid.Empty ||
+        currentUser.Role is not UserRole.Admin)
+        {
+            return ApplicationResult.Failure<PagedResult<OrderStatusHistoryDto>>(
+                currentUser.IsAuthenticated
+                    ? ApplicationErrors.Forbidden.Create(
+                        message: "Only administrators may read Order status history.")
+                    : ApplicationErrors.Unauthorized.Create());
+        }
+
+        if (orderId == Guid.Empty)
+        {
+            return ValidationFailure<PagedResult<OrderStatusHistoryDto>>(
+                new Dictionary<string, string[]>(StringComparer.Ordinal)
+                {
+                    ["id"] = ["Order ID is required."]
+                });
+        }
+
+        var validation = OrderRequestValidators.ValidateStatusHistory(request);
+        if (!validation.IsValid)
+        {
+            return ValidationFailure<PagedResult<OrderStatusHistoryDto>>(validation.Errors);
+        }
+
+        var page = await store.ListStatusHistoryAsync(orderId, request, cancellationToken);
+
+        return page is null
+            ? ApplicationResult.Failure<PagedResult<OrderStatusHistoryDto>>(ApplicationErrors.Orders.NotFound.Create())
+            : ApplicationResult.Success(page);
+    }
+
     private CallerResolution<T> ResolveCaller<T>()
     {
         if (!currentUser.IsAuthenticated || currentUser.UserId is not { } userId || userId == Guid.Empty || currentUser.Role is not { } role)
