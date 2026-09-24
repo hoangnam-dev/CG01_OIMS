@@ -18,6 +18,192 @@ public sealed class OrderCommandStoreTests(PostgreSqlFixture postgres)
     private static readonly DateTimeOffset FixedNow = new(2026, 9, 22, 10, 0, 0, TimeSpan.Zero);
 
     [Fact]
+    public async Task TryReserveAsync_WhenUncommittedTransactionIsDisposed_RollsBackReservation()
+    {
+        // Arrange
+        await using var factory = CreateFactory();
+        var reservedAt = FixedNow.AddMinutes(1);
+        var productVariantId = await SeedInventoryAsync(factory, onHandQuantity: 1, FixedNow);
+
+        // Act: dispose the uncommitted transaction without calling RollbackAsync explicitly.
+        using (var commandScope = factory.Services.CreateScope())
+        {
+            var store = commandScope.ServiceProvider.GetRequiredService<IOrderCommandStore>();
+
+            await using (var transaction = await store.BeginTransactionAsync(CancellationToken.None))
+            {
+                var result = await store.TryReserveAsync(
+                    productVariantId,
+                    quantity: 1,
+                    reservedAt,
+                    CancellationToken.None);
+
+                Assert.Equal(InventoryReservationResult.Reserved, result);
+            }
+        }
+
+        // Assert: disposing an uncommitted Npgsql transaction leaves no durable reservation.
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDbContext = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var inventory = await assertionDbContext.Inventories
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.ProductVariantId == productVariantId);
+
+        Assert.Equal(1, inventory.OnHandQuantity);
+        Assert.Equal(0, inventory.ReservedQuantity);
+        Assert.Equal(1, inventory.AvailableQuantity);
+        Assert.Equal(FixedNow, inventory.UpdatedAt);
+    }
+
+    [Fact]
+    public async Task AddOrderGraphAndSaveChangesAsync_WhenTransactionCommits_PersistsOrderItemsAndReserveLedgers()
+    {
+        // Arrange
+        await using var factory = CreateFactory();
+        var ownerId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var firstVariantId = Guid.Parse("10000000-0000-0000-0000-000000000001");
+        var secondVariantId = Guid.Parse("10000000-0000-0000-0000-000000000002");
+
+        using (var setupScope = factory.Services.CreateScope())
+        {
+            var setupDbContext = setupScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+            await setupDbContext.Database.MigrateAsync();
+
+            var product = new Product(
+                Guid.NewGuid(),
+                $"Order persistence product {Guid.NewGuid():N}",
+                "Integration test product",
+                CatalogStatus.Active,
+                FixedNow);
+
+            setupDbContext.AddRange(
+                new User(
+                    ownerId,
+                    $"{ownerId:N}@example.com",
+                    $"{ownerId:N}@example.com",
+                    "test-password-hash",
+                    UserRole.Customer,
+                    FixedNow),
+                product,
+                new ProductVariant(
+                    firstVariantId,
+                    product.Id,
+                    $"ORD-{Guid.NewGuid():N}"[..16],
+                    "First variant",
+                    5.50m,
+                    CatalogStatus.Active,
+                    FixedNow),
+                new ProductVariant(
+                    secondVariantId,
+                    product.Id,
+                    $"ORD-{Guid.NewGuid():N}"[..16],
+                    "Second variant",
+                    10.25m,
+                    CatalogStatus.Active,
+                    FixedNow));
+
+            await setupDbContext.SaveChangesAsync();
+        }
+
+        var order = new Order(
+            orderId,
+            ownerId,
+            totalAmount: 21.25m,
+            reservationExpiresAt: FixedNow.AddMinutes(15),
+            createdAt: FixedNow);
+        var items = new[]
+        {
+            new OrderItem(Guid.NewGuid(), orderId, firstVariantId, quantity: 2, unitPrice: 5.50m),
+            new OrderItem(Guid.NewGuid(), orderId, secondVariantId, quantity: 1, unitPrice: 10.25m)
+        };
+        var reserveLedgers = new[]
+        {
+            new InventoryTransaction(
+                Guid.NewGuid(),
+                firstVariantId,
+                InventoryTransactionType.Reserve,
+                onHandQuantityDelta: 0,
+                reservedQuantityDelta: 2,
+                InventoryReferenceType.Order,
+                orderId,
+                reason: null,
+                FixedNow),
+            new InventoryTransaction(
+                Guid.NewGuid(),
+                secondVariantId,
+                InventoryTransactionType.Reserve,
+                onHandQuantityDelta: 0,
+                reservedQuantityDelta: 1,
+                InventoryReferenceType.Order,
+                orderId,
+                reason: null,
+                FixedNow)
+        };
+
+        // Act
+        using (var commandScope = factory.Services.CreateScope())
+        {
+            var store = commandScope.ServiceProvider.GetRequiredService<IOrderCommandStore>();
+            await using var transaction = await store.BeginTransactionAsync(CancellationToken.None);
+
+            store.AddOrder(order);
+            store.AddOrderItems(items);
+            store.AddInventoryTransactions(reserveLedgers);
+            await store.SaveChangesAsync(CancellationToken.None);
+            await transaction.CommitAsync(CancellationToken.None);
+        }
+
+        // Assert durable state using a fresh DbContext after the transaction commits.
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDbContext = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var persistedOrder = await assertionDbContext.Orders
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == orderId);
+        var persistedItems = await assertionDbContext.OrderItems
+            .AsNoTracking()
+            .Where(candidate => candidate.OrderId == orderId)
+            .OrderBy(candidate => candidate.ProductVariantId)
+            .ToListAsync();
+        var persistedLedgers = await assertionDbContext.InventoryTransactions
+            .AsNoTracking()
+            .Where(candidate =>
+                candidate.ReferenceType == InventoryReferenceType.Order &&
+                candidate.ReferenceId == orderId)
+            .OrderBy(candidate => candidate.ProductVariantId)
+            .ToListAsync();
+
+        Assert.Equal(ownerId, persistedOrder.UserId);
+        Assert.Equal(OrderStatus.PendingPayment, persistedOrder.Status);
+        Assert.Equal(21.25m, persistedOrder.TotalAmount);
+        Assert.Equal(FixedNow.AddMinutes(15), persistedOrder.ReservationExpiresAt);
+        Assert.Equal(FixedNow, persistedOrder.CreatedAt);
+        Assert.Equal(FixedNow, persistedOrder.UpdatedAt);
+
+        Assert.Collection(
+            persistedItems,
+            first =>
+            {
+                Assert.Equal(firstVariantId, first.ProductVariantId);
+                Assert.Equal(2, first.Quantity);
+                Assert.Equal(5.50m, first.UnitPrice);
+                Assert.Equal(11m, first.LineTotal);
+            },
+            second =>
+            {
+                Assert.Equal(secondVariantId, second.ProductVariantId);
+                Assert.Equal(1, second.Quantity);
+                Assert.Equal(10.25m, second.UnitPrice);
+                Assert.Equal(10.25m, second.LineTotal);
+            });
+
+        Assert.Collection(
+            persistedLedgers,
+            first => AssertReserveLedger(first, orderId, firstVariantId, quantity: 2),
+            second => AssertReserveLedger(second, orderId, secondVariantId, quantity: 1));
+    }
+
+    [Fact]
     public async Task TryReleaseAsync_WithReservedStock_ReturnsTrueAndDecreasesOnlyReservedQuantity()
     {
         // Arrange
@@ -104,8 +290,8 @@ public sealed class OrderCommandStoreTests(PostgreSqlFixture postgres)
     {
         // Arrange
         await using var factory = CreateFactory();
-        var firstVariantId = Guid.Parse("00000000-0000-0000-0000-000000000001");
-        var secondVariantId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        var firstVariantId = Guid.Parse("20000000-0000-0000-0000-000000000001");
+        var secondVariantId = Guid.Parse("20000000-0000-0000-0000-000000000002");
         var orderId = Guid.NewGuid();
 
         using (var setupScope = factory.Services.CreateScope())
@@ -267,6 +453,22 @@ public sealed class OrderCommandStoreTests(PostgreSqlFixture postgres)
 
         Assert.Equal(InventoryReservationResult.Reserved, result);
         await transaction.CommitAsync(CancellationToken.None);
+    }
+
+    private static void AssertReserveLedger(
+        InventoryTransaction transaction,
+        Guid orderId,
+        Guid productVariantId,
+        int quantity)
+    {
+        Assert.Equal(productVariantId, transaction.ProductVariantId);
+        Assert.Equal(InventoryTransactionType.Reserve, transaction.Type);
+        Assert.Equal(0, transaction.OnHandQuantityDelta);
+        Assert.Equal(quantity, transaction.ReservedQuantityDelta);
+        Assert.Equal(InventoryReferenceType.Order, transaction.ReferenceType);
+        Assert.Equal(orderId, transaction.ReferenceId);
+        Assert.Null(transaction.Reason);
+        Assert.Equal(FixedNow, transaction.CreatedAt);
     }
 
     private static async Task<Guid> SeedInventoryAsync(

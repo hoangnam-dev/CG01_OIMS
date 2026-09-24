@@ -36,8 +36,7 @@ internal sealed class EfOrderCommandStore(OrderSystemDbContext dbContext) : IOrd
     {
         if (dbContext.Database.CurrentTransaction is not null)
         {
-            throw new InvalidOperationException(
-                "A database transaction is already active.");
+            throw new InvalidOperationException("A database transaction is already active.");
         }
 
         var transaction = await dbContext.Database.BeginTransactionAsync(
@@ -75,8 +74,7 @@ internal sealed class EfOrderCommandStore(OrderSystemDbContext dbContext) : IOrd
         }
         if (dbContext.Database.CurrentTransaction is null)
         {
-            throw new InvalidOperationException(
-                "An active database transaction is required to reserve inventory.");
+            throw new InvalidOperationException("An active database transaction is required to reserve inventory.");
         }
         var affectedRows = await dbContext.Inventories
           .Where(inventory =>
@@ -121,8 +119,7 @@ internal sealed class EfOrderCommandStore(OrderSystemDbContext dbContext) : IOrd
         }
         if (dbContext.Database.CurrentTransaction is null)
         {
-            throw new InvalidOperationException(
-                "An active database transaction is required to release inventory.");
+            throw new InvalidOperationException("An active database transaction is required to release inventory.");
         }
         var affectedRows = await dbContext.Inventories
           .Where(inventory =>
@@ -154,8 +151,7 @@ internal sealed class EfOrderCommandStore(OrderSystemDbContext dbContext) : IOrd
         }
         if (dbContext.Database.CurrentTransaction is null)
         {
-            throw new InvalidOperationException(
-                "An active database transaction is required to lock an order for update.");
+            throw new InvalidOperationException("An active database transaction is required to lock an order for update.");
         }
         return scope switch
         {
@@ -198,21 +194,24 @@ internal sealed class EfOrderCommandStore(OrderSystemDbContext dbContext) : IOrd
 
     public void AddOrder(Order order)
     {
-
+        ArgumentNullException.ThrowIfNull(order);
+        dbContext.Orders.Add(order);
     }
 
     public void AddOrderItems(IEnumerable<OrderItem> items)
     {
-
+        ArgumentNullException.ThrowIfNull(items);
+        dbContext.OrderItems.AddRange(items);
     }
 
     public void AddInventoryTransactions(IEnumerable<InventoryTransaction> transactions)
     {
-
+        ArgumentNullException.ThrowIfNull(transactions);
+        dbContext.InventoryTransactions.AddRange(transactions);
     }
 
     public async Task SaveChangesAsync(CancellationToken cancellationToken)
     {
-
+        await dbContext.SaveChangesAsync(cancellationToken);
     }
 }
