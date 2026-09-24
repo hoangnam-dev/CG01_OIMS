@@ -7,7 +7,9 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderSystem.Application.Authentication;
+using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Orders;
 using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Orders;
@@ -21,6 +23,88 @@ namespace OrderSystem.IntegrationTests.Api;
 [Collection(PostgreSqlCollectionDefinition.Name)]
 public sealed class OrderCommandApiTests(PostgreSqlFixture postgres)
 {
+    [Fact]
+    [Trait("Requirement", "API-ORD-005")]
+    public async Task CreateOrder_WhenClientCancelsAfterCommit_PreservesCommittedReservation()
+    {
+        using var requestCancellation = new CancellationTokenSource();
+        var hook = new CancelRequestAfterCheckpointHook(
+            OrderOperationCheckpoints.AfterCreateCommit,
+            requestCancellation);
+        await using var factory = CreateFactory(hook);
+        var customer = await CreateUserAsync(factory, UserRole.Customer);
+        var variant = await SeedVariantWithInventoryAsync(factory, onHandQuantity: 2, currentPrice: 10m);
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, customer.Email);
+        using var request = CreateRequest(variant.Id, quantity: 1);
+
+        var requestTask = client.SendAsync(request, requestCancellation.Token);
+        await hook.Reached.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await requestTask);
+
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var order = await dbContext.Orders.AsNoTracking().SingleAsync(order => order.UserId == customer.Id);
+        var item = await dbContext.OrderItems.AsNoTracking().SingleAsync(item => item.OrderId == order.Id);
+        var inventory = await dbContext.Inventories.AsNoTracking().SingleAsync(inventory => inventory.ProductVariantId == variant.Id);
+        var reserveLedger = await dbContext.InventoryTransactions.AsNoTracking().SingleAsync(transaction =>
+            transaction.ReferenceId == order.Id && transaction.Type == InventoryTransactionType.Reserve);
+
+        Assert.Equal(OrderStatus.PendingPayment, order.Status);
+        Assert.Equal(variant.Id, item.ProductVariantId);
+        Assert.Equal(1, item.Quantity);
+        Assert.Equal(2, inventory.OnHandQuantity);
+        Assert.Equal(1, inventory.ReservedQuantity);
+        Assert.Equal(0, reserveLedger.OnHandQuantityDelta);
+        Assert.Equal(1, reserveLedger.ReservedQuantityDelta);
+        Assert.False(await dbContext.InventoryTransactions.AnyAsync(transaction =>
+            transaction.ReferenceId == order.Id && transaction.Type == InventoryTransactionType.Release));
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-ORD-008")]
+    public async Task CreateOrder_WhenVariantPriceChangesLater_KeepsHistoricalPriceSnapshot()
+    {
+        await using var factory = CreateFactory();
+        var customer = await CreateUserAsync(factory, UserRole.Customer);
+        var admin = await CreateUserAsync(factory, UserRole.Admin);
+        var variant = await SeedVariantWithInventoryAsync(factory, onHandQuantity: 3, currentPrice: 10m);
+        using var customerClient = factory.CreateClient();
+        await AuthenticateAsync(customerClient, customer.Email);
+        using var createRequest = CreateRequest(variant.Id, quantity: 2);
+
+        using var createResponse = await customerClient.SendAsync(createRequest);
+        createResponse.EnsureSuccessStatusCode();
+        using var createDocument = JsonDocument.Parse(await createResponse.Content.ReadAsStringAsync());
+        var orderId = createDocument.RootElement.GetProperty("data").GetProperty("id").GetGuid();
+
+        using var adminClient = factory.CreateClient();
+        await AuthenticateAsync(adminClient, admin.Email);
+        using var updateResponse = await adminClient.PutAsJsonAsync(
+            $"/api/product-variants/{variant.Id}",
+            new { name = "Order command API variant", currentPrice = 15m });
+        updateResponse.EnsureSuccessStatusCode();
+
+        using var getResponse = await customerClient.GetAsync($"/api/orders/{orderId}");
+        getResponse.EnsureSuccessStatusCode();
+        using var getDocument = JsonDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+        var orderData = getDocument.RootElement.GetProperty("data");
+        var item = Assert.Single(orderData.GetProperty("items").EnumerateArray());
+
+        Assert.Equal(20m, orderData.GetProperty("totalAmount").GetDecimal());
+        Assert.Equal(10m, item.GetProperty("unitPrice").GetDecimal());
+        Assert.Equal(20m, item.GetProperty("lineTotal").GetDecimal());
+
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var persistedVariant = await dbContext.ProductVariants.AsNoTracking().SingleAsync(candidate => candidate.Id == variant.Id);
+        var persistedItem = await dbContext.OrderItems.AsNoTracking().SingleAsync(candidate => candidate.OrderId == orderId);
+        Assert.Equal(15m, persistedVariant.CurrentPrice);
+        Assert.Equal(10m, persistedItem.UnitPrice);
+        Assert.Equal(20m, persistedItem.LineTotal);
+    }
+
     [Fact]
     [Trait("Requirement", "API-ORD-011")]
     public async Task CancelOrder_AdminWithValidReason_CancelsReleasesAndWritesAuthenticatedHistory()
@@ -364,10 +448,20 @@ public sealed class OrderCommandApiTests(PostgreSqlFixture postgres)
             "FORBIDDEN");
     }
 
-    private WebApplicationFactory<Program> CreateFactory() =>
+    private WebApplicationFactory<Program> CreateFactory(IOperationHook? operationHook = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddOimsTestConfiguration(
-                new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString))));
+                new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString)))
+                .ConfigureServices(services =>
+                {
+                    if (operationHook is null)
+                    {
+                        return;
+                    }
+
+                    services.RemoveAll<IOperationHook>();
+                    services.AddSingleton(operationHook);
+                }));
 
     private static async Task<TestUser> CreateUserAsync(WebApplicationFactory<Program> factory, UserRole role)
     {
@@ -542,6 +636,27 @@ public sealed class OrderCommandApiTests(PostgreSqlFixture postgres)
     }
 
     private sealed record TestUser(Guid Id, string Email);
+
+    private sealed class CancelRequestAfterCheckpointHook(
+        string targetCheckpoint,
+        CancellationTokenSource requestCancellation) : IOperationHook
+    {
+        private readonly TaskCompletionSource reached = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Reached => reached.Task;
+
+        public Task ReachAsync(string checkpoint, CancellationToken cancellationToken)
+        {
+            if (!string.Equals(checkpoint, targetCheckpoint, StringComparison.Ordinal))
+            {
+                return Task.CompletedTask;
+            }
+
+            reached.TrySetResult();
+            requestCancellation.Cancel();
+            throw new OperationCanceledException(cancellationToken);
+        }
+    }
 
     private sealed record SeededVariant(Guid Id);
 }
