@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using OrderSystem.Application.Orders;
 using OrderSystem.Domain.Inventories;
@@ -53,6 +54,30 @@ public sealed class OrderCommandStoreTests(PostgreSqlFixture postgres)
         Assert.Equal(0, inventory.ReservedQuantity);
         Assert.Equal(1, inventory.AvailableQuantity);
         Assert.Equal(FixedNow, inventory.UpdatedAt);
+    }
+
+    [Fact]
+    public async Task TryReserveAsync_UsesSingleConditionalParameterizedInventoryUpdate()
+    {
+        var sqlCapture = new SqlCaptureInterceptor();
+        await using var factory = CreateFactory(sqlCapture);
+        var variantId = await SeedInventoryAsync(factory, onHandQuantity: 2, FixedNow);
+        sqlCapture.Clear();
+
+        using var scope = factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<IOrderCommandStore>();
+        await using var transaction = await store.BeginTransactionAsync(CancellationToken.None);
+        var result = await store.TryReserveAsync(variantId, 1, FixedNow, CancellationToken.None);
+        await transaction.CommitAsync(CancellationToken.None);
+
+        Assert.Equal(InventoryReservationResult.Reserved, result);
+        var command = Assert.Single(sqlCapture.Commands, command =>
+            command.CommandText.Contains("UPDATE inventories", StringComparison.OrdinalIgnoreCase));
+        var sql = command.CommandText.ToLowerInvariant();
+        Assert.Contains("reserved_quantity", sql, StringComparison.Ordinal);
+        Assert.Contains("on_hand_quantity", sql, StringComparison.Ordinal);
+        Assert.Contains("reserved_quantity >=", sql, StringComparison.Ordinal);
+        Assert.Contains(command.ParameterNames, name => name.Contains("quantity", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -666,11 +691,23 @@ public sealed class OrderCommandStoreTests(PostgreSqlFixture postgres)
         return order;
     }
 
-    private WebApplicationFactory<Program> CreateFactory() =>
+    private WebApplicationFactory<Program> CreateFactory(SqlCaptureInterceptor? sqlCapture = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddOimsTestConfiguration(
                     new KeyValuePair<string, string?>(
                         "Database:ConnectionString",
-                        postgres.ConnectionString))));
+                        postgres.ConnectionString)))
+                .ConfigureServices(services =>
+                {
+                    if (sqlCapture is null)
+                    {
+                        return;
+                    }
+
+                    services.RemoveAll<DbContextOptions<OrderSystemDbContext>>();
+                    services.AddDbContext<OrderSystemDbContext>(options =>
+                        options.UseNpgsql(postgres.ConnectionString)
+                            .AddInterceptors(sqlCapture));
+                }));
 }
