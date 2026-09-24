@@ -1,7 +1,9 @@
 using Microsoft.AspNetCore.Mvc;
+using OrderSystem.Api.Authentication;
 using OrderSystem.Api.Contracts;
 using OrderSystem.Api.Errors;
 using OrderSystem.Application.Common.Models;
+using OrderSystem.Application.Common.Results;
 using OrderSystem.Application.Orders;
 using OrderSystem.Application.Orders.Contracts;
 using OrderSystem.Domain.Orders;
@@ -25,6 +27,15 @@ public static class OrderEndpoints
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status401Unauthorized)
             .ProducesProblem(StatusCodes.Status404NotFound);
+        orders.MapPost("", CreateOrder)
+            .RequireAuthorization(AuthorizationPolicies.Customer)
+            .Produces<ApiResponse<OrderDto>>(StatusCodes.Status201Created)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status500InternalServerError);
 
         return endpoints;
     }
@@ -68,6 +79,39 @@ public static class OrderEndpoints
         var result = await service.GetAsync(orderId, cancellationToken);
         return result.IsSuccess
             ? Results.Ok(new ApiResponse<OrderDto>(result.Value!, null))
+            : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
+    }
+
+    private static async Task<IResult> CreateOrder(
+        CreateOrderRequest request,
+        HttpContext context,
+        OrderCommandService service,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!context.Request.Headers.TryGetValue("Idempotency-Key", out var values) ||
+            values.Count != 1 ||
+            !Guid.TryParse(values[0], out var key) ||
+            key == Guid.Empty
+        )
+        {
+            return ApplicationResultHttpMapper.ToProblem(
+                context,
+                ApplicationErrors.ValidationFailed.Create(
+                    validationErrors: new Dictionary<string, string[]>
+                    {
+                        ["idempotencyKey"] = ["A single, non-empty UUID Idempotency-Key header is required"]
+                    }
+                )
+            );
+        }
+
+        var result = await service.CreateAsync(request, cancellationToken);
+
+        return result.IsSuccess
+            ? Results.Created(
+                $"/api/orders/{result.Value!.Id}",
+                new ApiResponse<OrderDto>(result.Value, null))
             : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
     }
 

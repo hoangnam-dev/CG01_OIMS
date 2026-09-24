@@ -159,6 +159,7 @@ builder.Services.AddSwaggerGen(options =>
     });
     options.OperationFilter<BearerSecurityOperationFilter>();
     options.OperationFilter<CorrelationIdOperationFilter>();
+    options.OperationFilter<IdempotencyKeyOperationFilter>();
 });
 
 var app = builder.Build();

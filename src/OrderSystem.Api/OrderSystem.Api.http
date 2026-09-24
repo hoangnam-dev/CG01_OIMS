@@ -23,3 +23,23 @@ Authorization: Bearer {{accessToken}}
 GET {{OrderSystem.Api_HostAddress}}/api/orders/{{orderId}}
 Accept: application/json
 Authorization: Bearer {{accessToken}}
+
+###
+
+@idempotencyKey = 11111111-1111-1111-1111-111111111111
+@productVariantId = replace-with-an-active-variant-id-that-has-stock
+
+POST {{OrderSystem.Api_HostAddress}}/api/orders
+Accept: application/json
+Authorization: Bearer {{accessToken}}
+Idempotency-Key: {{idempotencyKey}}
+Content-Type: application/json
+
+{
+  "items": [
+    {
+      "productVariantId": "{{productVariantId}}",
+      "quantity": 1
+    }
+  ]
+}
