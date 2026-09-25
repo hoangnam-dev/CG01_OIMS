@@ -127,7 +127,8 @@ internal sealed class EfAuthenticationStore(OrderSystemDbContext dbContext) : IA
             var descendant = await dbContext.RefreshTokens
                 .FromSqlInterpolated($"SELECT * FROM refresh_tokens WHERE id = {currentId.Value} FOR UPDATE")
                 .SingleAsync(cancellationToken);
-            descendant.Revoke(now);
+            var revokedAt = now < descendant.CreatedAt ? descendant.CreatedAt : now;
+            descendant.Revoke(revokedAt);
             currentId = descendant.ReplacedByTokenId;
         }
     }
