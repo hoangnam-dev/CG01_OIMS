@@ -44,15 +44,6 @@ public static class DependencyInjection
         services.AddScoped<InventoryService>();
         services.AddScoped<IOrderReadStore, EfOrderReadStore>();
 
-        services.AddScoped<OrderCommandService>(provider => new(
-            provider.GetRequiredService<IOrderCommandStore>(),
-            provider.GetRequiredService<ICurrentUser>(),
-            provider.GetRequiredService<IClock>(),
-            provider.GetRequiredService<IIdGenerator>(),
-            provider.GetRequiredService<IOrderReadStore>(),
-            provider.GetRequiredService<IOperationHook>(),
-            provider.GetRequiredService<IOptions<ReservationOptions>>().Value.Duration));
-
         services.AddScoped<OrderQueryService>();
         services.AddScoped<IAuthenticationStore, EfAuthenticationStore>();
         services.AddScoped<IRefreshTokenCleanupStore, EfRefreshTokenCleanupStore>();

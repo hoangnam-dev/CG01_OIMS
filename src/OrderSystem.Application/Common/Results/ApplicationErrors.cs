@@ -71,6 +71,24 @@ public static class ApplicationErrors
             "The adjustment would leave Inventory in an invalid state.");
     }
 
+    public static class Idempotency
+    {
+        public static readonly ApplicationErrorDefinition KeyReused = new(
+            ApplicationErrorKind.Conflict,
+            "IDEMPOTENCY_KEY_REUSED",
+            "The idempotency key was already used for a different request.");
+
+        public static readonly ApplicationErrorDefinition RequestProcessing = new(
+            ApplicationErrorKind.Conflict,
+            "IDEMPOTENCY_REQUEST_PROCESSING",
+            "The idempotent request is still being processed.");
+
+        public static readonly ApplicationErrorDefinition KeyExpired = new(
+            ApplicationErrorKind.Conflict,
+            "IDEMPOTENCY_KEY_EXPIRED",
+            "The replay guarantee for this idempotency key has expired.");
+    }
+
     public static class Orders
     {
         public static readonly ApplicationErrorDefinition NotFound = new(

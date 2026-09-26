@@ -9,12 +9,17 @@ using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 using Microsoft.IdentityModel.Tokens;
 using OrderSystem.Api.Authentication;
+using OrderSystem.Api.Contracts;
 using OrderSystem.Api.Diagnostics;
 using OrderSystem.Api.Endpoints;
 using OrderSystem.Api.Errors;
 using OrderSystem.Api.OpenApi;
 using OrderSystem.Application.Authentication;
+using OrderSystem.Application.Common.Clock;
+using OrderSystem.Application.Common.Diagnostics;
+using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Application.Common.Results;
+using OrderSystem.Application.Orders;
 using OrderSystem.Infrastructure;
 using OrderSystem.Infrastructure.Logging;
 using OrderSystem.Infrastructure.Configuration;
@@ -66,6 +71,16 @@ builder.Services.AddAuthorizationBuilder()
 builder.Services.AddHttpContextAccessor();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+builder.Services.AddSingleton<ICreateOrderResponseSnapshotSerializer, CreateOrderResponseSnapshotSerializer>();
+builder.Services.AddScoped<OrderCommandService>(provider => new(
+    provider.GetRequiredService<IOrderCommandStore>(),
+    provider.GetRequiredService<ICurrentUser>(),
+    provider.GetRequiredService<IClock>(),
+    provider.GetRequiredService<IIdGenerator>(),
+    provider.GetRequiredService<IOrderReadStore>(),
+    provider.GetRequiredService<ICreateOrderResponseSnapshotSerializer>(),
+    provider.GetRequiredService<IOperationHook>(),
+    provider.GetRequiredService<IOptions<ReservationOptions>>().Value.Duration));
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddOptions<AuthenticationWebOptions>()
     .Bind(builder.Configuration.GetRequiredSection(AuthenticationWebOptions.SectionName))

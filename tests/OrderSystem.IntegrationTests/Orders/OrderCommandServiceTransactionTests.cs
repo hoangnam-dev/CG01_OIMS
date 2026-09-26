@@ -36,11 +36,12 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         var service = CreateService(
             commandScope,
             userId,
-            [orderId, Guid.NewGuid(), Guid.NewGuid()],
+            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid()],
             new ThrowingCheckpointHook(OrderOperationCheckpoints.AfterInventoryReservation));
 
         // Act
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(
+            Guid.NewGuid(),
             new CreateOrderRequest([new(productVariantId, Quantity: 1)]),
             CancellationToken.None));
 
@@ -70,11 +71,12 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         var service = CreateService(
             commandScope,
             userId,
-            [orderId, Guid.NewGuid(), Guid.NewGuid()],
+            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid()],
             new ThrowingCheckpointHook(OrderOperationCheckpoints.AfterCreateCommit));
 
         // Act
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(
+            Guid.NewGuid(),
             new CreateOrderRequest([new(productVariantId, Quantity: 1)]),
             CancellationToken.None));
 
@@ -228,6 +230,7 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
             new FixedClock(FixedNow),
             new SequenceIdGenerator(generatedIds),
             scope.ServiceProvider.GetRequiredService<IOrderReadStore>(),
+            scope.ServiceProvider.GetRequiredService<ICreateOrderResponseSnapshotSerializer>(),
             operationHook,
             ReservationDuration);
 
