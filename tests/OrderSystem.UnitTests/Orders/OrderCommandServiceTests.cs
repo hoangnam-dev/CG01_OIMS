@@ -238,7 +238,8 @@ public sealed class OrderCommandServiceTests
         Assert.Equal(1, store.SaveChangesCalls);
         Assert.Equal(1, store.Transaction.CommitCalls);
         Assert.Equal(1, store.Transaction.DisposeCalls);
-        Assert.Equal([OrderOperationCheckpoints.BeforeInventoryReservation,
+        Assert.Equal([OrderOperationCheckpoints.BeforeIdempotencyClaim,
+            OrderOperationCheckpoints.BeforeInventoryReservation,
             OrderOperationCheckpoints.AfterInventoryReservation,
             OrderOperationCheckpoints.AfterCreateCommit], hook.Checkpoints);
         Assert.Equal(order.Id, readStore.LastOrderId);
@@ -697,6 +698,24 @@ public sealed class OrderCommandServiceTests
         {
             SaveChangesCalls++;
             return Task.CompletedTask;
+        }
+
+        public Task<IdempotencyClaimResult> TryClaimCreateOrderAsync(
+            CreateOrderIdempotencyClaim claim,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> TryCompleteCreateOrderAsync(
+            Guid idempotencyRequestId,
+            Guid resourceId,
+            short httpStatusCode,
+            string responseBodyJson,
+            DateTimeOffset completedAt,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
         }
     }
 

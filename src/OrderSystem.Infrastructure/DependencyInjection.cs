@@ -43,8 +43,6 @@ public static class DependencyInjection
         services.AddScoped<IInventoryStore, EfInventoryStore>();
         services.AddScoped<InventoryService>();
         services.AddScoped<IOrderReadStore, EfOrderReadStore>();
-        services.AddScoped<IOrderCommandStore, EfOrderCommandStore>();
-        services.AddScoped<IOrderReadStore, EfOrderReadStore>();
 
         services.AddScoped<OrderCommandService>(provider => new(
             provider.GetRequiredService<IOrderCommandStore>(),
@@ -55,7 +53,6 @@ public static class DependencyInjection
             provider.GetRequiredService<IOperationHook>(),
             provider.GetRequiredService<IOptions<ReservationOptions>>().Value.Duration));
 
-        services.AddScoped<OrderQueryService>();
         services.AddScoped<OrderQueryService>();
         services.AddScoped<IAuthenticationStore, EfAuthenticationStore>();
         services.AddScoped<IRefreshTokenCleanupStore, EfRefreshTokenCleanupStore>();

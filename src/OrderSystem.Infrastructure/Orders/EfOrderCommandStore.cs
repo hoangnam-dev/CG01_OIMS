@@ -1,6 +1,8 @@
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using OrderSystem.Application.Orders;
+using OrderSystem.Domain.Idempotency;
 using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Orders;
 using OrderSystem.Domain.Products;
@@ -219,5 +221,200 @@ internal sealed class EfOrderCommandStore(OrderSystemDbContext dbContext) : IOrd
     public async Task SaveChangesAsync(CancellationToken cancellationToken)
     {
         await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<IdempotencyClaimResult> TryClaimCreateOrderAsync(
+        CreateOrderIdempotencyClaim claim,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(claim);
+
+        var request = new IdempotencyRequest(
+            claim.Id,
+            claim.UserId,
+            IdempotencyOperation.CreateOrder,
+            claim.IdempotencyKey,
+            claim.RequestHash,
+            claim.CreatedAt,
+            claim.ExpiresAt,
+            claim.DeleteAfter
+        );
+
+        if (dbContext.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException("An active database transaction is required to claim an idempotency request.");
+        }
+
+        var operation = request.Operation.ToString();
+        var status = request.Status.ToString();
+
+        var affectedRows = await dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO idempotency_requests(
+                id,
+                user_id,
+                operation,
+                idempotency_key,
+                request_hash,
+                status,
+                created_at,
+                expires_at,
+                delete_after
+            )
+            VALUES(
+                {request.Id},
+                {request.UserId},
+                {operation},
+                {request.IdempotencyKey},
+                {request.RequestHash},
+                {status},
+                {request.CreatedAt},
+                {request.ExpiresAt},
+                {request.DeleteAfter}
+            )
+            ON CONFLICT (user_id, operation, idempotency_key)
+            DO NOTHING
+            """,
+            cancellationToken
+        );
+
+        if (affectedRows == 1)
+        {
+            return new IdempotencyClaimResult(IdempotencyClaimOutcome.Claimed);
+        }
+        if (affectedRows != 0)
+        {
+            throw new InvalidOperationException(
+                $"Claim insert affected an unexpected number of rows: {affectedRows}.");
+        }
+
+        var existing = await dbContext.IdempotencyRequests
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                candidate => candidate.UserId == request.UserId &&
+                candidate.Operation == request.Operation &&
+                candidate.IdempotencyKey == request.IdempotencyKey,
+                cancellationToken
+            );
+
+        if (existing is null)
+        {
+            throw new InvalidOperationException("The idempotency identity conflicted, but its persisted row could not be loaded.");
+        }
+
+        // Hash comparison must happen before status/expiry resolution
+        if (!existing.RequestHash.AsSpan().SequenceEqual(request.RequestHash))
+        {
+            return new IdempotencyClaimResult(IdempotencyClaimOutcome.HashConflict);
+        }
+        if (existing.Status == IdempotencyRequestStatus.Processing)
+        {
+            return new IdempotencyClaimResult(IdempotencyClaimOutcome.Processing);
+        }
+        if (existing.Status != IdempotencyRequestStatus.Completed)
+        {
+            throw new InvalidOperationException($"Unsupported persisted idempotency status '{existing.Status}'.");
+        }
+
+        // At exactly expires_at, replay is no longer allowed
+        if (request.CreatedAt >= existing.ExpiresAt)
+        {
+            return new IdempotencyClaimResult(IdempotencyClaimOutcome.Expired);
+        }
+
+        // A Completed CreateOrder row must contain a valid opaque response snapshot
+        if (existing.ResourceId is not { } resourceId ||
+            resourceId == Guid.Empty ||
+            existing.HttpStatusCode is not { } httpStatusCode ||
+            httpStatusCode != IdempotencyRequest.CreateOrderCompletedStatusCode ||
+            existing.ResponseBodyJson is not { } responseBodyJson ||
+            existing.CompletedAt is null
+        )
+        {
+            throw new InvalidOperationException("The completed idempotency request contains an invalid stored response");
+        }
+
+        return new IdempotencyClaimResult(
+            IdempotencyClaimOutcome.CompletedReplay,
+            new IdempotencyStoredResponse(
+                resourceId,
+                httpStatusCode,
+                responseBodyJson
+            )
+        );
+    }
+
+    public async Task<bool> TryCompleteCreateOrderAsync(
+        Guid idempotencyRequestId,
+        Guid resourceId,
+        short httpStatusCode,
+        string responseBodyJson,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken
+    )
+    {
+        if (idempotencyRequestId == Guid.Empty)
+        {
+            throw new ArgumentException("Idempotency request ID cannot be empty.", nameof(idempotencyRequestId));
+        }
+        if (resourceId == Guid.Empty)
+        {
+            throw new ArgumentException("Resource ID cannot be empty.", nameof(resourceId));
+        }
+        if (httpStatusCode != IdempotencyRequest.CreateOrderCompletedStatusCode)
+        {
+            throw new ArgumentOutOfRangeException(nameof(httpStatusCode), "Completed CreateOrder requests must store HTTP status 201.");
+        }
+        ArgumentNullException.ThrowIfNull(responseBodyJson);
+        if (Encoding.UTF8.GetByteCount(responseBodyJson) > IdempotencyRequest.MaximumResponseBodyBytes)
+        {
+            throw new ArgumentException("Response body exceeds the maximum UTF-8 size.", nameof(responseBodyJson));
+        }
+        if (dbContext.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException("An active database transaction is required to complete an idempotency request.");
+        }
+
+        var affectedRows = await dbContext.IdempotencyRequests
+            .Where(request => request.Id == idempotencyRequestId &&
+                request.Operation == IdempotencyOperation.CreateOrder &&
+                request.Status == IdempotencyRequestStatus.Processing &&
+                request.CreatedAt <= completedAt
+            )
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(request => request.Status, IdempotencyRequestStatus.Completed)
+                    .SetProperty(request => request.ResourceId, resourceId)
+                    .SetProperty(request => request.HttpStatusCode, httpStatusCode)
+                    .SetProperty(request => request.ResponseBodyJson, responseBodyJson)
+                    .SetProperty(request => request.CompletedAt, completedAt),
+                cancellationToken
+            );
+
+        if (affectedRows > 1)
+        {
+            throw new InvalidOperationException($"Completion updated an unexpected number of rows: {affectedRows}.");
+        }
+
+        if (affectedRows == 0)
+        {
+            var processingCreatedAt = await dbContext.IdempotencyRequests
+                .AsNoTracking()
+                .Where(request =>
+                    request.Id == idempotencyRequestId &&
+                    request.Operation == IdempotencyOperation.CreateOrder &&
+                    request.Status == IdempotencyRequestStatus.Processing)
+                .Select(request => (DateTimeOffset?)request.CreatedAt)
+                .SingleOrDefaultAsync(cancellationToken);
+
+            if (processingCreatedAt is { } createdAt && completedAt < createdAt)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(completedAt),
+                    "Completion cannot precede creation.");
+            }
+        }
+
+        return affectedRows == 1;
     }
 }
