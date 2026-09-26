@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -49,13 +50,17 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
 
         using var firstRequest = CreateRequest(key, originalItems);
         using var firstResponse = await client.SendAsync(firstRequest);
-        var firstBody = await firstResponse.Content.ReadAsStringAsync();
+        var firstBytes = await firstResponse.Content.ReadAsByteArrayAsync();
+        var firstBody = Encoding.UTF8.GetString(firstBytes);
         using var replayRequest = CreateRequest(key, reorderedItems);
         using var replayResponse = await client.SendAsync(replayRequest);
-        var replayBody = await replayResponse.Content.ReadAsStringAsync();
+        var replayBytes = await replayResponse.Content.ReadAsByteArrayAsync();
 
         Assert.Equal(HttpStatusCode.Created, firstResponse.StatusCode);
         Assert.Equal(HttpStatusCode.Created, replayResponse.StatusCode);
+        Assert.Equal("application/json", firstResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("application/json", replayResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(firstBytes, replayBytes);
         var orderId = ReadOrderId(firstBody);
 
         using var scope = factory.Services.CreateScope();
@@ -100,7 +105,7 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
         Assert.Equal(TimeSpan.FromHours(24), idempotency.ExpiresAt - idempotency.CreatedAt);
         Assert.Equal(TimeSpan.FromHours(72), idempotency.DeleteAfter - idempotency.CreatedAt);
 
-        Assert.Equal(firstBody, replayBody);
+        Assert.Equal($"/api/orders/{orderId}", firstResponse.Headers.Location?.OriginalString);
         Assert.Equal(firstResponse.Headers.Location, replayResponse.Headers.Location);
         Assert.False(firstResponse.Headers.Contains("Idempotency-Replayed"));
         Assert.Equal("true", Assert.Single(replayResponse.Headers.GetValues("Idempotency-Replayed")));
@@ -120,11 +125,21 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
         using var firstRequest = CreateRequest(key, [new(variant.Id, 1)]);
         using var firstResponse = await client.SendAsync(firstRequest);
         var originalOrderId = await ReadOrderIdAsync(firstResponse);
+        var correlationId = Guid.NewGuid().ToString("D");
         using var conflictRequest = CreateRequest(key, [new(variant.Id, 2)]);
+        conflictRequest.Headers.Add("X-Correlation-ID", correlationId);
         using var conflictResponse = await client.SendAsync(conflictRequest);
 
-        Assert.Equal(HttpStatusCode.Conflict, conflictResponse.StatusCode);
-        Assert.Equal("IDEMPOTENCY_KEY_REUSED", await ReadProblemCodeAsync(conflictResponse));
+        await AssertProblemDetailsAsync(
+            conflictResponse,
+            HttpStatusCode.Conflict,
+            expectedType: "https://oims.example/problems/idempotency-key-reused",
+            expectedTitle: "Request conflict",
+            expectedCode: "IDEMPOTENCY_KEY_REUSED",
+            expectedMessage: "The idempotency key was already used for a different request.",
+            expectedInstance: "/api/orders",
+            expectedCorrelationId: correlationId,
+            forbiddenValues: [key.ToString("D")]);
         await AssertOneCreateEffectAsync(factory, customer.Id, variant.Id, originalOrderId, 1);
     }
 
@@ -233,11 +248,27 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
         using var client = factory.CreateClient();
         await AuthenticateAsync(client, customer.Email);
 
+        var correlationId = Guid.NewGuid().ToString("D");
         using var request = CreateRequest(key, items);
+        request.Headers.Add("X-Correlation-ID", correlationId);
         using var response = await client.SendAsync(request);
 
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Equal("IDEMPOTENCY_KEY_EXPIRED", await ReadProblemCodeAsync(response));
+        await AssertProblemDetailsAsync(
+            response,
+            HttpStatusCode.Conflict,
+            expectedType: "https://oims.example/problems/idempotency-key-expired",
+            expectedTitle: "Request conflict",
+            expectedCode: "IDEMPOTENCY_KEY_EXPIRED",
+            expectedMessage: "The replay guarantee for this idempotency key has expired.",
+            expectedInstance: "/api/orders",
+            expectedCorrelationId: correlationId,
+            forbiddenValues:
+            [
+                key.ToString("D"),
+                Convert.ToHexString(CreateOrderRequestHasher.Hash(items)),
+                Convert.ToBase64String(CreateOrderRequestHasher.Hash(items)),
+                stored.ResponseBodyJson!
+            ]);
         await AssertNoCreateEffectAsync(factory, customer.Id, variant.Id, expectedIdempotencyRows: 1);
         await AssertStoredIdempotencyAsync(
             factory,
@@ -263,11 +294,26 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
         using var client = factory.CreateClient();
         await AuthenticateAsync(client, customer.Email);
 
+        var correlationId = Guid.NewGuid().ToString("D");
         using var request = CreateRequest(key, items);
+        request.Headers.Add("X-Correlation-ID", correlationId);
         using var response = await client.SendAsync(request);
 
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Equal("IDEMPOTENCY_REQUEST_PROCESSING", await ReadProblemCodeAsync(response));
+        await AssertProblemDetailsAsync(
+            response,
+            HttpStatusCode.Conflict,
+            expectedType: "https://oims.example/problems/idempotency-request-processing",
+            expectedTitle: "Request conflict",
+            expectedCode: "IDEMPOTENCY_REQUEST_PROCESSING",
+            expectedMessage: "The idempotent request is still being processed.",
+            expectedInstance: "/api/orders",
+            expectedCorrelationId: correlationId,
+            forbiddenValues:
+            [
+                key.ToString("D"),
+                Convert.ToHexString(CreateOrderRequestHasher.Hash(items)),
+                Convert.ToBase64String(CreateOrderRequestHasher.Hash(items))
+            ]);
         await AssertNoCreateEffectAsync(factory, customer.Id, variant.Id, expectedIdempotencyRows: 1);
         await AssertStoredIdempotencyAsync(
             factory,
@@ -294,11 +340,26 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
         using var client = factory.CreateClient();
         await AuthenticateAsync(client, customer.Email);
 
+        var correlationId = Guid.NewGuid().ToString("D");
         using var request = CreateRequest(key, [new(variant.Id, 2)]);
+        request.Headers.Add("X-Correlation-ID", correlationId);
         using var response = await client.SendAsync(request);
 
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Equal("IDEMPOTENCY_KEY_REUSED", await ReadProblemCodeAsync(response));
+        await AssertProblemDetailsAsync(
+            response,
+            HttpStatusCode.Conflict,
+            expectedType: "https://oims.example/problems/idempotency-key-reused",
+            expectedTitle: "Request conflict",
+            expectedCode: "IDEMPOTENCY_KEY_REUSED",
+            expectedMessage: "The idempotency key was already used for a different request.",
+            expectedInstance: "/api/orders",
+            expectedCorrelationId: correlationId,
+            forbiddenValues:
+            [
+                key.ToString("D"),
+                Convert.ToHexString(storedHash),
+                Convert.ToBase64String(storedHash)
+            ]);
         await AssertNoCreateEffectAsync(factory, customer.Id, variant.Id, expectedIdempotencyRows: 1);
         await AssertStoredIdempotencyAsync(
             factory,
@@ -414,12 +475,86 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
             1);
     }
 
+    [Fact]
+    [Trait("Requirement", "NFR-007")]
+    public async Task CreateOrder_RequestLogsDoNotExposeIdempotencyOrSensitivePayloadData()
+    {
+        var logDirectory = Path.Combine(Path.GetTempPath(), $"oims-idempotency-logs-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(logDirectory, "idempotency-.log");
+        Directory.CreateDirectory(logDirectory);
+
+        try
+        {
+            var key = Guid.NewGuid();
+            var correlationId = Guid.NewGuid().ToString("D");
+            string accessToken;
+            string responseSnapshot;
+            byte[] requestHash;
+
+            await using (var factory = CreateFactory(logPath: logPath))
+            {
+                var customer = await CreateUserAsync(factory);
+                var variant = await SeedVariantWithInventoryAsync(factory, 10, 10m);
+                CreateOrderItemRequest[] items = [new(variant.Id, 1)];
+                requestHash = CreateOrderRequestHasher.Hash(items);
+                using var client = factory.CreateClient();
+                await AuthenticateAsync(client, customer.Email);
+                accessToken = client.DefaultRequestHeaders.Authorization!.Parameter!;
+
+                using var originalRequest = CreateRequest(key, items);
+                originalRequest.Headers.Add("X-Correlation-ID", correlationId);
+                using var originalResponse = await client.SendAsync(originalRequest);
+                originalResponse.EnsureSuccessStatusCode();
+                responseSnapshot = await originalResponse.Content.ReadAsStringAsync();
+
+                using var replayRequest = CreateRequest(key, items);
+                replayRequest.Headers.Add("X-Correlation-ID", correlationId);
+                using var replayResponse = await client.SendAsync(replayRequest);
+                Assert.Equal(HttpStatusCode.Created, replayResponse.StatusCode);
+
+                using var conflictRequest = CreateRequest(key, [new(variant.Id, 2)]);
+                conflictRequest.Headers.Add("X-Correlation-ID", correlationId);
+                using var conflictResponse = await client.SendAsync(conflictRequest);
+                Assert.Equal(HttpStatusCode.Conflict, conflictResponse.StatusCode);
+            }
+
+            var logFiles = Directory.GetFiles(logDirectory, "idempotency-*.log");
+            Assert.NotEmpty(logFiles);
+            var logContents = string.Join(
+                Environment.NewLine,
+                await Task.WhenAll(logFiles.Select(ReadSharedFileAsync)));
+
+            Assert.Contains(correlationId, logContents, StringComparison.Ordinal);
+            Assert.DoesNotContain(key.ToString("D"), logContents, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(Convert.ToHexString(requestHash), logContents, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(Convert.ToBase64String(requestHash), logContents, StringComparison.Ordinal);
+            Assert.DoesNotContain(responseSnapshot, logContents, StringComparison.Ordinal);
+            Assert.DoesNotContain(accessToken, logContents, StringComparison.Ordinal);
+            Assert.DoesNotContain(TestCredentials.ValidPassword, logContents, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(logDirectory, recursive: true);
+        }
+    }
+
     private WebApplicationFactory<Program> CreateFactory(
         IOperationHook? operationHook = null,
-        IClock? clock = null) =>
-        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
-            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddOimsTestConfiguration(
-                new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString)))
+        IClock? clock = null,
+        string? logPath = null)
+    {
+        var configurationOverrides = new List<KeyValuePair<string, string?>>
+        {
+            new("Database:ConnectionString", postgres.ConnectionString)
+        };
+        if (logPath is not null)
+        {
+            configurationOverrides.Add(new("Serilog:FilePath", logPath));
+        }
+
+        return new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddOimsTestConfiguration(configurationOverrides.ToArray()))
                 .ConfigureServices(services =>
                 {
                     if (operationHook is not null)
@@ -434,6 +569,14 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
                         services.AddSingleton(clock);
                     }
                 }));
+    }
+
+    private static async Task<string> ReadSharedFileAsync(string path)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+        return await reader.ReadToEndAsync();
+    }
 
     private static async Task<TestUser> CreateUserAsync(WebApplicationFactory<Program> factory)
     {
@@ -571,12 +714,6 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
         return document.RootElement.GetProperty("data").GetProperty("id").GetGuid();
     }
 
-    private static async Task<string?> ReadProblemCodeAsync(HttpResponseMessage response)
-    {
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        return document.RootElement.GetProperty("code").GetString();
-    }
-
     private static async Task MigrateDatabaseAsync(WebApplicationFactory<Program> factory)
     {
         using var scope = factory.Services.CreateScope();
@@ -612,6 +749,71 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
             }
 
             return Task.CompletedTask;
+        }
+    }
+
+    private static async Task AssertProblemDetailsAsync(
+        HttpResponseMessage response,
+        HttpStatusCode expectedStatus,
+        string expectedType,
+        string expectedTitle,
+        string expectedCode,
+        string expectedMessage,
+        string expectedInstance,
+        string expectedCorrelationId,
+        IReadOnlyCollection<string>? forbiddenValues = null)
+    {
+        Assert.Equal(expectedStatus, response.StatusCode);
+
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.False(string.IsNullOrWhiteSpace(body));
+
+        using var document = JsonDocument.Parse(body);
+        var problem = document.RootElement;
+
+        Assert.Equal(JsonValueKind.Object, problem.ValueKind);
+
+        // Standard ProblemDetails members.
+        Assert.Equal(expectedType, problem.GetProperty("type").GetString());
+
+        Assert.Equal(expectedTitle, problem.GetProperty("title").GetString());
+
+        Assert.Equal((int)expectedStatus, problem.GetProperty("status").GetInt32());
+
+        Assert.Equal(expectedMessage, problem.GetProperty("detail").GetString());
+
+        Assert.Equal(expectedInstance, problem.GetProperty("instance").GetString());
+
+        // OIMS extensions.
+        Assert.Equal(expectedCode, problem.GetProperty("code").GetString());
+
+        Assert.Equal(expectedMessage, problem.GetProperty("message").GetString());
+
+        Assert.False(string.IsNullOrWhiteSpace(problem.GetProperty("traceId").GetString()));
+
+        Assert.Equal(expectedCorrelationId, problem.GetProperty("correlationId").GetString());
+
+        // Error responses are not wrapped in ApiResponse<T>.
+        Assert.False(problem.TryGetProperty("data", out _));
+        Assert.False(problem.TryGetProperty("metadata", out _));
+
+        // Conflict errors are not field-validation errors.
+        Assert.False(problem.TryGetProperty("errors", out _));
+
+        // An error response must never be marked as a replayed success.
+        Assert.False(response.Headers.Contains("Idempotency-Replayed"));
+
+        if (forbiddenValues is null)
+        {
+            return;
+        }
+
+        foreach (var forbiddenValue in forbiddenValues)
+        {
+            Assert.DoesNotContain(forbiddenValue, body, StringComparison.OrdinalIgnoreCase);
         }
     }
 }

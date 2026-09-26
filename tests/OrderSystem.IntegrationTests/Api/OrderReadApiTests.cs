@@ -191,6 +191,11 @@ public sealed class OrderReadApiTests(PostgreSqlFixture postgres)
             );
 
         Assert.True(idempotencyKeyParameter.GetProperty("required").GetBoolean());
+        var idempotencyDescription = idempotencyKeyParameter.GetProperty("description").GetString();
+        Assert.Contains("immutable CreateOrder intent", idempotencyDescription, StringComparison.Ordinal);
+        Assert.Contains("replay", idempotencyDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("409", idempotencyDescription, StringComparison.Ordinal);
+        Assert.DoesNotContain("Sprint", idempotencyDescription, StringComparison.OrdinalIgnoreCase);
 
         var schema = idempotencyKeyParameter.GetProperty("schema");
         Assert.Equal("string", schema.GetProperty("type").GetString());
@@ -203,6 +208,23 @@ public sealed class OrderReadApiTests(PostgreSqlFixture postgres)
                 responses.TryGetProperty(expectedStatus, out _),
                 $"Create Order OpenAPI contract must document HTTP {expectedStatus}.");
         }
+
+        var replayHeader = responses
+            .GetProperty("201")
+            .GetProperty("headers")
+            .GetProperty("Idempotency-Replayed");
+        Assert.Contains(
+            "true",
+            replayHeader.GetProperty("description").GetString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            "boolean",
+            replayHeader.GetProperty("schema").GetProperty("type").GetString());
+
+        var conflictDescription = responses.GetProperty("409").GetProperty("description").GetString();
+        Assert.Contains("IDEMPOTENCY_KEY_REUSED", conflictDescription, StringComparison.Ordinal);
+        Assert.Contains("IDEMPOTENCY_KEY_EXPIRED", conflictDescription, StringComparison.Ordinal);
+        Assert.Contains("IDEMPOTENCY_REQUEST_PROCESSING", conflictDescription, StringComparison.Ordinal);
 
         var cancelRequestBody = cancelOperation.GetProperty("requestBody");
         Assert.True(cancelRequestBody.GetProperty("required").GetBoolean());

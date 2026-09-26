@@ -29,6 +29,7 @@ Authorization: Bearer {{accessToken}}
 @idempotencyKey = 11111111-1111-1111-1111-111111111111
 @productVariantId = replace-with-an-active-variant-id-that-has-stock
 
+# Original request: expect 201 Created without Idempotency-Replayed.
 POST {{OrderSystem.Api_HostAddress}}/api/orders
 Accept: application/json
 Authorization: Bearer {{accessToken}}
@@ -40,6 +41,42 @@ Content-Type: application/json
     {
       "productVariantId": "{{productVariantId}}",
       "quantity": 1
+    }
+  ]
+}
+
+###
+
+# Exact replay: expect the same 201 status/body/Location and Idempotency-Replayed: true.
+POST {{OrderSystem.Api_HostAddress}}/api/orders
+Accept: application/json
+Authorization: Bearer {{accessToken}}
+Idempotency-Key: {{idempotencyKey}}
+Content-Type: application/json
+
+{
+  "items": [
+    {
+      "productVariantId": "{{productVariantId}}",
+      "quantity": 1
+    }
+  ]
+}
+
+###
+
+# Reused key with a different semantic request: expect 409 IDEMPOTENCY_KEY_REUSED.
+POST {{OrderSystem.Api_HostAddress}}/api/orders
+Accept: application/problem+json
+Authorization: Bearer {{accessToken}}
+Idempotency-Key: {{idempotencyKey}}
+Content-Type: application/json
+
+{
+  "items": [
+    {
+      "productVariantId": "{{productVariantId}}",
+      "quantity": 2
     }
   ]
 }
