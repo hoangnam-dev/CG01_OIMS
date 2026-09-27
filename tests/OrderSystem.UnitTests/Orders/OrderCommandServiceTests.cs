@@ -15,6 +15,8 @@ public sealed class OrderCommandServiceTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 23, 10, 0, 0, TimeSpan.Zero);
     private static readonly TimeSpan ReservationDuration = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan IdempotencyReplayWindow = TimeSpan.FromHours(24);
+    private static readonly TimeSpan IdempotencyRetentionWindow = TimeSpan.FromHours(72);
 
     [Fact]
     public async Task CreateAsync_WhenUnauthenticated_ReturnsUnauthorizedWithoutAccessingStore()
@@ -24,7 +26,7 @@ public sealed class OrderCommandServiceTests
         var service = CreateService(store, new FakeCurrentUser(false, null, null));
 
         // Act
-        var result = await service.CreateAsync(CreateRequest(Guid.NewGuid()), CancellationToken.None);
+        var result = await service.CreateAsync(Guid.NewGuid(), CreateRequest(Guid.NewGuid()), CancellationToken.None);
 
         // Assert
         Assert.False(result.IsSuccess);
@@ -41,7 +43,7 @@ public sealed class OrderCommandServiceTests
         var service = CreateService(store, new FakeCurrentUser(true, Guid.NewGuid(), UserRole.Admin));
 
         // Act
-        var result = await service.CreateAsync(CreateRequest(Guid.NewGuid()), CancellationToken.None);
+        var result = await service.CreateAsync(Guid.NewGuid(), CreateRequest(Guid.NewGuid()), CancellationToken.None);
 
         // Assert
         Assert.False(result.IsSuccess);
@@ -58,7 +60,7 @@ public sealed class OrderCommandServiceTests
         var service = CreateService(store, FakeCurrentUser.Customer());
 
         // Act
-        var result = await service.CreateAsync(new CreateOrderRequest([]), CancellationToken.None);
+        var result = await service.CreateAsync(Guid.NewGuid(), new CreateOrderRequest([]), CancellationToken.None);
 
         // Assert
         Assert.False(result.IsSuccess);
@@ -68,7 +70,25 @@ public sealed class OrderCommandServiceTests
     }
 
     [Fact]
-    public async Task CreateAsync_WhenRequestedVariantIsMissing_ReturnsNotFoundWithoutTransaction()
+    public async Task CreateAsync_WhenIdempotencyKeyIsEmpty_ReturnsValidationFailureWithoutAccessingStore()
+    {
+        var store = new FakeOrderCommandStore();
+        var service = CreateService(store, FakeCurrentUser.Customer());
+
+        var result = await service.CreateAsync(
+            Guid.Empty,
+            CreateRequest(Guid.NewGuid()),
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("VALIDATION_FAILED", result.Error!.Code);
+        Assert.Equal(0, store.BeginTransactionCalls);
+        Assert.Equal(0, store.TryClaimCalls);
+        Assert.Equal(0, store.LoadVariantSnapshotsCalls);
+    }
+
+    [Fact]
+    public async Task CreateAsync_WhenRequestedVariantIsMissing_ReturnsNotFoundAfterClaimWithoutBusinessMutation()
     {
         // Arrange
         var requestedVariantId = Guid.NewGuid();
@@ -76,17 +96,17 @@ public sealed class OrderCommandServiceTests
         var service = CreateService(store, FakeCurrentUser.Customer());
 
         // Act
-        var result = await service.CreateAsync(CreateRequest(requestedVariantId), CancellationToken.None);
+        var result = await service.CreateAsync(Guid.NewGuid(), CreateRequest(requestedVariantId), CancellationToken.None);
 
         // Assert
         Assert.False(result.IsSuccess);
         Assert.Equal("PRODUCT_VARIANT_NOT_FOUND", result.Error!.Code);
         Assert.Equal(1, store.LoadVariantSnapshotsCalls);
-        Assert.Equal(0, store.BeginTransactionCalls);
+        Assert.Equal(1, store.BeginTransactionCalls);
     }
 
     [Fact]
-    public async Task CreateAsync_WhenProductIsInactive_ReturnsConflictWithoutTransaction()
+    public async Task CreateAsync_WhenProductIsInactive_ReturnsConflictAfterClaimWithoutBusinessMutation()
     {
         // Arrange
         var variantId = Guid.NewGuid();
@@ -97,16 +117,16 @@ public sealed class OrderCommandServiceTests
         var service = CreateService(store, FakeCurrentUser.Customer());
 
         // Act
-        var result = await service.CreateAsync(CreateRequest(variantId), CancellationToken.None);
+        var result = await service.CreateAsync(Guid.NewGuid(), CreateRequest(variantId), CancellationToken.None);
 
         // Assert
         Assert.False(result.IsSuccess);
         Assert.Equal("PRODUCT_NOT_ACTIVE", result.Error!.Code);
-        Assert.Equal(0, store.BeginTransactionCalls);
+        Assert.Equal(1, store.BeginTransactionCalls);
     }
 
     [Fact]
-    public async Task CreateAsync_WhenProductVariantIsInactive_ReturnsConflictWithoutTransaction()
+    public async Task CreateAsync_WhenProductVariantIsInactive_ReturnsConflictAfterClaimWithoutBusinessMutation()
     {
         // Arrange
         var variantId = Guid.NewGuid();
@@ -117,12 +137,12 @@ public sealed class OrderCommandServiceTests
         var service = CreateService(store, FakeCurrentUser.Customer());
 
         // Act
-        var result = await service.CreateAsync(CreateRequest(variantId), CancellationToken.None);
+        var result = await service.CreateAsync(Guid.NewGuid(), CreateRequest(variantId), CancellationToken.None);
 
         // Assert
         Assert.False(result.IsSuccess);
         Assert.Equal("PRODUCT_VARIANT_NOT_ACTIVE", result.Error!.Code);
-        Assert.Equal(0, store.BeginTransactionCalls);
+        Assert.Equal(1, store.BeginTransactionCalls);
     }
 
     [Fact]
@@ -145,6 +165,7 @@ public sealed class OrderCommandServiceTests
 
         // Act
         var result = await service.CreateAsync(
+            Guid.NewGuid(),
             new CreateOrderRequest([new(secondVariantId, 1), new(firstVariantId, 2)]),
             CancellationToken.None);
 
@@ -193,6 +214,7 @@ public sealed class OrderCommandServiceTests
 
         // Act
         var result = await service.CreateAsync(
+            Guid.NewGuid(),
             new CreateOrderRequest([new(secondVariantId, 1), new(firstVariantId, 2)]),
             CancellationToken.None);
 
@@ -238,11 +260,14 @@ public sealed class OrderCommandServiceTests
         Assert.Equal(1, store.SaveChangesCalls);
         Assert.Equal(1, store.Transaction.CommitCalls);
         Assert.Equal(1, store.Transaction.DisposeCalls);
-        Assert.Equal([OrderOperationCheckpoints.BeforeInventoryReservation,
+        Assert.Equal([OrderOperationCheckpoints.BeforeIdempotencyClaim,
+            OrderOperationCheckpoints.BeforeInventoryReservation,
             OrderOperationCheckpoints.AfterInventoryReservation,
             OrderOperationCheckpoints.AfterCreateCommit], hook.Checkpoints);
         Assert.Equal(order.Id, readStore.LastOrderId);
-        Assert.Equal(order.Id, result.Value!.Id);
+        Assert.Equal(order.Id, result.Value!.ResourceId);
+        Assert.Equal(1, store.TryClaimCalls);
+        Assert.Equal(1, store.TryCompleteCalls);
     }
 
     [Fact]
@@ -499,6 +524,102 @@ public sealed class OrderCommandServiceTests
         Assert.Empty(store.ReleaseAttempts);
     }
 
+    [Fact]
+    public async Task CreateAsync_CompletedReplay_ReturnsStoredOutcomeWithoutBusinessWork()
+    {
+        var customer = FakeCurrentUser.Customer();
+        var idempotencyKey = Guid.NewGuid();
+        var resourceId = Guid.NewGuid();
+        const string responseBody =
+            "{\"data\":{\"id\":\"11111111-1111-1111-1111-111111111111\"},\"metadata\":null}";
+
+        var store = new FakeOrderCommandStore
+        {
+            ClaimResult = new IdempotencyClaimResult(
+                IdempotencyClaimOutcome.CompletedReplay,
+                new IdempotencyStoredResponse(
+                    resourceId,
+                    201,
+                    responseBody))
+        };
+
+        var service = CreateService(store, customer);
+
+        var result = await service.CreateAsync(
+            idempotencyKey,
+            CreateRequest(Guid.NewGuid()),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        var outcome = result.Value!;
+        Assert.Equal(resourceId, outcome.ResourceId);
+        Assert.Equal((short)201, outcome.HttpStatusCode);
+        Assert.Equal(responseBody, outcome.ResponseBodyJson);
+        Assert.True(outcome.IsReplay);
+
+        Assert.Equal(1, store.BeginTransactionCalls);
+        Assert.Equal(1, store.TryClaimCalls);
+        Assert.Equal(0, store.LoadVariantSnapshotsCalls);
+        Assert.Empty(store.ReservationAttempts);
+        Assert.Empty(store.AddedOrders);
+        Assert.Equal(0, store.SaveChangesCalls);
+        Assert.Equal(0, store.Transaction.CommitCalls);
+    }
+
+    [Theory]
+    [InlineData(IdempotencyClaimOutcome.HashConflict, "IDEMPOTENCY_KEY_REUSED")]
+    [InlineData(IdempotencyClaimOutcome.Processing, "IDEMPOTENCY_REQUEST_PROCESSING")]
+    [InlineData(IdempotencyClaimOutcome.Expired, "IDEMPOTENCY_KEY_EXPIRED")]
+    public async Task CreateAsync_NonOwnerClaimOutcome_ReturnsStableConflictWithoutBusinessWork(
+        IdempotencyClaimOutcome claimOutcome,
+        string expectedErrorCode)
+    {
+        var store = new FakeOrderCommandStore
+        {
+            ClaimResult = new IdempotencyClaimResult(claimOutcome)
+        };
+        var service = CreateService(store, FakeCurrentUser.Customer());
+
+        var result = await service.CreateAsync(
+            Guid.NewGuid(),
+            CreateRequest(Guid.NewGuid()),
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(expectedErrorCode, result.Error!.Code);
+        Assert.Equal(1, store.TryClaimCalls);
+        Assert.Equal(0, store.LoadVariantSnapshotsCalls);
+        Assert.Empty(store.ReservationAttempts);
+        Assert.Empty(store.AddedOrders);
+        Assert.Equal(0, store.SaveChangesCalls);
+        Assert.Equal(0, store.TryCompleteCalls);
+        Assert.Equal(0, store.Transaction.CommitCalls);
+    }
+
+    [Fact]
+    public async Task CreateAsync_WhenIdempotencyCompletionLosesOwnership_ThrowsWithoutCommit()
+    {
+        var variantId = Guid.NewGuid();
+        var store = new FakeOrderCommandStore
+        {
+            Snapshots = [new(variantId, 10m, ProductIsActive: true, VariantIsActive: true)],
+            CompleteResult = false
+        };
+        var service = CreateService(store, FakeCurrentUser.Customer());
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.CreateAsync(
+                Guid.NewGuid(),
+                CreateRequest(variantId),
+                CancellationToken.None));
+
+        Assert.Contains("idempotency", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, store.TryCompleteCalls);
+        Assert.Equal(0, store.Transaction.CommitCalls);
+        Assert.Equal(1, store.Transaction.DisposeCalls);
+    }
+
     private static OrderCommandService CreateService(
         FakeOrderCommandStore store,
         FakeCurrentUser currentUser,
@@ -510,8 +631,11 @@ public sealed class OrderCommandServiceTests
             new FakeClock(Now),
             new FakeIdGenerator(),
             readStore ?? new FakeOrderReadStore(),
+            new FakeCreateOrderResponseSnapshotSerializer(),
             hook ?? new FakeOperationHook(),
-            ReservationDuration);
+            ReservationDuration,
+            IdempotencyReplayWindow,
+            IdempotencyRetentionWindow);
 
     private static CreateOrderRequest CreateRequest(Guid productVariantId) =>
         new([new(productVariantId, 1)]);
@@ -630,6 +754,8 @@ public sealed class OrderCommandServiceTests
         public int BeginTransactionCalls { get; private set; }
         public int SaveChangesCalls { get; private set; }
 
+        public bool CompleteResult { get; init; } = true;
+
         public Task<IReadOnlyList<OrderVariantSnapshot>> LoadVariantSnapshotsAsync(
             IReadOnlyCollection<Guid> productVariantIds,
             CancellationToken cancellationToken)
@@ -698,6 +824,43 @@ public sealed class OrderCommandServiceTests
             SaveChangesCalls++;
             return Task.CompletedTask;
         }
+
+        public Task<bool> TryCompleteCreateOrderAsync(
+            Guid idempotencyRequestId,
+            Guid resourceId,
+            short httpStatusCode,
+            string responseBodyJson,
+            DateTimeOffset completedAt,
+            CancellationToken cancellationToken)
+        {
+            TryCompleteCalls++;
+            return Task.FromResult(CompleteResult);
+        }
+
+        public IdempotencyClaimResult ClaimResult { get; init; } =
+            new(IdempotencyClaimOutcome.Claimed);
+
+        public int TryClaimCalls { get; private set; }
+
+        public int TryCompleteCalls { get; private set; }
+
+        public List<CreateOrderIdempotencyClaim> Claims { get; } = [];
+
+        public Task<IdempotencyClaimResult> TryClaimCreateOrderAsync(
+            CreateOrderIdempotencyClaim claim,
+            CancellationToken cancellationToken)
+        {
+            TryClaimCalls++;
+            Claims.Add(claim);
+            return Task.FromResult(ClaimResult);
+        }
+    }
+
+    private sealed class FakeCreateOrderResponseSnapshotSerializer
+        : ICreateOrderResponseSnapshotSerializer
+    {
+        public string Serialize(OrderDto order) =>
+            $"{{\"data\":{{\"id\":\"{order.Id:D}\"}},\"metadata\":null}}";
     }
 
     private sealed class FakeTransaction : IOrderCommandTransaction

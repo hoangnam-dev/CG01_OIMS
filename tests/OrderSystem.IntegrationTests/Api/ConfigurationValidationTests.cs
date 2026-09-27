@@ -67,6 +67,13 @@ public sealed class ConfigurationValidationTests
     [InlineData("Authentication:RefreshTokenCleanupInterval", "00:00:00", "RefreshTokenCleanupInterval")]
     [InlineData("Authentication:RefreshTokenCleanupBatchSize", "0", "RefreshTokenCleanupBatchSize")]
     [InlineData("Authentication:ExpiredRefreshTokenRetention", "-00:00:01", "ExpiredRefreshTokenRetention")]
+    [InlineData("Idempotency:ReplayWindow", "00:00:00", "ReplayWindow")]
+    [InlineData("Idempotency:RetentionWindow", "23:59:59", "RetentionWindow")]
+    [InlineData("Idempotency:RetentionWindow", "1.00:00:00", "RetentionWindow")]
+    [InlineData("Idempotency:CleanupInitialDelay", "00:00:00", "CleanupInitialDelay")]
+    [InlineData("Idempotency:CleanupInterval", "00:00:00", "CleanupInterval")]
+    [InlineData("Idempotency:CleanupBatchSize", "0", "CleanupBatchSize")]
+    [InlineData("Idempotency:CleanupBatchSize", "501", "CleanupBatchSize")]
     [Trait("Requirement", "NFR-009")]
     public async Task Startup_InvalidOperationalSetting_FailsClearly(string key, string value, string expectedName)
     {

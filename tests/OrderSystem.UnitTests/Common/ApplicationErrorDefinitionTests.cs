@@ -110,6 +110,36 @@ public sealed class ApplicationErrorDefinitionTests
         Assert.Empty(duplicateCodes);
     }
 
+    [Fact]
+    public void IdempotencyErrors_HaveStableConflictContracts()
+    {
+        var definitions = new[]
+        {
+            (
+                ApplicationErrors.Idempotency.KeyReused,
+                "IDEMPOTENCY_KEY_REUSED",
+                "The idempotency key was already used for a different request."
+            ),
+            (
+                ApplicationErrors.Idempotency.RequestProcessing,
+                "IDEMPOTENCY_REQUEST_PROCESSING",
+                "The idempotent request is still being processed."
+            ),
+            (
+                ApplicationErrors.Idempotency.KeyExpired,
+                "IDEMPOTENCY_KEY_EXPIRED",
+                "The replay guarantee for this idempotency key has expired."
+            )
+        };
+
+        foreach (var (definition, code, message) in definitions)
+        {
+            Assert.Equal(ApplicationErrorKind.Conflict, definition.Kind);
+            Assert.Equal(code, definition.Code);
+            Assert.Equal(message, definition.DefaultMessage);
+        }
+    }
+
     private static IEnumerable<ApplicationErrorDefinition> GetDefinitions(Type catalogType)
     {
         foreach (var field in catalogType.GetFields(
