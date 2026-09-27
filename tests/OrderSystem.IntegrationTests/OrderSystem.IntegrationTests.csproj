@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\OrderSystem.Api\OrderSystem.Api.csproj" />
+    <ProjectReference Include="..\..\src\OrderSystem.Worker\OrderSystem.Worker.csproj" Aliases="worker" />
     <ProjectReference Include="..\..\src\OrderSystem.Infrastructure\OrderSystem.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\OrderSystem.Domain\OrderSystem.Domain.csproj" />
   </ItemGroup>

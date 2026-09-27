@@ -1,3 +1,5 @@
+using System.Net.Mime;
+using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using OrderSystem.Api.Authentication;
 using OrderSystem.Api.Contracts;
@@ -121,13 +123,24 @@ public static class OrderEndpoints
             );
         }
 
-        var result = await service.CreateAsync(request, cancellationToken);
+        var result = await service.CreateAsync(key, request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return ApplicationResultHttpMapper.ToProblem(context, result.Error!);
+        }
 
-        return result.IsSuccess
-            ? Results.Created(
-                $"/api/orders/{result.Value!.Id}",
-                new ApiResponse<OrderDto>(result.Value, null))
-            : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
+        var outcome = result.Value!;
+        context.Response.Headers.Location = $"/api/orders/{outcome.ResourceId}";
+        if (outcome.IsReplay)
+        {
+            context.Response.Headers["Idempotency-Replayed"] = "true";
+        }
+
+        return Results.Content(
+            outcome.ResponseBodyJson,
+            MediaTypeNames.Application.Json,
+            Encoding.UTF8,
+            outcome.HttpStatusCode);
     }
 
     private static async Task<IResult> CancelOrder(
@@ -138,7 +151,7 @@ public static class OrderEndpoints
         CancellationToken cancellationToken
     )
     {
-        if(!Guid.TryParse(id, out var orderId) || orderId == Guid.Empty)
+        if (!Guid.TryParse(id, out var orderId) || orderId == Guid.Empty)
         {
             return ApplicationResultHttpMapper.InvalidUuid(context, "id");
         }
@@ -154,11 +167,11 @@ public static class OrderEndpoints
         string id,
         [AsParameters] OrderStatusHistoryParameters parameters,
         HttpContext context,
-        OrderQueryService  service,
+        OrderQueryService service,
         CancellationToken cancellationToken
     )
     {
-        if(!Guid.TryParse(id, out var orderId) || orderId == Guid.Empty)
+        if (!Guid.TryParse(id, out var orderId) || orderId == Guid.Empty)
         {
             return ApplicationResultHttpMapper.InvalidUuid(context, "id");
         }
