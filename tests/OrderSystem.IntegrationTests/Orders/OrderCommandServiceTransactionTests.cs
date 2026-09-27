@@ -23,6 +23,8 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
 {
     private static readonly DateTimeOffset FixedNow = new(2026, 9, 24, 10, 0, 0, TimeSpan.Zero);
     private static readonly TimeSpan ReservationDuration = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan IdempotencyReplayWindow = TimeSpan.FromHours(24);
+    private static readonly TimeSpan IdempotencyRetentionWindow = TimeSpan.FromHours(72);
 
     [Fact]
     public async Task CreateAsync_WhenAfterInventoryReservationThrows_RollsBackReservationAndStagedRows()
@@ -232,7 +234,9 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
             scope.ServiceProvider.GetRequiredService<IOrderReadStore>(),
             scope.ServiceProvider.GetRequiredService<ICreateOrderResponseSnapshotSerializer>(),
             operationHook,
-            ReservationDuration);
+            ReservationDuration,
+            IdempotencyReplayWindow,
+            IdempotencyRetentionWindow);
 
     private static async Task<(Guid UserId, Guid ProductVariantId)> SeedCreateOrderDependenciesAsync(
         WebApplicationFactory<Program> factory)

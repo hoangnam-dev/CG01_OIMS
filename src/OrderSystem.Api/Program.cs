@@ -24,12 +24,36 @@ using OrderSystem.Infrastructure;
 using OrderSystem.Infrastructure.Logging;
 using OrderSystem.Infrastructure.Configuration;
 using Serilog;
+using OrderSystem.Api.Idempotency;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSerilog(loggerConfiguration =>
     loggerConfiguration.ConfigureOimsLogging(builder.Configuration, "OrderSystem.Api"));
-builder.Services.AddOrderSystemInfrastructure(builder.Configuration);
+builder.Services
+    .AddOrderSystemPersistence(builder.Configuration)
+    .AddOrderSystemCommonInfrastructure()
+    .AddOrderSystemAuthenticationInfrastructure(builder.Configuration)
+    .AddOrderSystemProductInfrastructure(builder.Configuration)
+    .AddOrderSystemInventoryInfrastructure()
+    .AddOrderSystemOrderInfrastructure(builder.Configuration)
+    .AddOrderSystemIdempotencyCleanupInfrastructure()
+    .AddOrderSystemMessagingInfrastructure(builder.Configuration)
+    .AddOrderSystemPaymentInfrastructure(builder.Configuration);
+builder.Services.AddOptions<IdempotencyOptions>()
+    .Bind(builder.Configuration.GetRequiredSection(IdempotencyOptions.SectionName))
+    .Validate(options => options.ReplayWindow > TimeSpan.Zero,
+        "Idempotency:ReplayWindow must be positive.")
+    .Validate(options => options.RetentionWindow > options.ReplayWindow,
+        "Idempotency:RetentionWindow must be greater than ReplayWindow.")
+    .Validate(options => options.CleanupInitialDelay > TimeSpan.Zero,
+        "Idempotency:CleanupInitialDelay must be positive.")
+    .Validate(options => options.CleanupInterval > TimeSpan.Zero,
+        "Idempotency:CleanupInterval must be positive.")
+    .Validate(
+        options => options.CleanupBatchSize is > 0 and <= IdempotencyOptions.MaximumCleanupBatchSize,
+        $"Idempotency:CleanupBatchSize must be between 1 and {IdempotencyOptions.MaximumCleanupBatchSize}.")
+    .ValidateOnStart();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -72,15 +96,25 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddSingleton<ICreateOrderResponseSnapshotSerializer, CreateOrderResponseSnapshotSerializer>();
-builder.Services.AddScoped<OrderCommandService>(provider => new(
-    provider.GetRequiredService<IOrderCommandStore>(),
-    provider.GetRequiredService<ICurrentUser>(),
-    provider.GetRequiredService<IClock>(),
-    provider.GetRequiredService<IIdGenerator>(),
-    provider.GetRequiredService<IOrderReadStore>(),
-    provider.GetRequiredService<ICreateOrderResponseSnapshotSerializer>(),
-    provider.GetRequiredService<IOperationHook>(),
-    provider.GetRequiredService<IOptions<ReservationOptions>>().Value.Duration));
+builder.Services.AddScoped<OrderQueryService>();
+builder.Services.AddScoped<OrderCommandService>(provider =>
+{
+    var reservation = provider.GetRequiredService<IOptions<ReservationOptions>>().Value;
+
+    var idempotency = provider.GetRequiredService<IOptions<IdempotencyOptions>>().Value;
+
+    return new(
+        provider.GetRequiredService<IOrderCommandStore>(),
+        provider.GetRequiredService<ICurrentUser>(),
+        provider.GetRequiredService<IClock>(),
+        provider.GetRequiredService<IIdGenerator>(),
+        provider.GetRequiredService<IOrderReadStore>(),
+        provider.GetRequiredService<ICreateOrderResponseSnapshotSerializer>(),
+        provider.GetRequiredService<IOperationHook>(),
+        reservation.Duration,
+        idempotency.ReplayWindow,
+        idempotency.RetentionWindow);
+});
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddOptions<AuthenticationWebOptions>()
     .Bind(builder.Configuration.GetRequiredSection(AuthenticationWebOptions.SectionName))
@@ -150,6 +184,7 @@ builder.Services.AddRateLimiter(options =>
     };
 });
 builder.Services.AddHostedService<RefreshTokenCleanupWorker>();
+builder.Services.AddHostedService<IdempotencyCleanupWorker>();
 builder.Services.AddHostedService<AdminBootstrapHostedService>();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails(options => options.CustomizeProblemDetails = context =>

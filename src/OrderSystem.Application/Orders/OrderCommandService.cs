@@ -19,11 +19,10 @@ public sealed class OrderCommandService(
     IOrderReadStore readStore,
     ICreateOrderResponseSnapshotSerializer responseSnapshotSerializer,
     IOperationHook operationHook,
-    TimeSpan reservationDuration)
+    TimeSpan reservationDuration,
+    TimeSpan idempotencyReplayWindow,
+    TimeSpan idempotencyRetentionWindow)
 {
-    private static readonly TimeSpan IdempotencyReplayDuration = TimeSpan.FromHours(24);
-    private static readonly TimeSpan IdempotencyRetentionDuration = TimeSpan.FromHours(72);
-
     public async Task<ApplicationResult<CreateOrderOutcome>> CreateAsync(
         Guid idempotencyKey,
         CreateOrderRequest request,
@@ -76,8 +75,8 @@ public sealed class OrderCommandService(
                 idempotencyKey,
                 requestHash,
                 now,
-                now.Add(IdempotencyReplayDuration),
-                now.Add(IdempotencyRetentionDuration)),
+                now.Add(idempotencyReplayWindow),
+                now.Add(idempotencyRetentionWindow)),
             cancellationToken);
 
         switch (claimResult.Outcome)

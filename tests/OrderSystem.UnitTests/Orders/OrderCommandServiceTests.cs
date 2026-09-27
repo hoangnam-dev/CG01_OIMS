@@ -15,6 +15,8 @@ public sealed class OrderCommandServiceTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 23, 10, 0, 0, TimeSpan.Zero);
     private static readonly TimeSpan ReservationDuration = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan IdempotencyReplayWindow = TimeSpan.FromHours(24);
+    private static readonly TimeSpan IdempotencyRetentionWindow = TimeSpan.FromHours(72);
 
     [Fact]
     public async Task CreateAsync_WhenUnauthenticated_ReturnsUnauthorizedWithoutAccessingStore()
@@ -631,7 +633,9 @@ public sealed class OrderCommandServiceTests
             readStore ?? new FakeOrderReadStore(),
             new FakeCreateOrderResponseSnapshotSerializer(),
             hook ?? new FakeOperationHook(),
-            ReservationDuration);
+            ReservationDuration,
+            IdempotencyReplayWindow,
+            IdempotencyRetentionWindow);
 
     private static CreateOrderRequest CreateRequest(Guid productVariantId) =>
         new([new(productVariantId, 1)]);

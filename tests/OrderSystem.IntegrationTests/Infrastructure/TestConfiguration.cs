@@ -15,7 +15,8 @@ internal static class TestConfiguration
         var settings = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
         {
             ["Jwt:SigningKey"] = SigningKey,
-            ["AdminBootstrap:Enabled"] = bool.FalseString
+            ["AdminBootstrap:Enabled"] = bool.FalseString,
+            ["Idempotency:CleanupEnabled"] = bool.FalseString
         };
         foreach (var setting in overrides)
         {

@@ -12,6 +12,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
+using OrderSystem.Application.Idempotency;
 using OrderSystem.Application.Orders;
 using OrderSystem.Application.Orders.Contracts;
 using OrderSystem.Domain.Idempotency;
@@ -275,6 +276,75 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
             stored.Id,
             IdempotencyRequestStatus.Completed,
             CreateOrderRequestHasher.Hash(items));
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-IDEM-009")]
+    public async Task CreateOrder_AfterRetainedTombstoneIsCleaned_SameKeyCreatesNewOrder()
+    {
+        const long ticksPerMicrosecond = TimeSpan.TicksPerMillisecond / 1000;
+        var utcNow = DateTimeOffset.UtcNow;
+        var now = new DateTimeOffset(
+            utcNow.Ticks - (utcNow.Ticks % ticksPerMicrosecond),
+            TimeSpan.Zero);
+        var clock = new FakeClock(now);
+        await using var factory = CreateFactory(clock: clock);
+        var customer = await CreateUserAsync(factory);
+        var variant = await SeedVariantWithInventoryAsync(factory, 10, 10m);
+        var key = Guid.NewGuid();
+        CreateOrderItemRequest[] items = [new(variant.Id, 1)];
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, customer.Email);
+
+        using var firstRequest = CreateRequest(key, items);
+        using var firstResponse = await client.SendAsync(firstRequest);
+        var firstOrderId = await ReadOrderIdAsync(firstResponse);
+        Assert.Equal(HttpStatusCode.Created, firstResponse.StatusCode);
+
+        Guid originalRequestId;
+        using (var beforeCleanupScope = factory.Services.CreateScope())
+        {
+            var db = beforeCleanupScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+            originalRequestId = await db.IdempotencyRequests.AsNoTracking()
+                .Where(request => request.UserId == customer.Id &&
+                    request.Operation == IdempotencyOperation.CreateOrder &&
+                    request.IdempotencyKey == key)
+                .Select(request => request.Id)
+                .SingleAsync();
+        }
+
+        clock.UtcNow = now.AddHours(72);
+        using (var cleanupScope = factory.Services.CreateScope())
+        {
+            var cleanup = cleanupScope.ServiceProvider.GetRequiredService<IIdempotencyCleanupStore>();
+            await cleanup.DeleteCompletedBatchAsync(clock.UtcNow, 500, CancellationToken.None);
+        }
+
+        using var secondRequest = CreateRequest(key, items);
+        using var secondResponse = await client.SendAsync(secondRequest);
+        var secondOrderId = await ReadOrderIdAsync(secondResponse);
+
+        Assert.Equal(HttpStatusCode.Created, secondResponse.StatusCode);
+        Assert.False(secondResponse.Headers.Contains("Idempotency-Replayed"));
+        Assert.NotEqual(firstOrderId, secondOrderId);
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        Assert.Equal(2, await assertionDb.Orders.AsNoTracking()
+            .CountAsync(order => order.UserId == customer.Id));
+        Assert.Equal(2, await assertionDb.InventoryTransactions.AsNoTracking()
+            .CountAsync(entry => entry.ProductVariantId == variant.Id &&
+                entry.Type == InventoryTransactionType.Reserve));
+        Assert.Equal(2, (await assertionDb.Inventories.AsNoTracking()
+            .SingleAsync(inventory => inventory.ProductVariantId == variant.Id)).ReservedQuantity);
+        Assert.False(await assertionDb.IdempotencyRequests.AsNoTracking()
+            .AnyAsync(request => request.Id == originalRequestId));
+        var replacement = await assertionDb.IdempotencyRequests.AsNoTracking()
+            .SingleAsync(request => request.UserId == customer.Id &&
+                request.Operation == IdempotencyOperation.CreateOrder &&
+                request.IdempotencyKey == key);
+        Assert.NotEqual(originalRequestId, replacement.Id);
+        Assert.Equal(secondOrderId, replacement.ResourceId);
+        Assert.Equal(clock.UtcNow, replacement.CreatedAt);
     }
 
     [Fact]

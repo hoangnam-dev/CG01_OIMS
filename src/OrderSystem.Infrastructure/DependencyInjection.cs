@@ -17,19 +17,25 @@ using OrderSystem.Infrastructure.Inventories;
 using OrderSystem.Infrastructure.Persistence;
 using OrderSystem.Infrastructure.Products;
 using OrderSystem.Infrastructure.Orders;
+using OrderSystem.Application.Idempotency;
+using OrderSystem.Infrastructure.Idempotency;
 
 namespace OrderSystem.Infrastructure;
 
 public static class DependencyInjection
 {
-    public static IServiceCollection AddOrderSystemInfrastructure(
+    public static IServiceCollection AddOrderSystemPersistence(
         this IServiceCollection services,
         IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        services.AddValidatedOptions(configuration);
+        services.AddOptions<DatabaseOptions>()
+            .Bind(configuration.GetRequiredSection(DatabaseOptions.SectionName))
+            .Validate(options => !string.IsNullOrWhiteSpace(options.ConnectionString), "Database:ConnectionString is required.")
+            .Validate(options => IsPostgreSqlConnectionString(options.ConnectionString), "Database:ConnectionString must be a valid PostgreSQL connection string.")
+            .ValidateOnStart();
         services.AddDbContext<OrderSystemDbContext>((provider, options) =>
         {
             var database = provider.GetRequiredService<IOptions<DatabaseOptions>>().Value;
@@ -37,37 +43,30 @@ public static class DependencyInjection
                 npgsql.MigrationsAssembly(typeof(OrderSystemDbContext).Assembly.FullName));
         });
         services.AddScoped<DbContext>(provider => provider.GetRequiredService<OrderSystemDbContext>());
-        services.AddScoped<IOrderCommandStore, EfOrderCommandStore>();
-        services.AddScoped<IProductCatalogStore, EfProductCatalogStore>();
-        services.AddScoped<ProductCatalogService>();
-        services.AddScoped<IInventoryStore, EfInventoryStore>();
-        services.AddScoped<InventoryService>();
-        services.AddScoped<IOrderReadStore, EfOrderReadStore>();
-
-        services.AddScoped<OrderQueryService>();
-        services.AddScoped<IAuthenticationStore, EfAuthenticationStore>();
-        services.AddScoped<IRefreshTokenCleanupStore, EfRefreshTokenCleanupStore>();
-        services.AddScoped<AuthenticationService>();
-        services.AddScoped<AdminBootstrapService>();
-        services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
-        services.AddSingleton<IRefreshTokenProtector, SecureRefreshTokenProtector>();
-        services.AddSingleton<IAccessTokenIssuer, JwtAccessTokenIssuer>();
-        services.AddSingleton<IClock, SystemClock>();
-        services.AddSingleton<IIdGenerator, Uuid7IdGenerator>();
-        services.AddSingleton<IOperationHook, NoOpOperationHook>();
         services.AddHealthChecks()
             .AddDbContextCheck<OrderSystemDbContext>("postgresql", tags: ["ready"]);
 
         return services;
     }
 
-    private static void AddValidatedOptions(this IServiceCollection services, IConfiguration configuration)
+    public static IServiceCollection AddOrderSystemCommonInfrastructure(this IServiceCollection services)
     {
-        services.AddOptions<DatabaseOptions>()
-            .Bind(configuration.GetRequiredSection(DatabaseOptions.SectionName))
-            .Validate(options => !string.IsNullOrWhiteSpace(options.ConnectionString), "Database:ConnectionString is required.")
-            .Validate(options => IsPostgreSqlConnectionString(options.ConnectionString), "Database:ConnectionString must be a valid PostgreSQL connection string.")
-            .ValidateOnStart();
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<IClock, SystemClock>();
+        services.AddSingleton<IIdGenerator, Uuid7IdGenerator>();
+        services.AddSingleton<IOperationHook, NoOpOperationHook>();
+
+        return services;
+    }
+
+    public static IServiceCollection AddOrderSystemAuthenticationInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
         services.AddOptions<JwtOptions>()
             .Bind(configuration.GetRequiredSection(JwtOptions.SectionName))
             .Validate(options => !string.IsNullOrWhiteSpace(options.Issuer), "Jwt:Issuer is required.")
@@ -77,11 +76,81 @@ public static class DependencyInjection
             .Validate(options => IsBase64(options.SigningKey), "Jwt:SigningKey must be valid Base64.")
             .Validate(options => HasMinimumSigningKeyLength(options.SigningKey), "Jwt:SigningKey must contain at least 32 bytes.")
             .ValidateOnStart();
+        services.AddScoped<IAuthenticationStore, EfAuthenticationStore>();
+        services.AddScoped<IRefreshTokenCleanupStore, EfRefreshTokenCleanupStore>();
+        services.AddScoped<AuthenticationService>();
+        services.AddScoped<AdminBootstrapService>();
+        services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
+        services.AddSingleton<IRefreshTokenProtector, SecureRefreshTokenProtector>();
+        services.AddSingleton<IAccessTokenIssuer, JwtAccessTokenIssuer>();
+
+        return services;
+    }
+
+    public static IServiceCollection AddOrderSystemProductInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
         services.AddOptions<RedisOptions>()
             .Bind(configuration.GetRequiredSection(RedisOptions.SectionName))
             .Validate(options => !string.IsNullOrWhiteSpace(options.Configuration), "Redis:Configuration is required.")
             .Validate(options => options.ProductTtl > TimeSpan.Zero, "Redis:ProductTtl must be positive.")
             .ValidateOnStart();
+        services.AddScoped<IProductCatalogStore, EfProductCatalogStore>();
+        services.AddScoped<ProductCatalogService>();
+
+        return services;
+    }
+
+    public static IServiceCollection AddOrderSystemInventoryInfrastructure(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddScoped<IInventoryStore, EfInventoryStore>();
+        services.AddScoped<InventoryService>();
+
+        return services;
+    }
+
+    public static IServiceCollection AddOrderSystemOrderInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        services.AddOptions<ReservationOptions>()
+            .Bind(configuration.GetRequiredSection(ReservationOptions.SectionName))
+            .Validate(options => options.Duration > TimeSpan.Zero, "Reservation:Duration must be positive.")
+            .Validate(options => options.ExpirationScanInterval > TimeSpan.Zero, "Reservation:ExpirationScanInterval must be positive.")
+            .Validate(options => options.BatchSize > 0, "Reservation:BatchSize must be positive.")
+            .ValidateOnStart();
+        services.AddScoped<IOrderCommandStore, EfOrderCommandStore>();
+        services.AddScoped<IOrderReadStore, EfOrderReadStore>();
+
+        return services;
+    }
+
+    public static IServiceCollection AddOrderSystemIdempotencyCleanupInfrastructure(
+        this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddScoped<IIdempotencyCleanupStore, EfIdempotencyCleanupStore>();
+
+        return services;
+    }
+
+    public static IServiceCollection AddOrderSystemMessagingInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
         services.AddOptions<RabbitMqOptions>()
             .Bind(configuration.GetRequiredSection(RabbitMqOptions.SectionName))
             .Validate(options => !string.IsNullOrWhiteSpace(options.Host), "RabbitMq:Host is required.")
@@ -89,22 +158,29 @@ public static class DependencyInjection
             .Validate(options => !string.IsNullOrWhiteSpace(options.VirtualHost), "RabbitMq:VirtualHost is required.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.Username), "RabbitMq:Username is required.")
             .ValidateOnStart();
-        services.AddOptions<ReservationOptions>()
-            .Bind(configuration.GetRequiredSection(ReservationOptions.SectionName))
-            .Validate(options => options.Duration > TimeSpan.Zero, "Reservation:Duration must be positive.")
-            .Validate(options => options.ExpirationScanInterval > TimeSpan.Zero, "Reservation:ExpirationScanInterval must be positive.")
-            .Validate(options => options.BatchSize > 0, "Reservation:BatchSize must be positive.")
-            .ValidateOnStart();
         services.AddOptions<RetryOptions>()
             .Bind(configuration.GetRequiredSection(RetryOptions.SectionName))
             .Validate(options => options.MaxAttempts > 0, "Retry:MaxAttempts must be positive.")
             .Validate(options => options.Delay >= TimeSpan.Zero, "Retry:Delay cannot be negative.")
             .ValidateOnStart();
+
+        return services;
+    }
+
+    public static IServiceCollection AddOrderSystemPaymentInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
         services.AddOptions<PaymentOptions>()
             .Bind(configuration.GetRequiredSection(PaymentOptions.SectionName))
             .Validate(options => options.ReconciliationInterval > TimeSpan.Zero, "Payment:ReconciliationInterval must be positive.")
             .Validate(options => options.ReconciliationBatchSize > 0, "Payment:ReconciliationBatchSize must be positive.")
             .ValidateOnStart();
+
+        return services;
     }
 
     private static bool IsPostgreSqlConnectionString(string connectionString)
