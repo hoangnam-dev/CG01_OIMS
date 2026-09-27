@@ -67,9 +67,9 @@ internal sealed class EfOrderReadStore(OrderSystemDbContext dbContext) : IOrderR
 
         var totalCount = await history.LongCountAsync(cancellationToken);
         var totalPage = (int)Math.Ceiling(totalCount / (double)request.PageSize);
-        var offset = (long)(request.Page - 1) *  request.PageSize;
+        var offset = (long)(request.Page - 1) * request.PageSize;
 
-        if(offset >= totalCount)
+        if (offset >= totalCount)
         {
             return new([], request.Page, request.PageSize, totalCount, totalPage);
         }
