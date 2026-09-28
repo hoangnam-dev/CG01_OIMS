@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using OrderSystem.Application.Authentication;
+using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Products;
 using OrderSystem.Domain.Users;
 using OrderSystem.Infrastructure.Persistence;
@@ -43,6 +44,49 @@ public sealed class ProductCatalogApiTests(PostgreSqlFixture postgres)
 
     [Fact]
     [Trait("Requirement", "API-PROD-002")]
+    public async Task ListProducts_AdminWithoutInactiveStatus_ReturnsOnlyActiveRows()
+    {
+        await using var factory = CreateFactory();
+        var (_, _, marker) = await SeedVisibilityProducts(factory);
+        using var client = factory.CreateClient();
+        await AuthenticateAsAdmin(factory, client);
+
+        using var response = await client.GetAsync(
+            $"/api/products?page=1&pageSize=20&search={marker}&sortBy=name&sortDirection=asc");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var product = Assert.Single(document.RootElement.GetProperty("data").EnumerateArray());
+        Assert.Equal("Active", product.GetProperty("status").GetString());
+    }
+
+    [Theory]
+    [InlineData(false, HttpStatusCode.Unauthorized, "UNAUTHORIZED")]
+    [InlineData(true, HttpStatusCode.Forbidden, "FORBIDDEN")]
+    [Trait("Requirement", "API-PROD-002")]
+    public async Task ListProducts_InactiveStatusRequiresAdmin(
+        bool authenticateCustomer,
+        HttpStatusCode expectedStatus,
+        string expectedCode)
+    {
+        await using var factory = CreateFactory();
+        var (_, _, marker) = await SeedVisibilityProducts(factory);
+        using var client = factory.CreateClient();
+        if (authenticateCustomer)
+        {
+            await AuthenticateAsCustomer(client);
+        }
+
+        using var response = await client.GetAsync(
+            $"/api/products?page=1&pageSize=20&search={marker}&status=Inactive");
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(expectedCode, document.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-PROD-002")]
     public async Task ProductDetail_InactiveProduct_IsHiddenFromPublicButVisibleToAdminWhenRequested()
     {
         await using var anonymousFactory = CreateFactory();
@@ -55,6 +99,30 @@ public sealed class ProductCatalogApiTests(PostgreSqlFixture postgres)
         await AuthenticateAsAdmin(anonymousFactory, anonymousClient);
         using var visible = await anonymousClient.GetAsync($"/api/products/{inactiveId}?includeInactive=true");
         Assert.Equal(HttpStatusCode.OK, visible.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false, HttpStatusCode.Unauthorized, "UNAUTHORIZED")]
+    [InlineData(true, HttpStatusCode.Forbidden, "FORBIDDEN")]
+    [Trait("Requirement", "API-PROD-002")]
+    public async Task ProductDetail_IncludeInactiveRequiresAdmin(
+        bool authenticateCustomer,
+        HttpStatusCode expectedStatus,
+        string expectedCode)
+    {
+        await using var factory = CreateFactory();
+        var (_, inactiveId, _) = await SeedVisibilityProducts(factory);
+        using var client = factory.CreateClient();
+        if (authenticateCustomer)
+        {
+            await AuthenticateAsCustomer(client);
+        }
+
+        using var response = await client.GetAsync($"/api/products/{inactiveId}?includeInactive=true");
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(expectedCode, document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -114,6 +182,54 @@ public sealed class ProductCatalogApiTests(PostgreSqlFixture postgres)
         using var scope = factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
         Assert.False(await dbContext.Products.AsNoTracking().AnyAsync(product => product.Name == name));
+    }
+
+    [Theory]
+    [InlineData("update-product", false, HttpStatusCode.Unauthorized)]
+    [InlineData("update-product", true, HttpStatusCode.Forbidden)]
+    [InlineData("deactivate-product", false, HttpStatusCode.Unauthorized)]
+    [InlineData("deactivate-product", true, HttpStatusCode.Forbidden)]
+    [InlineData("create-variant", false, HttpStatusCode.Unauthorized)]
+    [InlineData("create-variant", true, HttpStatusCode.Forbidden)]
+    [InlineData("update-variant", false, HttpStatusCode.Unauthorized)]
+    [InlineData("update-variant", true, HttpStatusCode.Forbidden)]
+    [InlineData("deactivate-variant", false, HttpStatusCode.Unauthorized)]
+    [InlineData("deactivate-variant", true, HttpStatusCode.Forbidden)]
+    [Trait("Requirement", "API-AUTHZ-001")]
+    public async Task CatalogMutation_NonAdminIsDeniedWithoutDatabaseMutation(
+        string operation,
+        bool authenticateCustomer,
+        HttpStatusCode expectedStatus)
+    {
+        await using var factory = CreateFactory();
+        var baseline = await SeedProtectedCatalog(factory);
+        using var client = factory.CreateClient();
+        if (authenticateCustomer)
+        {
+            await AuthenticateAsCustomer(client);
+        }
+        using var request = CreateDeniedCatalogMutationRequest(operation, baseline);
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var product = await dbContext.Products.AsNoTracking().SingleAsync(item => item.Id == baseline.ProductId);
+        var variant = await dbContext.ProductVariants.AsNoTracking().SingleAsync(item => item.Id == baseline.VariantId);
+        Assert.Equal(baseline.ProductName, product.Name);
+        Assert.Equal(baseline.ProductStatus, product.Status);
+        Assert.Equal(baseline.ProductUpdatedAt, product.UpdatedAt);
+        Assert.Equal(baseline.VariantName, variant.Name);
+        Assert.Equal(baseline.VariantPrice, variant.CurrentPrice);
+        Assert.Equal(baseline.VariantStatus, variant.Status);
+        Assert.Equal(baseline.VariantUpdatedAt, variant.UpdatedAt);
+        Assert.Equal(
+            baseline.VariantCount,
+            await dbContext.ProductVariants.AsNoTracking().CountAsync(item => item.ProductId == baseline.ProductId));
+        Assert.Equal(
+            baseline.InventoryCount,
+            await dbContext.Inventories.AsNoTracking().CountAsync(item => item.ProductVariantId == baseline.VariantId));
     }
 
     [Fact]
@@ -226,6 +342,73 @@ public sealed class ProductCatalogApiTests(PostgreSqlFixture postgres)
         return (active.Id, inactive.Id, marker);
     }
 
+    private static async Task<CatalogBaseline> SeedProtectedCatalog(WebApplicationFactory<Program> factory)
+    {
+        await MigrateDatabase(factory);
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var now = DateTimeOffset.UtcNow;
+        var product = new Product(
+            Guid.NewGuid(),
+            $"Protected Product {Guid.NewGuid():N}",
+            "Original description",
+            CatalogStatus.Active,
+            now);
+        var variant = new ProductVariant(
+            Guid.NewGuid(),
+            product.Id,
+            $"SEC-{Guid.NewGuid():N}"[..16],
+            "Protected Variant",
+            19.95m,
+            CatalogStatus.Active,
+            now);
+        var inventory = new Inventory(Guid.NewGuid(), variant.Id, 7, now);
+        dbContext.AddRange(product, variant, inventory);
+        await dbContext.SaveChangesAsync();
+        dbContext.ChangeTracker.Clear();
+        var persistedProduct = await dbContext.Products.AsNoTracking().SingleAsync(item => item.Id == product.Id);
+        var persistedVariant = await dbContext.ProductVariants.AsNoTracking().SingleAsync(item => item.Id == variant.Id);
+        return new(
+            persistedProduct.Id,
+            persistedProduct.Name,
+            persistedProduct.Status,
+            persistedProduct.UpdatedAt,
+            persistedVariant.Id,
+            persistedVariant.Name,
+            persistedVariant.CurrentPrice,
+            persistedVariant.Status,
+            persistedVariant.UpdatedAt,
+            VariantCount: 1,
+            InventoryCount: 1);
+    }
+
+    private static HttpRequestMessage CreateDeniedCatalogMutationRequest(
+        string operation,
+        CatalogBaseline baseline) =>
+        operation switch
+        {
+            "update-product" => new(HttpMethod.Put, $"/api/products/{baseline.ProductId}")
+            {
+                Content = JsonContent.Create(new { name = "Changed Product", description = "Changed description" })
+            },
+            "deactivate-product" => new(HttpMethod.Delete, $"/api/products/{baseline.ProductId}"),
+            "create-variant" => new(HttpMethod.Post, $"/api/products/{baseline.ProductId}/variants")
+            {
+                Content = JsonContent.Create(new
+                {
+                    sku = $"NEW-{Guid.NewGuid():N}"[..16],
+                    name = "Unauthorized Variant",
+                    currentPrice = 1m
+                })
+            },
+            "update-variant" => new(HttpMethod.Put, $"/api/product-variants/{baseline.VariantId}")
+            {
+                Content = JsonContent.Create(new { name = "Changed Variant", currentPrice = 1m })
+            },
+            "deactivate-variant" => new(HttpMethod.Delete, $"/api/product-variants/{baseline.VariantId}"),
+            _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, "Unsupported catalog operation.")
+        };
+
     private static async Task MigrateDatabase(WebApplicationFactory<Program> factory)
     {
         using var scope = factory.Services.CreateScope();
@@ -283,4 +466,17 @@ public sealed class ProductCatalogApiTests(PostgreSqlFixture postgres)
             "Bearer",
             document.RootElement.GetProperty("data").GetProperty("accessToken").GetString());
     }
+
+    private sealed record CatalogBaseline(
+        Guid ProductId,
+        string ProductName,
+        CatalogStatus ProductStatus,
+        DateTimeOffset ProductUpdatedAt,
+        Guid VariantId,
+        string VariantName,
+        decimal VariantPrice,
+        CatalogStatus VariantStatus,
+        DateTimeOffset VariantUpdatedAt,
+        int VariantCount,
+        int InventoryCount);
 }

@@ -1,19 +1,26 @@
 using System.Net;
 using System.Text.Json;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Api;
 
+[Collection(PostgreSqlCollectionDefinition.Name)]
 public sealed class DiagnosticsTests : IClassFixture<WebApplicationFactory<Program>>
 {
+    private readonly WebApplicationFactory<Program> _factory;
     private readonly HttpClient _client;
 
-    public DiagnosticsTests(WebApplicationFactory<Program> factory) => _client = factory
-        .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
-            configuration.AddOimsTestConfiguration()))
-        .CreateClient();
+    public DiagnosticsTests(WebApplicationFactory<Program> factory, PostgreSqlFixture postgres)
+    {
+        _factory = factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString))));
+        _client = _factory.CreateClient();
+    }
 
     [Fact]
     [Trait("Requirement", "API-CONTRACT-003")]
@@ -52,13 +59,36 @@ public sealed class DiagnosticsTests : IClassFixture<WebApplicationFactory<Progr
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
     }
 
-    [Theory]
-    [InlineData("/health/live")]
-    [InlineData("/health/ready")]
-    public async Task HealthEndpoint_ReturnsAHealthResponse(string path)
+    [Fact]
+    public async Task LivenessEndpoint_ReturnsOkWithoutCheckingDependencies()
     {
-        using var response = await _client.GetAsync(path);
-        Assert.NotEqual(HttpStatusCode.NotFound, response.StatusCode);
+        using var response = await _client.GetAsync("/health/live");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ReadinessEndpoint_WhenPostgresqlIsHealthy_ReturnsOk()
+    {
+        using var response = await _client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ReadinessEndpoint_WhenPostgresqlIsUnavailable_ReturnsServiceUnavailable()
+    {
+        await using var unavailableFactory = _factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>(
+                        "Database:ConnectionString",
+                        "Host=127.0.0.1;Port=1;Database=oims;Username=oims;Password=unavailable;Timeout=1;Command Timeout=1"))));
+        using var client = unavailableFactory.CreateClient();
+
+        using var response = await client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
 
     [Fact]
@@ -115,7 +145,15 @@ public sealed class DiagnosticsTests : IClassFixture<WebApplicationFactory<Progr
         Assert.Contains(
             protectedSecurity.EnumerateArray(),
             requirement => requirement.TryGetProperty("Bearer", out _));
+        var protectedResponses = paths.GetProperty("/api/products").GetProperty("post").GetProperty("responses");
+        Assert.True(protectedResponses.TryGetProperty("401", out _));
+        Assert.True(protectedResponses.TryGetProperty("403", out _));
         Assert.False(paths.GetProperty("/api/auth/login").GetProperty("post").TryGetProperty("security", out _));
+        var conditionalPublicOperation = paths.GetProperty("/api/products").GetProperty("get");
+        Assert.False(conditionalPublicOperation.TryGetProperty("security", out _));
+        var conditionalResponses = conditionalPublicOperation.GetProperty("responses");
+        Assert.True(conditionalResponses.TryGetProperty("401", out _));
+        Assert.True(conditionalResponses.TryGetProperty("403", out _));
     }
 
     [Fact]
@@ -129,5 +167,17 @@ public sealed class DiagnosticsTests : IClassFixture<WebApplicationFactory<Progr
         var configuration = await configurationResponse.Content.ReadAsStringAsync();
         Assert.Contains("/openapi/v1.json", configuration, StringComparison.Ordinal);
         Assert.DoesNotContain("/swagger/v1/swagger.json", configuration, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SwaggerUi_InProduction_IsNotExposed()
+    {
+        await using var productionFactory = _factory.WithWebHostBuilder(builder =>
+            builder.UseEnvironment("Production"));
+        using var client = productionFactory.CreateClient();
+
+        using var response = await client.GetAsync("/swagger/index.html");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 }

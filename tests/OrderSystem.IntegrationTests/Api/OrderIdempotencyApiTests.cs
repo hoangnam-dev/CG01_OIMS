@@ -174,7 +174,7 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
 
     [Fact]
     [Trait("Requirement", "API-IDEM-006")]
-    public async Task CreateOrder_SameKeyForDifferentUsers_UsesIndependentNamespaces()
+    public async Task CreateOrder_ConcurrentSameKeyForDifferentUsers_UsesIndependentNamespaces()
     {
         await using var factory = CreateFactory();
         var firstCustomer = await CreateUserAsync(factory);
@@ -187,9 +187,13 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
         await AuthenticateAsync(secondClient, secondCustomer.Email);
 
         using var firstRequest = CreateRequest(key, [new(variant.Id, 1)]);
-        using var firstResponse = await firstClient.SendAsync(firstRequest);
         using var secondRequest = CreateRequest(key, [new(variant.Id, 1)]);
-        using var secondResponse = await secondClient.SendAsync(secondRequest);
+
+        var responses = await Task.WhenAll(
+            firstClient.SendAsync(firstRequest),
+            secondClient.SendAsync(secondRequest));
+        using var firstResponse = responses[0];
+        using var secondResponse = responses[1];
 
         Assert.Equal(HttpStatusCode.Created, firstResponse.StatusCode);
         Assert.Equal(HttpStatusCode.Created, secondResponse.StatusCode);
@@ -204,6 +208,42 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
             order.UserId == firstCustomer.Id || order.UserId == secondCustomer.Id));
         var inventory = await db.Inventories.AsNoTracking().SingleAsync(item => item.ProductVariantId == variant.Id);
         Assert.Equal(2, inventory.ReservedQuantity);
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-AUTH-004")]
+    public async Task CreateOrder_RefreshThenRetrySameKey_ReplaysWithinSameUserNamespace()
+    {
+        await using var factory = CreateFactory();
+        var customer = await CreateUserAsync(factory);
+        var variant = await SeedVariantWithInventoryAsync(factory, 10, 10m);
+        var key = Guid.NewGuid();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost")
+        });
+        var refreshToken = await AuthenticateAsync(client, customer.Email);
+
+        using var firstRequest = CreateRequest(key, [new(variant.Id, 1)]);
+        using var firstResponse = await client.SendAsync(firstRequest);
+        var originalOrderId = await ReadOrderIdAsync(firstResponse);
+        using var refreshRequest = new HttpRequestMessage(HttpMethod.Post, "/api/auth/refresh");
+        refreshRequest.Headers.Add("Cookie", $"__Secure-oims-refresh={refreshToken}");
+        using var refreshResponse = await client.SendAsync(refreshRequest);
+        refreshResponse.EnsureSuccessStatusCode();
+        using var refreshDocument = JsonDocument.Parse(await refreshResponse.Content.ReadAsStringAsync());
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            refreshDocument.RootElement.GetProperty("data").GetProperty("accessToken").GetString());
+
+        using var retryRequest = CreateRequest(key, [new(variant.Id, 1)]);
+        using var retryResponse = await client.SendAsync(retryRequest);
+
+        Assert.Equal(HttpStatusCode.Created, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, retryResponse.StatusCode);
+        Assert.Equal(originalOrderId, await ReadOrderIdAsync(retryResponse));
+        Assert.Equal("true", Assert.Single(retryResponse.Headers.GetValues("Idempotency-Replayed")));
+        await AssertOneCreateEffectAsync(factory, customer.Id, variant.Id, originalOrderId, 1);
     }
 
     [Fact]
@@ -558,6 +598,8 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
             var key = Guid.NewGuid();
             var correlationId = Guid.NewGuid().ToString("D");
             string accessToken;
+            string refreshToken;
+            string userId;
             string responseSnapshot;
             byte[] requestHash;
 
@@ -567,8 +609,9 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
                 var variant = await SeedVariantWithInventoryAsync(factory, 10, 10m);
                 CreateOrderItemRequest[] items = [new(variant.Id, 1)];
                 requestHash = CreateOrderRequestHasher.Hash(items);
+                userId = customer.Id.ToString();
                 using var client = factory.CreateClient();
-                await AuthenticateAsync(client, customer.Email);
+                refreshToken = await AuthenticateAsync(client, customer.Email);
                 accessToken = client.DefaultRequestHeaders.Authorization!.Parameter!;
 
                 using var originalRequest = CreateRequest(key, items);
@@ -600,7 +643,10 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
             Assert.DoesNotContain(Convert.ToBase64String(requestHash), logContents, StringComparison.Ordinal);
             Assert.DoesNotContain(responseSnapshot, logContents, StringComparison.Ordinal);
             Assert.DoesNotContain(accessToken, logContents, StringComparison.Ordinal);
+            Assert.DoesNotContain(refreshToken, logContents, StringComparison.Ordinal);
+            Assert.DoesNotContain(TestConfiguration.SigningKey, logContents, StringComparison.Ordinal);
             Assert.DoesNotContain(TestCredentials.ValidPassword, logContents, StringComparison.Ordinal);
+            Assert.Contains(userId, logContents, StringComparison.Ordinal);
         }
         finally
         {
@@ -790,7 +836,7 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
         await scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>().Database.MigrateAsync();
     }
 
-    private static async Task AuthenticateAsync(HttpClient client, string email)
+    private static async Task<string> AuthenticateAsync(HttpClient client, string email)
     {
         using var response = await client.PostAsJsonAsync(
             "/api/auth/login",
@@ -800,6 +846,9 @@ public sealed class OrderIdempotencyApiTests(PostgreSqlFixture postgres)
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer",
             document.RootElement.GetProperty("data").GetProperty("accessToken").GetString());
+        var setCookie = response.Headers.GetValues("Set-Cookie")
+            .Single(value => value.StartsWith("__Secure-oims-refresh=", StringComparison.Ordinal));
+        return setCookie.Split(';', 2)[0].Split('=', 2)[1];
     }
 
     private sealed record TestUser(Guid Id, string Email);

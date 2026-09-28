@@ -61,7 +61,7 @@ public sealed class OrderReadApiTests(PostgreSqlFixture postgres)
     }
 
     [Fact]
-    [Trait("Requirement", "API-AUTHZ-004")]
+    [Trait("Requirement", "API-AUTHZ-003")]
     public async Task GetOrder_CustomerNonOwner_ReceivesNotFoundWithoutOrderData()
     {
         await using var factory = CreateFactory();
@@ -80,7 +80,7 @@ public sealed class OrderReadApiTests(PostgreSqlFixture postgres)
     }
 
     [Fact]
-    [Trait("Requirement", "API-AUTHZ-003")]
+    [Trait("Requirement", "API-AUTHZ-004")]
     public async Task GetOrder_Admin_ReceivesAnyExistingOrder()
     {
         await using var factory = CreateFactory();
@@ -95,6 +95,38 @@ public sealed class OrderReadApiTests(PostgreSqlFixture postgres)
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal(owner.Id, document.RootElement.GetProperty("data").GetProperty("userId").GetGuid());
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-AUTHZ-004")]
+    public async Task ListOrders_AdminReceivesAllOrdersAndCanFilterByUserId()
+    {
+        await using var factory = CreateFactory();
+        var firstOwner = await CreateUserAsync(factory, UserRole.Customer);
+        var secondOwner = await CreateUserAsync(factory, UserRole.Customer);
+        var admin = await CreateUserAsync(factory, UserRole.Admin);
+        var firstOrder = await SeedOrderAsync(factory, firstOwner.Id);
+        var secondOrder = await SeedOrderAsync(factory, secondOwner.Id);
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, admin.Email);
+
+        using var allResponse = await client.GetAsync("/api/orders?page=1&pageSize=100");
+        using var filteredResponse = await client.GetAsync(
+            $"/api/orders?page=1&pageSize=100&userId={firstOwner.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, allResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, filteredResponse.StatusCode);
+        using var allDocument = JsonDocument.Parse(await allResponse.Content.ReadAsStringAsync());
+        var allIds = allDocument.RootElement.GetProperty("data")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("id").GetGuid())
+            .ToArray();
+        Assert.Contains(firstOrder.Id, allIds);
+        Assert.Contains(secondOrder.Id, allIds);
+        using var filteredDocument = JsonDocument.Parse(await filteredResponse.Content.ReadAsStringAsync());
+        var filtered = Assert.Single(filteredDocument.RootElement.GetProperty("data").EnumerateArray());
+        Assert.Equal(firstOrder.Id, filtered.GetProperty("id").GetGuid());
+        Assert.Equal(firstOwner.Id, filtered.GetProperty("userId").GetGuid());
     }
 
     [Theory]

@@ -10,6 +10,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.IdentityModel.Tokens;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Infrastructure.Persistence;
 using OrderSystem.IntegrationTests.Infrastructure;
@@ -407,6 +408,41 @@ public sealed class AuthenticationApiTests(PostgreSqlFixture postgres)
             "Bearer",
             login.Data.GetProperty("accessToken").GetString());
         var name = $"Expired-{Guid.NewGuid():N}";
+
+        using var response = await client.PostAsJsonAsync("/api/products", new
+        {
+            name,
+            description = "Must not persist"
+        });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        Assert.False(await dbContext.Products.AsNoTracking().AnyAsync(product => product.Name == name));
+    }
+
+    [Fact]
+    public async Task ProductMutation_InvalidSignature_IsRejectedBeforeMutation()
+    {
+        await using var factory = CreateFactory();
+        await MigrateDatabase(factory);
+        using var client = factory.CreateClient();
+        var name = $"Invalid-Signature-{Guid.NewGuid():N}";
+        var signingKey = new SymmetricSecurityKey(new byte[32]);
+        var token = new JwtSecurityToken(
+            issuer: "OrderSystem.Api",
+            audience: "OrderSystem.Client",
+            claims:
+            [
+                new Claim(JwtRegisteredClaimNames.Sub, Guid.NewGuid().ToString()),
+                new Claim(ClaimTypes.Role, "Admin")
+            ],
+            notBefore: DateTime.UtcNow.AddMinutes(-1),
+            expires: DateTime.UtcNow.AddMinutes(5),
+            signingCredentials: new SigningCredentials(signingKey, SecurityAlgorithms.HmacSha256));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            new JwtSecurityTokenHandler().WriteToken(token));
 
         using var response = await client.PostAsJsonAsync("/api/products", new
         {
