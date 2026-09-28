@@ -57,6 +57,51 @@ public sealed class InventoryApiTests(PostgreSqlFixture postgres)
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData(false, HttpStatusCode.Unauthorized)]
+    [InlineData(true, HttpStatusCode.Forbidden)]
+    [Trait("Requirement", "API-AUTHZ-002")]
+    public async Task AdjustInventory_NonAdminIsDeniedWithoutQuantityTimestampOrLedgerEffect(
+        bool authenticateCustomer,
+        HttpStatusCode expectedStatus)
+    {
+        await using var factory = CreateFactory();
+        var productVariantId = await SeedInventoryAsync(factory, 10);
+        Inventory baseline;
+        int baselineLedgerCount;
+        using (var baselineScope = factory.Services.CreateScope())
+        {
+            var dbContext = baselineScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+            baseline = await dbContext.Inventories.AsNoTracking()
+                .SingleAsync(item => item.ProductVariantId == productVariantId);
+            baselineLedgerCount = await dbContext.InventoryTransactions.AsNoTracking()
+                .CountAsync(item => item.ProductVariantId == productVariantId);
+        }
+
+        using var client = factory.CreateClient();
+        if (authenticateCustomer)
+        {
+            await AuthenticateAsCustomer(client);
+        }
+
+        using var response = await client.PostAsJsonAsync(
+            $"/api/inventory/{productVariantId}/adjust",
+            new { quantityChange = 5, reason = "unauthorized adjustment" });
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        using var verificationScope = factory.Services.CreateScope();
+        var verificationDb = verificationScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var persisted = await verificationDb.Inventories.AsNoTracking()
+            .SingleAsync(item => item.ProductVariantId == productVariantId);
+        Assert.Equal(baseline.OnHandQuantity, persisted.OnHandQuantity);
+        Assert.Equal(baseline.ReservedQuantity, persisted.ReservedQuantity);
+        Assert.Equal(baseline.UpdatedAt, persisted.UpdatedAt);
+        Assert.Equal(
+            baselineLedgerCount,
+            await verificationDb.InventoryTransactions.AsNoTracking()
+                .CountAsync(item => item.ProductVariantId == productVariantId));
+    }
+
     [Fact]
     public async Task InventoryEndpoints_Admin_ExposeCurrentStateAdjustmentAndPagedHistory()
     {
