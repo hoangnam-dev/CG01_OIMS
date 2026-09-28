@@ -19,6 +19,7 @@ public static class ProductCatalogEndpoints
         products.MapGet("/", ListProducts)
             .Produces<ApiResponse<ProductDto[]>>()
             .Produces<HttpValidationProblemDetails>(StatusCodes.Status400BadRequest, "application/problem+json")
+            .Produces<ProblemDetails>(StatusCodes.Status401Unauthorized, "application/problem+json")
             .Produces<ProblemDetails>(StatusCodes.Status403Forbidden, "application/problem+json");
         products.MapGet("/{id}", GetProductDetail)
             .Produces<ApiResponse<ProductDetailDto>>()
@@ -82,7 +83,19 @@ public static class ProductCatalogEndpoints
         var isAdmin = (await authorizationService.AuthorizeAsync(
             context.User,
             AuthorizationPolicies.Admin)).Succeeded;
-        var visibility = isAdmin ? CatalogVisibility.All : CatalogVisibility.ActiveOnly;
+        var requestsInactive = Enum.TryParse<CatalogStatus>(
+            parameters.Status?.Trim(),
+            ignoreCase: true,
+            out var requestedStatus) &&
+            requestedStatus == CatalogStatus.Inactive;
+        if (requestsInactive && !isAdmin)
+        {
+            return ApplicationResultHttpMapper.AuthorizationDenied(context);
+        }
+
+        var visibility = requestsInactive
+            ? CatalogVisibility.All
+            : CatalogVisibility.ActiveOnly;
         var result = await service.ListProductsAsync(
             new(
                 parameters.Page ?? 1,

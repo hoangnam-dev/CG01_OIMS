@@ -244,6 +244,33 @@ public sealed class OrderCommandApiTests(PostgreSqlFixture postgres)
     }
 
     [Fact]
+    public async Task CancelOrder_AnonymousCallerReturnsUnauthorizedWithoutMutation()
+    {
+        await using var factory = CreateFactory();
+        var owner = await CreateUserAsync(factory, UserRole.Customer);
+        var variant = await SeedVariantWithInventoryAsync(factory, onHandQuantity: 1, currentPrice: 10m);
+        var orderId = await SeedReservedPendingOrderAsync(
+            factory,
+            owner.Id,
+            variant.Id,
+            quantity: 1,
+            unitPrice: 10m);
+        using var client = factory.CreateClient();
+        using var request = CreateCancelRequest(orderId, new { reason = "Unauthenticated attempt" });
+
+        using var response = await client.SendAsync(request);
+
+        await AssertCancelRejectedWithoutMutationAsync(
+            factory,
+            response,
+            orderId,
+            variant.Id,
+            OrderStatus.PendingPayment,
+            HttpStatusCode.Unauthorized,
+            "UNAUTHORIZED");
+    }
+
+    [Fact]
     public async Task CancelOrder_ConfirmedOrder_ReturnsConflictWithoutMutation()
     {
         await using var factory = CreateFactory();
