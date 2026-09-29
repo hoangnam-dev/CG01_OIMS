@@ -199,7 +199,7 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         Assert.Equal(OrderStatus.Cancelled, history.ToStatus);
         Assert.Equal(OrderStatusHistoryActorType.Customer, history.ActorType);
         Assert.Equal(seeded.OwnerId, history.ActorUserId);
-        Assert.Equal(OrderCancellationReasonCode.CustomerRequested, history.ReasonCode);
+        Assert.Equal(OrderStatusReasonCode.CustomerRequested, history.ReasonCode);
     }
 
     [Fact]

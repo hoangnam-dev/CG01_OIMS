@@ -157,7 +157,7 @@ public sealed class OrderCommandApiTests(PostgreSqlFixture postgres)
         Assert.Equal(OrderStatus.Cancelled, history.ToStatus);
         Assert.Equal(OrderStatusHistoryActorType.Admin, history.ActorType);
         Assert.Equal(admin.Id, history.ActorUserId);
-        Assert.Equal(OrderCancellationReasonCode.FraudSuspected, history.ReasonCode);
+        Assert.Equal(OrderStatusReasonCode.FraudSuspected, history.ReasonCode);
         Assert.Equal("Risk review case FR-2026-0042", history.Reason);
     }
 
@@ -181,7 +181,7 @@ public sealed class OrderCommandApiTests(PostgreSqlFixture postgres)
         var history = await dbContext.OrderStatusHistories.AsNoTracking().SingleAsync(entry => entry.OrderId == orderId);
         Assert.Equal(OrderStatusHistoryActorType.Customer, history.ActorType);
         Assert.Equal(customer.Id, history.ActorUserId);
-        Assert.Equal(OrderCancellationReasonCode.CustomerRequested, history.ReasonCode);
+        Assert.Equal(OrderStatusReasonCode.CustomerRequested, history.ReasonCode);
         Assert.Equal("Changed my mind", history.Reason);
     }
 
