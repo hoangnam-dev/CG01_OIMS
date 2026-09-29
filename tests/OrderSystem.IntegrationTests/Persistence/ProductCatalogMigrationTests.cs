@@ -8,8 +8,8 @@ using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Persistence;
 
-[Collection(PostgreSqlCollectionDefinition.Name)]
-public sealed class ProductCatalogMigrationTests(PostgreSqlFixture postgres)
+[Collection(MigrationPostgreSqlCollectionDefinition.Name)]
+public sealed class ProductCatalogMigrationTests(MigrationPostgreSqlFixture postgres)
 {
     [Fact]
     public async Task ProductCatalogMigration_CurrentDatabase_EnforcesCatalogConstraints()

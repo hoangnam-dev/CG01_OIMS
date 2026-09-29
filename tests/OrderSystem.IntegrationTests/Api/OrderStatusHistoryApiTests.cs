@@ -141,13 +141,13 @@ public sealed class OrderStatusHistoryApiTests(PostgreSqlFixture postgres)
         dbContext.OrderStatusHistories.AddRange(
             new OrderStatusHistory(
                 oldestHistoryId, order.Id, OrderStatus.PendingPayment, OrderStatus.Confirmed,
-                OrderStatusHistoryActorType.System, null, now.AddMinutes(-1), null, OrderCancellationReasonCode.Other),
+                OrderStatusHistoryActorType.System, null, now.AddMinutes(-1), null, OrderStatusReasonCode.Other),
             new OrderStatusHistory(
                 secondNewestHistoryId, order.Id, OrderStatus.Confirmed, OrderStatus.Processing,
-                OrderStatusHistoryActorType.Admin, admin.Id, now, "Operations advanced the order.", OrderCancellationReasonCode.Other),
+                OrderStatusHistoryActorType.Admin, admin.Id, now, "Operations advanced the order.", OrderStatusReasonCode.Other),
             new OrderStatusHistory(
                 newestHistoryId, order.Id, OrderStatus.Processing, OrderStatus.Completed,
-                OrderStatusHistoryActorType.Customer, customer.Id, now, null, OrderCancellationReasonCode.CustomerRequested));
+                OrderStatusHistoryActorType.Customer, customer.Id, now, null, OrderStatusReasonCode.CustomerRequested));
         await dbContext.SaveChangesAsync();
 
         return new(order.Id, customer.Email, admin.Email, newestHistoryId, secondNewestHistoryId);

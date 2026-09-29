@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Common.Identifiers;
@@ -130,6 +131,19 @@ public static class DependencyInjection
             .ValidateOnStart();
         services.AddScoped<IOrderCommandStore, EfOrderCommandStore>();
         services.AddScoped<IOrderReadStore, EfOrderReadStore>();
+        services.AddScoped<IReservationExpirationStore, EfReservationExpirationStore>();
+
+        services.AddScoped<ReservationExpirationProcessor>(provider =>
+        {
+            var reservation = provider.GetRequiredService<IOptions<ReservationOptions>>().Value;
+
+            return new ReservationExpirationProcessor(
+                provider.GetRequiredService<IClock>(),
+                provider.GetRequiredService<IReservationExpirationStore>(),
+                reservation.BatchSize,
+                provider.GetRequiredService<ILogger<ReservationExpirationProcessor>>()
+            );
+        });
 
         return services;
     }

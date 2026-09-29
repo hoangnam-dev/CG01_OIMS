@@ -28,6 +28,6 @@ public sealed record OrderStatusHistoryDto(
     OrderStatus ToStatus,
     OrderStatusHistoryActorType ActorType,
     Guid? ActorUserId,
-    OrderCancellationReasonCode ReasonCode,
+    OrderStatusReasonCode ReasonCode,
     string? Reason,
     DateTimeOffset OccurredAt);

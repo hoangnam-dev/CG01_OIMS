@@ -8,8 +8,8 @@ using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Persistence;
 
-[Collection(PostgreSqlCollectionDefinition.Name)]
-public sealed class OrderMigrationTests(PostgreSqlFixture postgres)
+[Collection(MigrationPostgreSqlCollectionDefinition.Name)]
+public sealed class OrderMigrationTests(MigrationPostgreSqlFixture postgres)
 {
     [Fact]
     public async Task OrderMigration_CurrentDatabase_EnforcesOrderAndOrderItemConstraintsAndRollsBackChildrenFirst()

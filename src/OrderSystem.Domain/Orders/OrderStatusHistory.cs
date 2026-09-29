@@ -17,7 +17,7 @@ public sealed class OrderStatusHistory
         Guid? actorUserId,
         DateTimeOffset occurredAt,
         string? reason,
-        OrderCancellationReasonCode reasonCode)
+        OrderStatusReasonCode reasonCode)
     {
         Id = DomainGuard.RequiredGuid(id);
         OrderId = DomainGuard.RequiredGuid(orderId);
@@ -60,7 +60,7 @@ public sealed class OrderStatusHistory
     public Guid? ActorUserId { get; private set; }
     public DateTimeOffset OccurredAt { get; private set; }
     public string? Reason { get; private set; }
-    public OrderCancellationReasonCode ReasonCode { get; private set; }
+    public OrderStatusReasonCode ReasonCode { get; private set; }
 
     private static string? NormalizeReason(string? reason) =>
         string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
