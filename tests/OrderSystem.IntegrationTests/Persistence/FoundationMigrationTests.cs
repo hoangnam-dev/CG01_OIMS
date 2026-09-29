@@ -8,8 +8,8 @@ using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Persistence;
 
-[Collection(PostgreSqlCollectionDefinition.Name)]
-public sealed class FoundationMigrationTests(PostgreSqlFixture postgres)
+[Collection(MigrationPostgreSqlCollectionDefinition.Name)]
+public sealed class FoundationMigrationTests(MigrationPostgreSqlFixture postgres)
 {
     [Fact]
     public async Task FoundationMigration_EmptyDatabase_CreatesConstrainedUsersTable()

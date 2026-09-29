@@ -8,8 +8,8 @@ using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Persistence;
 
-[Collection(PostgreSqlCollectionDefinition.Name)]
-public sealed class RefreshTokenMigrationTests(PostgreSqlFixture postgres)
+[Collection(MigrationPostgreSqlCollectionDefinition.Name)]
+public sealed class RefreshTokenMigrationTests(MigrationPostgreSqlFixture postgres)
 {
     private const string FirstTokenHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     private const string SecondTokenHash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";

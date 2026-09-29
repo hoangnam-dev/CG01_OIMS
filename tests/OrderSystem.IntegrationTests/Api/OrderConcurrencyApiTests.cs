@@ -280,7 +280,7 @@ public sealed class OrderConcurrencyApiTests(PostgreSqlFixture postgres)
           .ToListAsync();
         var history = Assert.Single(histories);
         Assert.Equal(OrderStatusHistoryActorType.Customer, history.ActorType);
-        Assert.Equal(OrderCancellationReasonCode.CustomerRequested, history.ReasonCode);
+        Assert.Equal(OrderStatusReasonCode.CustomerRequested, history.ReasonCode);
     }
 
     private static async Task<Guid> SeedInventoryAsync(

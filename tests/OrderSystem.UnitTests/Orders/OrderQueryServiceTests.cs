@@ -215,7 +215,7 @@ public sealed class OrderQueryServiceTests
             OrderStatus.Cancelled,
             OrderStatusHistoryActorType.Admin,
             Guid.NewGuid(),
-            OrderCancellationReasonCode.FraudSuspected,
+            OrderStatusReasonCode.FraudSuspected,
             "Risk review requires cancellation.",
             DateTimeOffset.UtcNow);
 

@@ -11,7 +11,7 @@ public sealed class WorkerHostStartupTests
     [Fact]
     public async Task Executable_WithoutApiOnlyConfiguration_StartsSuccessfully()
     {
-        var workerAssemblyPath = typeof(worker::OrderSystem.Worker.Worker).Assembly.Location;
+        var workerAssemblyPath = typeof(worker::OrderSystem.Worker.ReservationExpirationWorker).Assembly.Location;
         var output = new StringBuilder();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);

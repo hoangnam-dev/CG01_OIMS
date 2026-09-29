@@ -6,10 +6,11 @@ using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Persistence;
 
-[Collection(PostgreSqlCollectionDefinition.Name)]
-public sealed class IdempotencyMigrationTests(PostgreSqlFixture postgres)
+[Collection(MigrationPostgreSqlCollectionDefinition.Name)]
+public sealed class IdempotencyMigrationTests(MigrationPostgreSqlFixture postgres)
 {
     private const string PreviousMigration = "20260924072609_AddOrderStatusHistory";
+    private const string MigrationUnderTest = "20260925141432_AddCreateOrderIdempotency";
     private static readonly byte[] ValidRequestHash = Enumerable.Range(0, 32)
         .Select(value => (byte)value)
         .ToArray();
@@ -296,7 +297,7 @@ public sealed class IdempotencyMigrationTests(PostgreSqlFixture postgres)
     public async Task Migration_DowngradeDropsOnlyIdempotencyTable()
     {
         await using var dbContext = CreateDbContext();
-        await dbContext.Database.MigrateAsync();
+        await dbContext.Database.MigrateAsync(MigrationUnderTest);
         await using var connection = new NpgsqlConnection(postgres.ConnectionString);
         await connection.OpenAsync();
         Assert.True(await TableExistsAsync(connection, "idempotency_requests"));

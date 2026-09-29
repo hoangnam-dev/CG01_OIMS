@@ -317,15 +317,15 @@ public sealed class OrderCommandService(
         foreach (var item in orderItems.OrderBy(item => item.ProductVariantId).ThenBy(item => item.Id))
         {
             var released = await store.TryReleaseAsync(
-              item.ProductVariantId,
-              item.Quantity,
-              now,
-              cancellationToken);
+                item.ProductVariantId,
+                item.Quantity,
+                now,
+                cancellationToken);
 
             if (!released)
             {
                 throw new InvalidOperationException(
-                  $"Unable to release the inventory reservation for Product Variant '{item.ProductVariantId}'.");
+                    $"Unable to release the inventory reservation for Product Variant '{item.ProductVariantId}'.");
             }
 
             await operationHook.ReachAsync(
@@ -336,9 +336,9 @@ public sealed class OrderCommandService(
         order.Cancel(now);
 
         var releaseTransactions = orderItems
-          .OrderBy(item => item.ProductVariantId)
-          .ThenBy(item => item.Id)
-          .Select(item => new InventoryTransaction(
+            .OrderBy(item => item.ProductVariantId)
+            .ThenBy(item => item.Id)
+            .Select(item => new InventoryTransaction(
             idGenerator.NewId(),
             item.ProductVariantId,
             InventoryTransactionType.Release,
@@ -348,24 +348,27 @@ public sealed class OrderCommandService(
             order.Id,
             reason: null,
             now))
-          .ToArray();
+            .ToArray();
 
         var actorType = role == UserRole.Admin
-          ? OrderStatusHistoryActorType.Admin
-          : OrderStatusHistoryActorType.Customer;
-        var reasonCode = role == UserRole.Admin
-          ? request.ReasonCode!.Value
-          : OrderCancellationReasonCode.CustomerRequested;
+            ? OrderStatusHistoryActorType.Admin
+            : OrderStatusHistoryActorType.Customer;
+        var cancellationReasonCode = role == UserRole.Admin
+            ? request.ReasonCode!.Value
+            : OrderCancellationReasonCode.CustomerRequested;
+
+        var statusReasonCode = MapCancellationReasonCode(
+            cancellationReasonCode);
         var history = new OrderStatusHistory(
-          idGenerator.NewId(),
-          order.Id,
-          OrderStatus.PendingPayment,
-          OrderStatus.Cancelled,
-          actorType,
-          userId,
-          now,
-          request.Reason,
-          reasonCode);
+            idGenerator.NewId(),
+            order.Id,
+            OrderStatus.PendingPayment,
+            OrderStatus.Cancelled,
+            actorType,
+            userId,
+            now,
+            request.Reason,
+            statusReasonCode);
 
         store.AddInventoryTransactions(releaseTransactions);
         store.AddOrderStatusHistory(history);
@@ -415,12 +418,43 @@ public sealed class OrderCommandService(
             validationErrors: errors));
 
     private static ApplicationResult<OrderDto> OrderNotFound() =>
-      ApplicationResult.Failure<OrderDto>(ApplicationErrors.Orders.NotFound.Create());
+        ApplicationResult.Failure<OrderDto>(ApplicationErrors.Orders.NotFound.Create());
 
     private static ApplicationResult<OrderDto> NotCancellable() =>
-      ApplicationResult.Failure<OrderDto>(ApplicationErrors.Orders.NotCancellable.Create());
+        ApplicationResult.Failure<OrderDto>(ApplicationErrors.Orders.NotCancellable.Create());
 
     private static ApplicationResult<OrderDto> CancellationForbidden() =>
-      ApplicationResult.Failure<OrderDto>(ApplicationErrors.Forbidden.Create(
-        message: "The current user role is not authorized to cancel Orders."));
+        ApplicationResult.Failure<OrderDto>(ApplicationErrors.Forbidden.Create(
+            message: "The current user role is not authorized to cancel Orders."));
+
+    private static OrderStatusReasonCode MapCancellationReasonCode(
+    OrderCancellationReasonCode reasonCode) =>
+    reasonCode switch
+    {
+        OrderCancellationReasonCode.CustomerRequested =>
+            OrderStatusReasonCode.CustomerRequested,
+
+        OrderCancellationReasonCode.CustomerSupport =>
+            OrderStatusReasonCode.CustomerSupport,
+
+        OrderCancellationReasonCode.FraudSuspected =>
+            OrderStatusReasonCode.FraudSuspected,
+
+        OrderCancellationReasonCode.DuplicateOrder =>
+            OrderStatusReasonCode.DuplicateOrder,
+
+        OrderCancellationReasonCode.InventoryIssue =>
+            OrderStatusReasonCode.InventoryIssue,
+
+        OrderCancellationReasonCode.PolicyViolation =>
+            OrderStatusReasonCode.PolicyViolation,
+
+        OrderCancellationReasonCode.Other =>
+            OrderStatusReasonCode.Other,
+
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(reasonCode),
+            reasonCode,
+            "The cancellation reason code is not supported.")
+    };
 }

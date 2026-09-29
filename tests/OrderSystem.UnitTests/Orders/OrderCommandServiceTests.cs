@@ -345,7 +345,7 @@ public sealed class OrderCommandServiceTests
         Assert.Equal(OrderStatusHistoryActorType.Customer, history.ActorType);
         Assert.Equal(customer.UserId, history.ActorUserId);
         Assert.Equal("CustomerRequested", history.Reason);
-        Assert.Equal(OrderCancellationReasonCode.CustomerRequested, history.ReasonCode);
+        Assert.Equal(OrderStatusReasonCode.CustomerRequested, history.ReasonCode);
         Assert.Equal(Now, history.OccurredAt);
         Assert.Equal(1, store.SaveChangesCalls);
         Assert.Equal(1, store.Transaction.CommitCalls);
@@ -387,7 +387,7 @@ public sealed class OrderCommandServiceTests
         var history = Assert.Single(store.AddedOrderStatusHistories);
         Assert.Equal(OrderStatusHistoryActorType.Admin, history.ActorType);
         Assert.Equal(admin.UserId, history.ActorUserId);
-        Assert.Equal(OrderCancellationReasonCode.FraudSuspected, history.ReasonCode);
+        Assert.Equal(OrderStatusReasonCode.FraudSuspected, history.ReasonCode);
         Assert.Equal("Fraud review case #42", history.Reason);
         Assert.Equal(1, store.Transaction.CommitCalls);
     }
