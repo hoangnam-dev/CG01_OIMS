@@ -4,6 +4,8 @@ using OrderSystem.Domain.Users;
 using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Orders;
 using OrderSystem.Domain.Idempotency;
+using OrderSystem.Domain.Payments;
+using OrderSystem.Infrastructure.Payments.FakeProvider;
 
 namespace OrderSystem.Infrastructure.Persistence;
 
@@ -26,6 +28,11 @@ public sealed class OrderSystemDbContext(DbContextOptions<OrderSystemDbContext> 
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
 
     public DbSet<OrderStatusHistory> OrderStatusHistories => Set<OrderStatusHistory>();
+
+    public DbSet<Payment> Payments => Set<Payment>();
+    public DbSet<ProviderPaymentEvent> ProviderPaymentEvents => Set<ProviderPaymentEvent>();
+
+    internal DbSet<FakeProviderOperation> FakeProviderOperations => Set<FakeProviderOperation>();
 
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
