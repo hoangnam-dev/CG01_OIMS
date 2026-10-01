@@ -25,6 +25,7 @@ using OrderSystem.Infrastructure.Logging;
 using OrderSystem.Infrastructure.Configuration;
 using Serilog;
 using OrderSystem.Api.Idempotency;
+using OrderSystem.Application.Payments;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -112,6 +113,22 @@ builder.Services.AddScoped<OrderCommandService>(provider =>
         provider.GetRequiredService<ICreateOrderResponseSnapshotSerializer>(),
         provider.GetRequiredService<IOperationHook>(),
         reservation.Duration,
+        idempotency.ReplayWindow,
+        idempotency.RetentionWindow);
+});
+builder.Services.AddScoped<PaymentCommandService>(provider =>
+{
+    var idempotency = provider
+        .GetRequiredService<IOptions<IdempotencyOptions>>()
+        .Value;
+
+    return new PaymentCommandService(
+        provider.GetRequiredService<IPaymentInitiationStore>(),
+        provider.GetRequiredService<IPaymentGateway>(),
+        provider.GetRequiredService<ICurrentUser>(),
+        provider.GetRequiredService<IClock>(),
+        provider.GetRequiredService<IIdGenerator>(),
+        provider.GetRequiredService<IOperationHook>(),
         idempotency.ReplayWindow,
         idempotency.RetentionWindow);
 });

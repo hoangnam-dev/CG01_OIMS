@@ -41,7 +41,7 @@ internal sealed class FakePaymentGateway(
 
         var operation = await store.GetPaymentStatusAsync(providerPaymentId, clock.UtcNow, cancellationToken);
 
-        if(operation is null)
+        if (operation is null)
         {
             return PaymentStatusResult.NotFound();
         }
@@ -62,7 +62,7 @@ internal sealed class FakePaymentGateway(
         await using var providerScope = scopeFactory.CreateAsyncScope();
         var store = providerScope.ServiceProvider.GetRequiredService<FakeProviderOperationStore>();
 
-        var resolution  = await store.CreateOrGetRefundAsync(
+        var resolution = await store.CreateOrGetRefundAsync(
             request,
             idGenerator.NewId(),
             clock.UtcNow,
@@ -115,7 +115,7 @@ internal sealed class FakePaymentGateway(
 
     private static void ThrowIfResponseWasLost(FakeProviderOperationResolution resolution)
     {
-        if(!resolution.WasCreated ||
+        if (!resolution.WasCreated ||
         resolution.Operation.Scenario != PaymentScenario.SuccessButResponseLost)
         {
             return;

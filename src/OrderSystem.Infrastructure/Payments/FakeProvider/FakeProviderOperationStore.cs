@@ -32,7 +32,7 @@ internal sealed class FakeProviderOperationStore(OrderSystemDbContext dbContext)
     }
 
     public Task<FakeProviderOperationResolution> CreateOrGetRefundAsync(
-        RefundPaymentRequest  request,
+        RefundPaymentRequest request,
         Guid operationId,
         DateTimeOffset now,
         CancellationToken cancellationToken
@@ -67,15 +67,15 @@ internal sealed class FakeProviderOperationStore(OrderSystemDbContext dbContext)
                 candidate.ProviderResourceId == providerPaymentId,
                 cancellationToken
             );
-        
-        if(operation is null)
+
+        if (operation is null)
         {
             return null;
         }
 
         var isAwaitingAvailability = operation.Status == FakeProviderOperationStatus.Pending || operation.Status == FakeProviderOperationStatus.Processing;
 
-        if(isAwaitingAvailability && operation.IsAvailable(now))
+        if (isAwaitingAvailability && operation.IsAvailable(now))
         {
             operation.MarkSucceeded(now);
             await dbContext.SaveChangesAsync(cancellationToken);

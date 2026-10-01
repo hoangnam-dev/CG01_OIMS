@@ -5,8 +5,8 @@ using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Persistence;
 
-[Collection(PostgreSqlCollectionDefinition.Name)]
-public sealed class PaymentMigrationTests(PostgreSqlFixture postgres)
+[Collection(MigrationPostgreSqlCollectionDefinition.Name)]
+public sealed class PaymentMigrationTests(MigrationPostgreSqlFixture postgres)
 {
     private const string PreviousMigration = "20260928134057_AddReservationExpiredOrderStatusReason";
 

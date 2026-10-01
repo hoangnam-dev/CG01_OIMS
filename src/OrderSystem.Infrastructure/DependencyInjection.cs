@@ -22,6 +22,7 @@ using OrderSystem.Application.Idempotency;
 using OrderSystem.Infrastructure.Idempotency;
 using OrderSystem.Infrastructure.Payments.FakeProvider;
 using OrderSystem.Application.Payments;
+using OrderSystem.Infrastructure.Payments;
 
 namespace OrderSystem.Infrastructure;
 
@@ -196,6 +197,7 @@ public static class DependencyInjection
             .Validate(options => options.ReconciliationBatchSize > 0, "Payment:ReconciliationBatchSize must be positive.")
             .ValidateOnStart();
 
+        services.AddScoped<IPaymentInitiationStore, EfPaymentInitiationStore>();
         services.AddScoped<FakeProviderOperationStore>();
         services.AddSingleton<IPaymentGateway, FakePaymentGateway>();
 
