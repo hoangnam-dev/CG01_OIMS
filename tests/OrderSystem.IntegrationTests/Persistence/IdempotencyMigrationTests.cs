@@ -154,7 +154,7 @@ public sealed class IdempotencyMigrationTests(MigrationPostgreSqlFixture postgre
     }
 
     [Fact]
-    public async Task CompletedWithoutResponseBody_IsRejectedByLifecycleConstraint()
+    public async Task CompletedCreateOrderWithoutResponseBody_IsRejectedByOperationLifecycleConstraint()
     {
         await using var connection = await OpenMigratedConnectionAsync();
         var userId = await InsertUserAsync(connection);
@@ -168,7 +168,7 @@ public sealed class IdempotencyMigrationTests(MigrationPostgreSqlFixture postgre
             responseBodyJson: null,
             completedAt: DateTimeOffset.UtcNow));
 
-        AssertCheckViolation(exception, "ck_idempotency_requests_lifecycle");
+        AssertCheckViolation(exception, "ck_idempotency_requests_create_order_completed");
     }
 
     [Fact]

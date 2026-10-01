@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using OrderSystem.Application.Payments.Contracts;
 using OrderSystem.Infrastructure.Payments.FakeProvider;
 
 namespace OrderSystem.Infrastructure.Persistence.Configurations;
@@ -13,15 +14,15 @@ internal sealed class FakeProviderOperationConfiguration
         {
             table.HasCheckConstraint(
                 "ck_fake_provider_operations_type",
-                "operation_type IN ('CreatePayment', 'RefundPayment')");
+                $"operation_type IN ('{nameof(FakeProviderOperationType.CreatePayment)}', '{nameof(FakeProviderOperationType.RefundPayment)}')");
 
             table.HasCheckConstraint(
                 "ck_fake_provider_operations_scenario",
-                "scenario IN ('SUCCESS', 'FAILED', 'SUCCESS_BUT_RESPONSE_LOST', 'DELAYED_SUCCESS')");
+                $"scenario IN ('{PaymentScenarioCodes.Success}', '{PaymentScenarioCodes.Failed}', '{PaymentScenarioCodes.SuccessButResponseLost}', '{PaymentScenarioCodes.DelayedSuccess}')");
 
             table.HasCheckConstraint(
                 "ck_fake_provider_operations_status",
-                "status IN ('Pending', 'Processing', 'Succeeded', 'Failed')");
+                $"status IN ('{nameof(FakeProviderOperationStatus.Pending)}', '{nameof(FakeProviderOperationStatus.Processing)}', '{nameof(FakeProviderOperationStatus.Succeeded)}', '{nameof(FakeProviderOperationStatus.Failed)}')");
 
             table.HasCheckConstraint(
                 "ck_fake_provider_operations_amount_non_negative",
@@ -53,6 +54,7 @@ internal sealed class FakeProviderOperationConfiguration
         builder.Property(operation => operation.OperationType)
             .HasColumnName("operation_type")
             .HasMaxLength(32)
+            .HasConversion<string>()
             .IsRequired();
 
         builder.Property(operation => operation.IdempotencyKey)
@@ -72,11 +74,15 @@ internal sealed class FakeProviderOperationConfiguration
         builder.Property(operation => operation.Scenario)
             .HasColumnName("scenario")
             .HasMaxLength(32)
+            .HasConversion(
+                scenario => PaymentScenarioCodes.ToCode(scenario),
+                code => PaymentScenarioCodes.Parse(code))
             .IsRequired();
 
         builder.Property(operation => operation.Status)
             .HasColumnName("status")
             .HasMaxLength(32)
+            .HasConversion<string>()
             .IsRequired();
 
         builder.Property(operation => operation.Amount)

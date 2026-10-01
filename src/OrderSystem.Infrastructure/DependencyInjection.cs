@@ -20,6 +20,8 @@ using OrderSystem.Infrastructure.Products;
 using OrderSystem.Infrastructure.Orders;
 using OrderSystem.Application.Idempotency;
 using OrderSystem.Infrastructure.Idempotency;
+using OrderSystem.Infrastructure.Payments.FakeProvider;
+using OrderSystem.Application.Payments;
 
 namespace OrderSystem.Infrastructure;
 
@@ -193,6 +195,9 @@ public static class DependencyInjection
             .Validate(options => options.ReconciliationInterval > TimeSpan.Zero, "Payment:ReconciliationInterval must be positive.")
             .Validate(options => options.ReconciliationBatchSize > 0, "Payment:ReconciliationBatchSize must be positive.")
             .ValidateOnStart();
+
+        services.AddScoped<FakeProviderOperationStore>();
+        services.AddSingleton<IPaymentGateway, FakePaymentGateway>();
 
         return services;
     }

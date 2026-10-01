@@ -34,6 +34,10 @@ public sealed class FakeProviderOperationConfigurationTests
         AssertProperty(entityType, table, "CreatedAt", "created_at", false);
         AssertProperty(entityType, table, "UpdatedAt", "updated_at", false);
 
+        AssertEnumStoredAsString(entityType, "OperationType");
+        AssertEnumStoredAsString(entityType, "Scenario");
+        AssertEnumStoredAsString(entityType, "Status");
+
         AssertIndex(
             entityType,
             "uq_fake_provider_operations_type_key",
@@ -98,5 +102,20 @@ public sealed class FakeProviderOperationConfigurationTests
         Assert.Equal(
             propertyNames,
             index.Properties.Select(property => property.Name));
+    }
+
+    private static void AssertEnumStoredAsString(
+        IEntityType entityType,
+        string propertyName)
+    {
+        var property = entityType.FindProperty(propertyName);
+
+        Assert.NotNull(property);
+        Assert.True(property.ClrType.IsEnum);
+
+        var converter = property.GetTypeMapping().Converter;
+
+        Assert.NotNull(converter);
+        Assert.Equal(typeof(string), converter.ProviderClrType);
     }
 }

@@ -1,3 +1,5 @@
+using OrderSystem.Application.Payments.Contracts;
+
 namespace OrderSystem.Infrastructure.Payments.FakeProvider;
 
 internal sealed class FakeProviderOperation
@@ -10,12 +12,12 @@ internal sealed class FakeProviderOperation
 
     internal FakeProviderOperation(
         Guid id,
-        string operationType,
+        FakeProviderOperationType operationType,
         string idempotencyKey,
         string providerResourceId,
         string? parentProviderPaymentId,
-        string scenario,
-        string status,
+        PaymentScenario scenario,
+        FakeProviderOperationStatus status,
         decimal amount,
         DateTimeOffset? availableAt,
         DateTimeOffset createdAt,
@@ -26,15 +28,26 @@ internal sealed class FakeProviderOperation
         {
             throw new ArgumentException("Provider operation ID cannot be empty.", nameof(id));
         }
-        var normalizedOperationType = RequireOperationType(operationType);
+        if (!Enum.IsDefined(operationType))
+        {
+            throw new ArgumentOutOfRangeException(nameof(operationType), operationType, "Unsupported fake provider operation type.");
+        }
+        if (!Enum.IsDefined(scenario))
+        {
+            throw new ArgumentOutOfRangeException(nameof(scenario), scenario, "Unsupported fake provider scenario.");
+        }
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported fake provider status.");
+        }
         var normalizedParentProviderPaymentId = parentProviderPaymentId is null
             ? null
             : RequireBoundedText(parentProviderPaymentId, nameof(parentProviderPaymentId), MaximumProviderIdentifierLength, "Parent provider payment ID");
-        if (normalizedOperationType == "CreatePayment" && normalizedParentProviderPaymentId is not null)
+        if (operationType == FakeProviderOperationType.CreatePayment && normalizedParentProviderPaymentId is not null)
         {
             throw new ArgumentException("Create operations cannot have a parent provider payment ID.", nameof(parentProviderPaymentId));
         }
-        if (normalizedOperationType == "RefundPayment" && string.IsNullOrWhiteSpace(normalizedParentProviderPaymentId))
+        if (operationType == FakeProviderOperationType.RefundPayment && string.IsNullOrWhiteSpace(normalizedParentProviderPaymentId))
         {
             throw new ArgumentException("Refund operations require a parent provider payment ID.", nameof(parentProviderPaymentId));
         }
@@ -50,12 +63,12 @@ internal sealed class FakeProviderOperation
         }
 
         Id = id;
-        OperationType = normalizedOperationType;
+        OperationType = operationType;
         IdempotencyKey = RequireBoundedText(idempotencyKey, nameof(idempotencyKey), MaximumProviderIdentifierLength, "Idempotency key");
         ProviderResourceId = RequireBoundedText(providerResourceId, nameof(providerResourceId), MaximumProviderIdentifierLength, "Provider resource ID"); ;
         ParentProviderPaymentId = normalizedParentProviderPaymentId;
-        Scenario = RequireScenario(scenario);
-        Status = RequireStatus(status);
+        Scenario = scenario;
+        Status = status;
         Amount = amount;
         AvailableAt = availableAt;
         CreatedAt = createdAt;
@@ -63,12 +76,12 @@ internal sealed class FakeProviderOperation
     }
 
     public Guid Id { get; private set; }
-    public string OperationType { get; private set; } = string.Empty;
+    public FakeProviderOperationType OperationType { get; private set; }
     public string IdempotencyKey { get; private set; } = string.Empty;
     public string ProviderResourceId { get; private set; } = string.Empty;
     public string? ParentProviderPaymentId { get; private set; }
-    public string Scenario { get; private set; } = string.Empty;
-    public string Status { get; private set; } = string.Empty;
+    public PaymentScenario Scenario { get; private set; }
+    public FakeProviderOperationStatus Status { get; private set; }
     public decimal Amount { get; private set; }
     public DateTimeOffset? AvailableAt { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
@@ -88,56 +101,6 @@ internal sealed class FakeProviderOperation
         return normalizedValue;
     }
 
-    private static string RequireOperationType(string operationType)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(operationType);
-
-        var normalizedOperationType = operationType.Trim();
-
-        if (normalizedOperationType is not "CreatePayment" and not "RefundPayment")
-        {
-            throw new ArgumentOutOfRangeException(nameof(operationType), normalizedOperationType, "Unsupported fake provider operation type.");
-        }
-
-        return normalizedOperationType;
-    }
-
-    private static string RequireScenario(string scenario)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(scenario);
-
-        var normalizedScenario = scenario.Trim();
-
-        if (normalizedScenario is not "SUCCESS"
-            and not "FAILED"
-            and not "SUCCESS_BUT_RESPONSE_LOST"
-            and not "DELAYED_SUCCESS"
-        )
-        {
-            throw new ArgumentOutOfRangeException(nameof(scenario), normalizedScenario, "Unsupported fake provider scenario.");
-        }
-
-        return normalizedScenario;
-    }
-
-    private static string RequireStatus(string status)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(status);
-
-        var normalizedStatus = status.Trim();
-
-        if (normalizedStatus is not "Pending"
-            and not "Processing"
-            and not "Succeeded"
-            and not "Failed"
-        )
-        {
-            throw new ArgumentOutOfRangeException(nameof(status), normalizedStatus, "Unsupported fake provider status.");
-        }
-
-        return normalizedStatus;
-    }
-
     private void EnsureTimestampDoesNotRegress(DateTimeOffset updatedAt)
     {
         if (updatedAt < UpdatedAt)
@@ -148,40 +111,40 @@ internal sealed class FakeProviderOperation
 
     internal void MarkSucceeded(DateTimeOffset updatedAt)
     {
-        if (Status is not "Pending" and not "Processing")
+        if (Status is not FakeProviderOperationStatus.Pending and not FakeProviderOperationStatus.Processing)
         {
             return;
         }
 
         EnsureTimestampDoesNotRegress(updatedAt);
 
-        Status = "Succeeded";
+        Status = FakeProviderOperationStatus.Succeeded;
         UpdatedAt = updatedAt;
     }
 
     internal void MarkFailed(DateTimeOffset updatedAt)
     {
-        if (Status is not "Pending" and not "Processing")
+        if (Status is not FakeProviderOperationStatus.Pending and not FakeProviderOperationStatus.Processing)
         {
             return;
         }
 
         EnsureTimestampDoesNotRegress(updatedAt);
 
-        Status = "Failed";
+        Status = FakeProviderOperationStatus.Failed;
         UpdatedAt = updatedAt;
     }
 
     internal void MarkProcessing(DateTimeOffset updatedAt)
     {
-        if (Status != "Pending")
+        if (Status != FakeProviderOperationStatus.Pending)
         {
             return;
         }
 
         EnsureTimestampDoesNotRegress(updatedAt);
 
-        Status = "Processing";
+        Status = FakeProviderOperationStatus.Processing;
         UpdatedAt = updatedAt;
     }
 

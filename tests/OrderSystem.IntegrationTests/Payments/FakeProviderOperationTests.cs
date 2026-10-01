@@ -1,3 +1,4 @@
+using OrderSystem.Application.Payments.Contracts;
 using OrderSystem.Infrastructure.Payments.FakeProvider;
 
 namespace OrderSystem.IntegrationTests.Payments;
@@ -11,12 +12,12 @@ public sealed class FakeProviderOperationTests
 
         var action = () => new FakeProviderOperation(
             Guid.NewGuid(),
-            "RefundPayment",
+            FakeProviderOperationType.RefundPayment,
             "fake-refund-key",
             "fake-refund-001",
             parentProviderPaymentId: null,
-            "SUCCESS",
-            "Pending",
+            PaymentScenario.Success,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             now,
@@ -34,12 +35,12 @@ public sealed class FakeProviderOperationTests
 
         var action = () => new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: "fake-pay-parent",
-            "SUCCESS",
-            "Pending",
+            PaymentScenario.Success,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             now,
@@ -57,12 +58,12 @@ public sealed class FakeProviderOperationTests
 
         var action = () => new FakeProviderOperation(
             Guid.NewGuid(),
-            "ReversePayment",
+            (FakeProviderOperationType)999,
             "fake-key",
             "fake-resource-001",
             parentProviderPaymentId: null,
-            "SUCCESS",
-            "Pending",
+            PaymentScenario.Success,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             now,
@@ -80,12 +81,12 @@ public sealed class FakeProviderOperationTests
 
         var action = () => new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "RANDOM_OUTCOME",
-            "Pending",
+            (PaymentScenario)999,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             now,
@@ -103,12 +104,12 @@ public sealed class FakeProviderOperationTests
 
         var action = () => new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "SUCCESS",
-            "Reversed",
+            PaymentScenario.Success,
+            (FakeProviderOperationStatus)999,
             10m,
             availableAt: null,
             now,
@@ -126,12 +127,12 @@ public sealed class FakeProviderOperationTests
 
         var action = () => new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "SUCCESS",
-            "Pending",
+            PaymentScenario.Success,
+            FakeProviderOperationStatus.Pending,
             -0.01m,
             availableAt: null,
             now,
@@ -150,12 +151,12 @@ public sealed class FakeProviderOperationTests
 
         var action = () => new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "SUCCESS",
-            "Pending",
+            PaymentScenario.Success,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             createdAt,
@@ -174,12 +175,12 @@ public sealed class FakeProviderOperationTests
 
         var action = () => new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "DELAYED_SUCCESS",
-            "Pending",
+            PaymentScenario.DelayedSuccess,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt,
             createdAt,
@@ -197,12 +198,12 @@ public sealed class FakeProviderOperationTests
 
         var action = () => new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "   ",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "SUCCESS",
-            "Pending",
+            PaymentScenario.Success,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             now,
@@ -220,12 +221,12 @@ public sealed class FakeProviderOperationTests
 
         var action = () => new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             new string('x', 129),
             parentProviderPaymentId: null,
-            "SUCCESS",
-            "Pending",
+            PaymentScenario.Success,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             now,
@@ -243,12 +244,12 @@ public sealed class FakeProviderOperationTests
 
         var action = () => new FakeProviderOperation(
             Guid.NewGuid(),
-            "RefundPayment",
+            FakeProviderOperationType.RefundPayment,
             "fake-refund-key",
             "fake-refund-001",
             new string('x', 129),
-            "SUCCESS",
-            "Pending",
+            PaymentScenario.Success,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             now,
@@ -266,12 +267,12 @@ public sealed class FakeProviderOperationTests
 
         var action = () => new FakeProviderOperation(
             Guid.Empty,
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "SUCCESS",
-            "Pending",
+            PaymentScenario.Success,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             now,
@@ -290,12 +291,12 @@ public sealed class FakeProviderOperationTests
 
         var operation = new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "SUCCESS",
-            "Pending",
+            PaymentScenario.Success,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             createdAt,
@@ -303,7 +304,7 @@ public sealed class FakeProviderOperationTests
 
         operation.MarkSucceeded(succeededAt);
 
-        Assert.Equal("Succeeded", operation.Status);
+        Assert.Equal(FakeProviderOperationStatus.Succeeded, operation.Status);
         Assert.Equal(succeededAt, operation.UpdatedAt);
     }
 
@@ -315,12 +316,12 @@ public sealed class FakeProviderOperationTests
 
         var operation = new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "FAILED",
-            "Pending",
+            PaymentScenario.Failed,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             createdAt,
@@ -328,7 +329,7 @@ public sealed class FakeProviderOperationTests
 
         operation.MarkFailed(failedAt);
 
-        Assert.Equal("Failed", operation.Status);
+        Assert.Equal(FakeProviderOperationStatus.Failed, operation.Status);
         Assert.Equal(failedAt, operation.UpdatedAt);
     }
 
@@ -340,12 +341,12 @@ public sealed class FakeProviderOperationTests
 
         var operation = new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "DELAYED_SUCCESS",
-            "Pending",
+            PaymentScenario.DelayedSuccess,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: createdAt.AddMinutes(5),
             createdAt,
@@ -353,7 +354,7 @@ public sealed class FakeProviderOperationTests
 
         operation.MarkProcessing(processingAt);
 
-        Assert.Equal("Processing", operation.Status);
+        Assert.Equal(FakeProviderOperationStatus.Processing, operation.Status);
         Assert.Equal(processingAt, operation.UpdatedAt);
     }
 
@@ -366,12 +367,12 @@ public sealed class FakeProviderOperationTests
 
         var operation = new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "SUCCESS",
-            "Pending",
+            PaymentScenario.Success,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             createdAt,
@@ -380,7 +381,7 @@ public sealed class FakeProviderOperationTests
         operation.MarkSucceeded(succeededAt);
         operation.MarkFailed(lateFailedAt);
 
-        Assert.Equal("Succeeded", operation.Status);
+        Assert.Equal(FakeProviderOperationStatus.Succeeded, operation.Status);
         Assert.Equal(succeededAt, operation.UpdatedAt);
     }
 
@@ -393,12 +394,12 @@ public sealed class FakeProviderOperationTests
 
         var operation = new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "FAILED",
-            "Pending",
+            PaymentScenario.Failed,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             createdAt,
@@ -407,7 +408,7 @@ public sealed class FakeProviderOperationTests
         operation.MarkFailed(failedAt);
         operation.MarkSucceeded(lateSucceededAt);
 
-        Assert.Equal("Failed", operation.Status);
+        Assert.Equal(FakeProviderOperationStatus.Failed, operation.Status);
         Assert.Equal(failedAt, operation.UpdatedAt);
     }
 
@@ -420,12 +421,12 @@ public sealed class FakeProviderOperationTests
 
         var operation = new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "DELAYED_SUCCESS",
-            "Pending",
+            PaymentScenario.DelayedSuccess,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: createdAt.AddMinutes(2),
             createdAt,
@@ -434,7 +435,7 @@ public sealed class FakeProviderOperationTests
         operation.MarkProcessing(processingAt);
         operation.MarkSucceeded(succeededAt);
 
-        Assert.Equal("Succeeded", operation.Status);
+        Assert.Equal(FakeProviderOperationStatus.Succeeded, operation.Status);
         Assert.Equal(succeededAt, operation.UpdatedAt);
     }
 
@@ -446,12 +447,12 @@ public sealed class FakeProviderOperationTests
 
         var operation = new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "DELAYED_SUCCESS",
-            "Pending",
+            PaymentScenario.DelayedSuccess,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt,
             createdAt,
@@ -470,12 +471,12 @@ public sealed class FakeProviderOperationTests
 
         var operation = new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "DELAYED_SUCCESS",
-            "Pending",
+            PaymentScenario.DelayedSuccess,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt,
             createdAt,
@@ -493,12 +494,12 @@ public sealed class FakeProviderOperationTests
 
         var operation = new FakeProviderOperation(
             Guid.NewGuid(),
-            "CreatePayment",
+            FakeProviderOperationType.CreatePayment,
             "fake-pay-key",
             "fake-pay-001",
             parentProviderPaymentId: null,
-            "SUCCESS",
-            "Pending",
+            PaymentScenario.Success,
+            FakeProviderOperationStatus.Pending,
             10m,
             availableAt: null,
             createdAt,
