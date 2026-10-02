@@ -125,6 +125,7 @@ builder.Services.AddScoped<PaymentCommandService>(provider =>
     return new PaymentCommandService(
         provider.GetRequiredService<IPaymentInitiationStore>(),
         provider.GetRequiredService<IPaymentGateway>(),
+        provider.GetRequiredService<PaymentResultApplicationService>(),
         provider.GetRequiredService<ICurrentUser>(),
         provider.GetRequiredService<IClock>(),
         provider.GetRequiredService<IIdGenerator>(),
@@ -132,6 +133,7 @@ builder.Services.AddScoped<PaymentCommandService>(provider =>
         idempotency.ReplayWindow,
         idempotency.RetentionWindow);
 });
+builder.Services.AddScoped<PaymentResultApplicationService>();
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddOptions<AuthenticationWebOptions>()
     .Bind(builder.Configuration.GetRequiredSection(AuthenticationWebOptions.SectionName))

@@ -12,6 +12,7 @@ namespace OrderSystem.Application.Payments;
 public sealed class PaymentCommandService(
     IPaymentInitiationStore store,
     IPaymentGateway paymentGateway,
+    PaymentResultApplicationService paymentResultApplicationService,
     ICurrentUser currentUser,
     IClock clock,
     IIdGenerator idGenerator,
@@ -167,17 +168,20 @@ public sealed class PaymentCommandService(
         }
 
         var providerCommitKnown = false;
+        CreatePaymentResult? gatewayResult = null;
+        DateTimeOffset? gatewayResultReceivedAt = null;
 
         try
         {
-            _ = await paymentGateway.CreatePaymentAsync(
-            new CreatePaymentRequest(
-                PaymentId: payment.Id,
-                IdempotencyKey: payment.GatewayIdempotencyKey,
-                ProviderPaymentId: payment.ProviderPaymentId,
-                Amount: payment.Amount,
-                Scenario: request.Scenario),
-            cancellationToken);
+            gatewayResult = await paymentGateway.CreatePaymentAsync(
+                new CreatePaymentRequest(
+                    PaymentId: payment.Id,
+                    IdempotencyKey: payment.GatewayIdempotencyKey,
+                    ProviderPaymentId: payment.ProviderPaymentId,
+                    Amount: payment.Amount,
+                    Scenario: request.Scenario),
+                cancellationToken);
+            gatewayResultReceivedAt = clock.UtcNow;
             providerCommitKnown = true;
         }
         catch (PaymentGatewayResponseLostException)
@@ -191,6 +195,24 @@ public sealed class PaymentCommandService(
         if (providerCommitKnown)
         {
             await operationHook.ReachAsync(PaymentOperationCheckpoints.AfterGatewayCreate, cancellationToken);
+        }
+
+        if(gatewayResult is not null &&
+            gatewayResultReceivedAt is { } occurredAt &&
+            PaymentResultClassifier.TryClassify(gatewayResult.Status, out var outcome)
+        )
+        {
+            await paymentResultApplicationService.ApplyAsync(
+                new ApplyPaymentResultCommand(
+                    gatewayResult.ProviderPaymentId,
+                    outcome,
+                    gatewayResult.FailureCode,
+                    PaymentResultSource.SynchronousResponse,
+                    providerEvent: null,
+                    occurredAt
+                ),
+                cancellationToken
+            );
         }
 
         return ApplicationResult.Success(

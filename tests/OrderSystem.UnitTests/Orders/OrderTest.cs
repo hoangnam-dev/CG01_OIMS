@@ -173,6 +173,19 @@ public sealed class OrderTests
         Assert.Equal(CreatedAt, order.UpdatedAt);
     }
 
+    [Fact]
+    public void ExpireAfterPaymentFailure_BeforeReservationDeadline_TransitionsToExpired()
+    {
+        var order = CreateOrder();
+        var updatedAt = CreatedAt.AddMinutes(1);
+
+        order.ExpireAfterPaymentFailure(updatedAt);
+
+
+        Assert.Equal(OrderStatus.Expired, order.Status);
+        Assert.Equal(updatedAt, order.UpdatedAt);
+    }
+
     public static IEnumerable<object[]> EmptyIdCases =>
     [
         [Guid.Empty, Guid.NewGuid()],
@@ -230,7 +243,7 @@ public sealed class OrderTests
 
     private static readonly OrderStateCase[] OrderStates =
     [
-        new("PendingPayment", CreateOrder, ["Confirm", "Cancel", "Expire"]),
+        new("PendingPayment", CreateOrder, ["Confirm", "Cancel", "Expire", "ExpireAfterPaymentFailure"]),
         new("Confirmed", CreateConfirmedOrder, ["StartProcessing"]),
         new("Processing", CreateProcessingOrder, ["Complete"]),
         new("Completed", CreateCompletedOrder, []),
@@ -247,7 +260,8 @@ public sealed class OrderTests
         new("Expire", order => order.Expire(order.UpdatedAt > ReservationExpiresAt
             ? order.UpdatedAt.AddMinutes(1)
             : ReservationExpiresAt)),
-        new("RecoverFromExpiredPayment", order => order.RecoverFromExpiredPayment(order.UpdatedAt.AddMinutes(1)))
+        new("RecoverFromExpiredPayment", order => order.RecoverFromExpiredPayment(order.UpdatedAt.AddMinutes(1))),
+        new("ExpireAfterPaymentFailure", order => order.ExpireAfterPaymentFailure(order.UpdatedAt.AddMinutes(1)))
     ];
 
     private sealed record OrderStateCase(string Name, Func<Order> CreateOrder, string[] AllowedTransitions);

@@ -198,6 +198,7 @@ public static class DependencyInjection
             .ValidateOnStart();
 
         services.AddScoped<IPaymentInitiationStore, EfPaymentInitiationStore>();
+        services.AddScoped<IPaymentResultApplicationStore, EfPaymentResultApplicationStore>();
         services.AddScoped<FakeProviderOperationStore>();
         services.AddSingleton<IPaymentGateway, FakePaymentGateway>();
 
