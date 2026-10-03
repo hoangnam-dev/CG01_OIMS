@@ -2,11 +2,13 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging.Abstractions;
 using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Common.Results;
 using OrderSystem.Application.Orders;
+using OrderSystem.Application.Orders.Contracts;
 using OrderSystem.Application.Payments;
 using OrderSystem.Application.Payments.Contracts;
 using OrderSystem.Domain.Idempotency;
@@ -1591,6 +1593,1158 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
         Assert.Equal(OrderStatus.Confirmed, history.ToStatus);
     }
 
+    [Fact]
+    [Trait("Requirement", "PAY-WEB-001")]
+    public async Task ApplyAsync_SameWebhookEventTwice_PersistsOneReceiptAndAppliesOnce()
+    {
+        var now = new DateTimeOffset(2026, 10, 2, 19, 0, 0, TimeSpan.Zero);
+        var occurredAt = now.AddMinutes(-1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var gateway = new TimeoutPaymentGateway();
+
+        await using var factory = CreateFactory(
+            userId,
+            new FakeClock(now),
+            paymentGateway: gateway);
+
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, now);
+
+        var productVariantId = await SeedReservationForOrderAsync(factory, orderId, now);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(orderId, Guid.NewGuid(), PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        Assert.Equal(PaymentStatus.Pending, initiationResult.Status);
+
+        string providerPaymentId;
+
+        using (var paymentScope = factory.Services.CreateScope())
+        {
+            var db = paymentScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+            var payment = await db.Payments
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == initiationResult.PaymentId);
+
+            providerPaymentId = payment.ProviderPaymentId;
+        }
+
+        var providerEvent = new ProviderPaymentEventData(
+            "Fake",
+            "fake-event-duplicate-success-001",
+            "payment.succeeded",
+            new string('d', 64));
+
+        var command = new ApplyPaymentResultCommand(
+            providerPaymentId,
+            ProviderPaymentOutcome.Succeeded,
+            failureCode: null,
+            PaymentResultSource.Webhook,
+            providerEvent,
+            occurredAt);
+
+        using (var firstDeliveryScope = factory.Services.CreateScope())
+        {
+            var service = firstDeliveryScope.ServiceProvider.GetRequiredService<PaymentResultApplicationService>();
+
+            await service.ApplyAsync(command, CancellationToken.None);
+        }
+
+        using (var duplicateDeliveryScope = factory.Services.CreateScope())
+        {
+            var service = duplicateDeliveryScope.ServiceProvider.GetRequiredService<PaymentResultApplicationService>();
+
+            await service.ApplyAsync(command, CancellationToken.None);
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var paymentAfterDelivery = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == initiationResult.PaymentId);
+        var orderAfterDelivery = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+        var inventory = await assertionDb.Inventories
+            .AsNoTracking()
+            .SingleAsync(item => item.ProductVariantId == productVariantId);
+        var receipts = await assertionDb.ProviderPaymentEvents
+            .AsNoTracking()
+            .Where(item =>
+                item.Provider == "Fake" &&
+                item.ProviderEventId == "fake-event-duplicate-success-001")
+            .ToArrayAsync();
+        var releases = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item =>
+                item.ReferenceType == InventoryReferenceType.Order &&
+                item.ReferenceId == orderId &&
+                item.Type == InventoryTransactionType.Release)
+            .ToArrayAsync();
+        var histories = await assertionDb.OrderStatusHistories
+            .AsNoTracking()
+            .Where(item => item.OrderId == orderId)
+            .ToArrayAsync();
+
+        var receipt = Assert.Single(receipts);
+
+        Assert.Equal(initiationResult.PaymentId, receipt.PaymentId);
+        Assert.Equal(providerPaymentId, receipt.ProviderPaymentId);
+        Assert.Equal("payment.succeeded", receipt.EventType);
+        Assert.Equal(new string('d', 64), receipt.PayloadHash);
+        Assert.Equal(occurredAt, receipt.OccurredAt);
+        Assert.Equal(now, receipt.ReceivedAt);
+        Assert.Equal(now, receipt.ProcessedAt);
+
+        Assert.Equal(PaymentStatus.Succeeded, paymentAfterDelivery.Status);
+        Assert.Equal(OrderStatus.Confirmed, orderAfterDelivery.Status);
+        Assert.Equal(10, inventory.OnHandQuantity);
+        Assert.Equal(2, inventory.ReservedQuantity);
+        Assert.Empty(releases);
+
+        var history = Assert.Single(histories);
+
+        Assert.Equal(OrderStatus.PendingPayment, history.FromStatus);
+        Assert.Equal(OrderStatus.Confirmed, history.ToStatus);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-WEB-001")]
+    public async Task ApplyAsync_SameWebhookIdentityWithDifferentHash_ReturnsEventConflict()
+    {
+        var now = new DateTimeOffset(2026, 10, 2, 20, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var gateway = new TimeoutPaymentGateway();
+
+        await using var factory = CreateFactory(
+            userId,
+            new FakeClock(now),
+            paymentGateway: gateway);
+
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, now);
+
+        var productVariantId = await SeedReservationForOrderAsync(factory, orderId, now);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(orderId, Guid.NewGuid(), PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        Assert.Equal(PaymentStatus.Pending, initiationResult.Status);
+
+        string providerPaymentId;
+
+        using (var paymentScope = factory.Services.CreateScope())
+        {
+            var db = paymentScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+            var payment = await db.Payments
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == initiationResult.PaymentId);
+
+            providerPaymentId = payment.ProviderPaymentId;
+        }
+
+        const string providerEventId = "fake-event-conflict-001";
+        var originalHash = new string('a', 64);
+        var conflictingHash = new string('b', 64);
+
+        var originalCommand = new ApplyPaymentResultCommand(
+            providerPaymentId,
+            ProviderPaymentOutcome.Succeeded,
+            failureCode: null,
+            PaymentResultSource.Webhook,
+            new ProviderPaymentEventData(
+                "Fake",
+                providerEventId,
+                "payment.succeeded",
+                originalHash),
+            now.AddMinutes(-2));
+
+        var conflictingCommand = new ApplyPaymentResultCommand(
+            providerPaymentId,
+            ProviderPaymentOutcome.Failed,
+            "DECLINED",
+            PaymentResultSource.Webhook,
+            new ProviderPaymentEventData(
+                "Fake",
+                providerEventId,
+                "payment.failed",
+                conflictingHash),
+            now.AddMinutes(-1));
+
+        PaymentResultApplicationOutcome originalOutcome;
+
+        using (var originalScope = factory.Services.CreateScope())
+        {
+            var service = originalScope.ServiceProvider.GetRequiredService<PaymentResultApplicationService>();
+
+            originalOutcome = await service.ApplyAsync(
+                originalCommand,
+                CancellationToken.None);
+        }
+
+        PaymentResultApplicationOutcome conflictingOutcome;
+
+        using (var conflictingScope = factory.Services.CreateScope())
+        {
+            var service = conflictingScope.ServiceProvider.GetRequiredService<PaymentResultApplicationService>();
+
+            conflictingOutcome = await service.ApplyAsync(
+                conflictingCommand,
+                CancellationToken.None);
+        }
+
+        Assert.Equal(PaymentResultApplicationStatus.Accepted, originalOutcome.Status);
+        Assert.Equal(PaymentResultApplicationStatus.EventConflict, conflictingOutcome.Status);
+
+        using var assertionScope = factory.Services.CreateScope();
+
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var paymentAfterConflict = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == initiationResult.PaymentId);
+        var orderAfterConflict = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+        var inventory = await assertionDb.Inventories
+            .AsNoTracking()
+            .SingleAsync(item => item.ProductVariantId == productVariantId);
+        var receipts = await assertionDb.ProviderPaymentEvents
+            .AsNoTracking()
+            .Where(item =>
+                item.Provider == "Fake" &&
+                item.ProviderEventId == providerEventId)
+            .ToArrayAsync();
+        var releases = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item =>
+                item.ReferenceType == InventoryReferenceType.Order &&
+                item.ReferenceId == orderId &&
+                item.Type == InventoryTransactionType.Release)
+            .ToArrayAsync();
+        var histories = await assertionDb.OrderStatusHistories
+            .AsNoTracking()
+            .Where(item => item.OrderId == orderId)
+            .ToArrayAsync();
+
+        var receipt = Assert.Single(receipts);
+
+        Assert.Equal(originalHash, receipt.PayloadHash);
+        Assert.Equal("payment.succeeded", receipt.EventType);
+        Assert.Equal(PaymentStatus.Succeeded, paymentAfterConflict.Status);
+        Assert.Null(paymentAfterConflict.FailureCode);
+        Assert.Equal(OrderStatus.Confirmed, orderAfterConflict.Status);
+        Assert.Equal(10, inventory.OnHandQuantity);
+        Assert.Equal(2, inventory.ReservedQuantity);
+        Assert.Empty(releases);
+        Assert.Single(histories);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-WEB-002")]
+    public async Task ApplyAsync_DifferentEventIdsWithSameSuccess_PersistsBothReceiptsAndAppliesOnce()
+    {
+        var now = new DateTimeOffset(2026, 10, 2, 21, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var gateway = new TimeoutPaymentGateway();
+
+        await using var factory = CreateFactory(
+            userId,
+            new FakeClock(now),
+            paymentGateway: gateway);
+
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, now);
+
+        var productVariantId = await SeedReservationForOrderAsync(factory, orderId, now);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(orderId, Guid.NewGuid(), PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        Assert.Equal(PaymentStatus.Pending, initiationResult.Status);
+
+        string providerPaymentId;
+
+        using (var paymentScope = factory.Services.CreateScope())
+        {
+            var db = paymentScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+            var payment = await db.Payments
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == initiationResult.PaymentId);
+
+            providerPaymentId = payment.ProviderPaymentId;
+        }
+
+        const string firstProviderEventId = "fake-event-same-success-001";
+        const string secondProviderEventId = "fake-event-same-success-002";
+        var payloadHash = new string('e', 64);
+
+        var commands = new[]
+        {
+        new ApplyPaymentResultCommand(
+            providerPaymentId,
+            ProviderPaymentOutcome.Succeeded,
+            failureCode: null,
+            PaymentResultSource.Webhook,
+            new ProviderPaymentEventData(
+                "Fake",
+                firstProviderEventId,
+                "payment.succeeded",
+                payloadHash),
+            now.AddMinutes(-2)),
+        new ApplyPaymentResultCommand(
+            providerPaymentId,
+            ProviderPaymentOutcome.Succeeded,
+            failureCode: null,
+            PaymentResultSource.Webhook,
+            new ProviderPaymentEventData(
+                "Fake",
+                secondProviderEventId,
+                "payment.succeeded",
+                payloadHash),
+            now.AddMinutes(-1))
+    };
+
+        var outcomes = new List<PaymentResultApplicationOutcome>(commands.Length);
+
+        foreach (var command in commands)
+        {
+            using var applicationScope = factory.Services.CreateScope();
+
+            var service = applicationScope.ServiceProvider
+                .GetRequiredService<PaymentResultApplicationService>();
+
+            outcomes.Add(await service.ApplyAsync(command, CancellationToken.None));
+        }
+
+        Assert.All(
+            outcomes,
+            outcome => Assert.Equal(
+                PaymentResultApplicationStatus.Accepted,
+                outcome.Status));
+
+        using var assertionScope = factory.Services.CreateScope();
+
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var persistedPayment = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == initiationResult.PaymentId);
+        var persistedOrder = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+        var inventory = await assertionDb.Inventories
+            .AsNoTracking()
+            .SingleAsync(item => item.ProductVariantId == productVariantId);
+        var receipts = await assertionDb.ProviderPaymentEvents
+            .AsNoTracking()
+            .Where(item =>
+                item.Provider == "Fake" &&
+                (item.ProviderEventId == firstProviderEventId ||
+                 item.ProviderEventId == secondProviderEventId))
+            .ToArrayAsync();
+        var releases = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item =>
+                item.ReferenceType == InventoryReferenceType.Order &&
+                item.ReferenceId == orderId &&
+                item.Type == InventoryTransactionType.Release)
+            .ToArrayAsync();
+        var histories = await assertionDb.OrderStatusHistories
+            .AsNoTracking()
+            .Where(item => item.OrderId == orderId)
+            .ToArrayAsync();
+
+        Assert.Single(
+            receipts,
+            item => item.ProviderEventId == firstProviderEventId);
+        Assert.Single(
+            receipts,
+            item => item.ProviderEventId == secondProviderEventId);
+        Assert.All(
+            receipts,
+            item => Assert.Equal(payloadHash, item.PayloadHash));
+
+        Assert.Equal(PaymentStatus.Succeeded, persistedPayment.Status);
+        Assert.Null(persistedPayment.FailureCode);
+        Assert.Equal(OrderStatus.Confirmed, persistedOrder.Status);
+        Assert.Equal(10, inventory.OnHandQuantity);
+        Assert.Equal(2, inventory.ReservedQuantity);
+        Assert.Empty(releases);
+
+        var history = Assert.Single(histories);
+
+        Assert.Equal(OrderStatus.PendingPayment, history.FromStatus);
+        Assert.Equal(OrderStatus.Confirmed, history.ToStatus);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-WEB-001")]
+    public async Task ApplyAsync_UnknownProviderPayment_ReturnsNotFoundWithoutPersistingReceipt()
+    {
+        var now = new DateTimeOffset(2026, 10, 2, 22, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        const string providerPaymentId = "fake-pay-not-found";
+        const string providerEventId = "fake-event-payment-not-found-001";
+
+        await using var factory = CreateFactory(userId, new FakeClock(now));
+        await MigrateAsync(factory);
+
+        var command = new ApplyPaymentResultCommand(
+            providerPaymentId,
+            ProviderPaymentOutcome.Succeeded,
+            failureCode: null,
+            PaymentResultSource.Webhook,
+            new ProviderPaymentEventData(
+                "Fake",
+                providerEventId,
+                "payment.succeeded",
+                new string('f', 64)),
+            now.AddMinutes(-1));
+
+        PaymentResultApplicationOutcome outcome;
+
+        using (var applicationScope = factory.Services.CreateScope())
+        {
+            var service = applicationScope.ServiceProvider
+                .GetRequiredService<PaymentResultApplicationService>();
+
+            outcome = await service.ApplyAsync(command, CancellationToken.None);
+        }
+
+        Assert.Equal(
+            PaymentResultApplicationStatus.PaymentNotFound,
+            outcome.Status);
+
+        using var assertionScope = factory.Services.CreateScope();
+
+        var db = assertionScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>();
+        var receipts = await db.ProviderPaymentEvents
+            .AsNoTracking()
+            .Where(item =>
+                item.Provider == "Fake" &&
+                item.ProviderEventId == providerEventId)
+            .ToArrayAsync();
+
+        Assert.Empty(receipts);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-REC-004")]
+    public async Task ReconcileAsync_NotFoundAfterDeadline_FailsPaymentExpiresOrderAndReleasesReservationOnce()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 2, 13, 30, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var gateway = new TimeoutPaymentGateway();
+
+        await using var factory = CreateFactory(userId, clock, paymentGateway: gateway);
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, createdAt);
+        var productVariantId = await SeedReservationForOrderAsync(factory, orderId, createdAt);
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(orderId, Guid.NewGuid(), PaymentScenario.Success));
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+        clock.UtcNow = createdAt.AddMinutes(16);
+
+        using (var processorScope = factory.Services.CreateScope())
+        {
+            var processor = new PaymentReconciliationProcessor(
+                clock,
+                new PaymentScopedReconciliationStore(
+                    processorScope.ServiceProvider.GetRequiredService<IPaymentReconciliationStore>(),
+                    initiationResult.PaymentId),
+                gateway,
+                processorScope.ServiceProvider.GetRequiredService<PaymentResultApplicationService>(),
+                batchSize: 100,
+                NullLogger<PaymentReconciliationProcessor>.Instance);
+
+            await processor.RunOnceAsync(CancellationToken.None);
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+        var db = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var payment = await db.Payments.AsNoTracking().SingleAsync(item => item.Id == initiationResult.PaymentId);
+        var order = await db.Orders.AsNoTracking().SingleAsync(item => item.Id == orderId);
+        var inventory = await db.Inventories.AsNoTracking().SingleAsync(item => item.ProductVariantId == productVariantId);
+        var transactions = await db.InventoryTransactions
+            .AsNoTracking()
+            .Where(item => item.ReferenceType == InventoryReferenceType.Order && item.ReferenceId == orderId)
+            .ToArrayAsync();
+
+        Assert.Equal(PaymentStatus.Failed, payment.Status);
+        Assert.Equal(PaymentFailureCodes.OrderNotPayable, payment.FailureCode);
+        Assert.Equal(OrderStatus.Expired, order.Status);
+        Assert.Equal(0, inventory.ReservedQuantity);
+        Assert.Single(transactions, item => item.Type == InventoryTransactionType.Reserve);
+        Assert.Single(transactions, item => item.Type == InventoryTransactionType.Release);
+        Assert.Equal(1, gateway.CallCount);
+        Assert.Equal(1, gateway.StatusQueryCount);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-REC-005")]
+    public async Task ReconcileAsync_ProcessingPaymentNotFound_RemainsUnresolvedWithoutInventoryEffect()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 2, 14, 0, 0, TimeSpan.Zero);
+        var checkedAt = createdAt.AddMinutes(1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var gateway = new TimeoutPaymentGateway();
+
+        await using var factory = CreateFactory(userId, clock, paymentGateway: gateway);
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, createdAt);
+        var productVariantId = await SeedReservationForOrderAsync(factory, orderId, createdAt);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(orderId, Guid.NewGuid(), PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        using (var arrangeScope = factory.Services.CreateScope())
+        {
+            var db = arrangeScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+            var paymentArrange = await db.Payments.SingleAsync(item => item.Id == initiationResult.PaymentId);
+
+            paymentArrange.MarkProcessing(createdAt.AddSeconds(1));
+
+            await db.SaveChangesAsync();
+        }
+
+        clock.UtcNow = checkedAt;
+
+        using (var processorScope = factory.Services.CreateScope())
+        {
+            var processor = new PaymentReconciliationProcessor(
+                clock,
+                new PaymentScopedReconciliationStore(
+                    processorScope.ServiceProvider.GetRequiredService<IPaymentReconciliationStore>(),
+                    initiationResult.PaymentId),
+                gateway,
+                processorScope.ServiceProvider.GetRequiredService<PaymentResultApplicationService>(),
+                batchSize: 100,
+                NullLogger<PaymentReconciliationProcessor>.Instance);
+
+            await processor.RunOnceAsync(CancellationToken.None);
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+
+        var payment = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == initiationResult.PaymentId);
+        var order = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+        var inventory = await assertionDb.Inventories
+            .AsNoTracking()
+            .SingleAsync(item => item.ProductVariantId == productVariantId);
+        var transactions = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item => item.ReferenceType == InventoryReferenceType.Order && item.ReferenceId == orderId)
+            .ToArrayAsync();
+
+        Assert.Equal(PaymentStatus.Processing, payment.Status);
+        Assert.Null(payment.FailureCode);
+        Assert.Equal(checkedAt, payment.LastStatusCheckedAt);
+        Assert.Equal(OrderStatus.PendingPayment, order.Status);
+        Assert.Equal(2, inventory.ReservedQuantity);
+        Assert.Single(transactions, item => item.Type == InventoryTransactionType.Reserve);
+        Assert.Equal(1, gateway.CallCount);
+        Assert.Equal(1, gateway.StatusQueryCount);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-REC-002")]
+    public async Task ReconcileAsync_CrashBeforeProviderCreate_RedrivesOriginalGatewayIdentity()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 2, 15, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var idempotencyKey = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var hook = new ThrowingCheckpointHook(PaymentOperationCheckpoints.AfterLocalCommit);
+
+        await using var factory = CreateFactory(userId, clock, operationHook: hook);
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, createdAt);
+
+        var request = new InitiatePaymentRequest(
+            orderId,
+            idempotencyKey,
+            PaymentScenario.Success);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => ExecuteInitiationAsync(factory, request));
+
+        Assert.Equal(
+            $"Injected failure at '{PaymentOperationCheckpoints.AfterLocalCommit}'",
+            exception.Message);
+
+        (Guid PaymentId, string GatewayKey, string ProviderPaymentId) localIntent;
+
+        using (var beforeRecoveryScope = factory.Services.CreateScope())
+        {
+            var beforeRecoveryDb = beforeRecoveryScope.ServiceProvider
+                .GetRequiredService<OrderSystemDbContext>();
+
+            var paymentBeforeRecovery = await beforeRecoveryDb.Payments
+                .AsNoTracking()
+                .SingleAsync(item => item.OrderId == orderId);
+
+            localIntent = (
+                paymentBeforeRecovery.Id,
+                paymentBeforeRecovery.GatewayIdempotencyKey,
+                paymentBeforeRecovery.ProviderPaymentId);
+
+            Assert.Equal(PaymentStatus.Pending, paymentBeforeRecovery.Status);
+
+            var targetProviderOperationExists = await beforeRecoveryDb.FakeProviderOperations
+                .AsNoTracking()
+                .AnyAsync(operation =>
+                    operation.OperationType == FakeProviderOperationType.CreatePayment &&
+                    operation.IdempotencyKey == localIntent.GatewayKey);
+
+            Assert.False(targetProviderOperationExists);
+        }
+
+        clock.UtcNow = createdAt.AddMinutes(1);
+
+        using (var processorScope = factory.Services.CreateScope())
+        {
+            var processor = new PaymentReconciliationProcessor(
+                clock,
+                new PaymentScopedReconciliationStore(
+                    processorScope.ServiceProvider.GetRequiredService<IPaymentReconciliationStore>(),
+                    localIntent.PaymentId),
+                processorScope.ServiceProvider.GetRequiredService<IPaymentGateway>(),
+                processorScope.ServiceProvider.GetRequiredService<PaymentResultApplicationService>(),
+                batchSize: 100,
+                NullLogger<PaymentReconciliationProcessor>.Instance);
+
+            await processor.RunOnceAsync(CancellationToken.None);
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+
+        var paymentsAfterRecovery = await assertionDb.Payments
+            .AsNoTracking()
+            .Where(item => item.OrderId == orderId)
+            .ToArrayAsync();
+        var paymentAfterRecovery = Assert.Single(paymentsAfterRecovery);
+        var orderAfterRecovery = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+        var providerOperationsAfterRecovery = await assertionDb.FakeProviderOperations
+            .AsNoTracking()
+            .Where(item =>
+                item.OperationType == FakeProviderOperationType.CreatePayment &&
+                item.IdempotencyKey == localIntent.GatewayKey)
+            .ToArrayAsync();
+        var providerOperationAfterRecovery = Assert.Single(providerOperationsAfterRecovery);
+
+        Assert.Equal(localIntent.PaymentId, paymentAfterRecovery.Id);
+        Assert.Equal(PaymentStatus.Succeeded, paymentAfterRecovery.Status);
+        Assert.Equal(OrderStatus.Confirmed, orderAfterRecovery.Status);
+        Assert.Equal(localIntent.GatewayKey, providerOperationAfterRecovery.IdempotencyKey);
+        Assert.Equal(localIntent.ProviderPaymentId, providerOperationAfterRecovery.ProviderResourceId);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-REC-003")]
+    public async Task ReconcileAsync_PendingPaymentNotFoundForCancelledOrder_MarksPaymentNotPayableWithoutSideEffects()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 2, 16, 0, 0, TimeSpan.Zero);
+        var checkedAt = createdAt.AddMinutes(1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var gateway = new TimeoutPaymentGateway();
+
+        await using var factory = CreateFactory(userId, clock, paymentGateway: gateway);
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, createdAt);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(
+                orderId,
+                Guid.NewGuid(),
+                PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        using (var arrangeScope = factory.Services.CreateScope())
+        {
+            var arrangeDb = arrangeScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+            var orderArrange = await arrangeDb.Orders.SingleAsync(item => item.Id == orderId);
+
+            orderArrange.Cancel(createdAt.AddSeconds(1));
+
+            await arrangeDb.SaveChangesAsync();
+        }
+
+        clock.UtcNow = checkedAt;
+
+        using (var processorScope = factory.Services.CreateScope())
+        {
+            var processor = new PaymentReconciliationProcessor(
+                clock,
+                new PaymentScopedReconciliationStore(
+                    processorScope.ServiceProvider.GetRequiredService<IPaymentReconciliationStore>(),
+                    initiationResult.PaymentId),
+                gateway,
+                processorScope.ServiceProvider.GetRequiredService<PaymentResultApplicationService>(),
+                batchSize: 100,
+                NullLogger<PaymentReconciliationProcessor>.Instance);
+
+            await processor.RunOnceAsync(CancellationToken.None);
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+
+        var paymentAfterReconciliation = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == initiationResult.PaymentId);
+        var orderAfterReconciliation = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+        var inventoryTransactionsAfterReconciliation = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item => item.ReferenceType == InventoryReferenceType.Order && item.ReferenceId == orderId)
+            .ToArrayAsync();
+
+        Assert.Equal(PaymentStatus.Failed, paymentAfterReconciliation.Status);
+        Assert.Equal(PaymentFailureCodes.OrderNotPayable, paymentAfterReconciliation.FailureCode);
+        Assert.Equal(OrderStatus.Cancelled, orderAfterReconciliation.Status);
+        Assert.Empty(inventoryTransactionsAfterReconciliation);
+        Assert.Equal(1, gateway.CallCount);
+        Assert.Equal(1, gateway.StatusQueryCount);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-REC-003")]
+    public async Task ReconcileAsync_PendingPaymentNotFoundForExpiredOrder_MarksPaymentNotPayableWithoutDuplicateRelease()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 2, 17, 0, 0, TimeSpan.Zero);
+        var expiredAt = createdAt.AddMinutes(15);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var gateway = new TimeoutPaymentGateway();
+
+        await using var factory = CreateFactory(userId, clock, paymentGateway: gateway);
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, createdAt);
+        var productVariantId = await SeedReservationForOrderAsync(factory, orderId, createdAt);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(
+                orderId,
+                Guid.NewGuid(),
+                PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        using (var expirationScope = factory.Services.CreateScope())
+        {
+            var expirationStore = expirationScope.ServiceProvider
+                .GetRequiredService<IReservationExpirationStore>();
+
+            var expirationOutcome = await expirationStore.TryExpireAsync(
+                orderId,
+                expiredAt,
+                CancellationToken.None);
+
+            Assert.Equal(ReservationExpirationOutcome.Expired, expirationOutcome);
+        }
+
+        clock.UtcNow = expiredAt;
+
+        using (var processorScope = factory.Services.CreateScope())
+        {
+            var processor = new PaymentReconciliationProcessor(
+                clock,
+                new PaymentScopedReconciliationStore(
+                    processorScope.ServiceProvider.GetRequiredService<IPaymentReconciliationStore>(),
+                    initiationResult.PaymentId),
+                gateway,
+                processorScope.ServiceProvider.GetRequiredService<PaymentResultApplicationService>(),
+                batchSize: 100,
+                NullLogger<PaymentReconciliationProcessor>.Instance);
+
+            await processor.RunOnceAsync(CancellationToken.None);
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+
+        var paymentAfterReconciliation = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == initiationResult.PaymentId);
+        var orderAfterReconciliation = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+        var inventoryAfterReconciliation = await assertionDb.Inventories
+            .AsNoTracking()
+            .SingleAsync(item => item.ProductVariantId == productVariantId);
+        var transactionsAfterReconciliation = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item => item.ReferenceType == InventoryReferenceType.Order && item.ReferenceId == orderId)
+            .ToArrayAsync();
+        var historiesAfterReconciliation = await assertionDb.OrderStatusHistories
+            .AsNoTracking()
+            .Where(item => item.OrderId == orderId)
+            .ToArrayAsync();
+
+        Assert.Equal(PaymentStatus.Failed, paymentAfterReconciliation.Status);
+        Assert.Equal(PaymentFailureCodes.OrderNotPayable, paymentAfterReconciliation.FailureCode);
+        Assert.Equal(OrderStatus.Expired, orderAfterReconciliation.Status);
+        Assert.Equal(10, inventoryAfterReconciliation.OnHandQuantity);
+        Assert.Equal(0, inventoryAfterReconciliation.ReservedQuantity);
+        Assert.Single(
+            transactionsAfterReconciliation,
+            item => item.Type == InventoryTransactionType.Reserve);
+        Assert.Single(
+            transactionsAfterReconciliation,
+            item => item.Type == InventoryTransactionType.Release);
+        Assert.Single(historiesAfterReconciliation);
+        Assert.Equal(1, gateway.CallCount);
+        Assert.Equal(1, gateway.StatusQueryCount);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-REC-001")]
+    public async Task ReconcileAsync_ProviderCommittedButResponseWasLost_AppliesSuccessOnce()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 2, 18, 0, 0, TimeSpan.Zero);
+        var reconciledAt = createdAt.AddMinutes(1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+
+        await using var factory = CreateFactory(userId, clock);
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, createdAt);
+        var productVariantId = await SeedReservationForOrderAsync(factory, orderId, createdAt);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(
+                orderId,
+                Guid.NewGuid(),
+                PaymentScenario.SuccessButResponseLost));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        Assert.Equal(PaymentStatus.Pending, initiationResult.Status);
+
+        clock.UtcNow = reconciledAt;
+
+        using (var processorScope = factory.Services.CreateScope())
+        {
+            var processor = new PaymentReconciliationProcessor(
+                clock,
+                new PaymentScopedReconciliationStore(
+                    processorScope.ServiceProvider.GetRequiredService<IPaymentReconciliationStore>(),
+                    initiationResult.PaymentId),
+                processorScope.ServiceProvider.GetRequiredService<IPaymentGateway>(),
+                processorScope.ServiceProvider.GetRequiredService<PaymentResultApplicationService>(),
+                batchSize: 100,
+                NullLogger<PaymentReconciliationProcessor>.Instance);
+
+            await processor.RunOnceAsync(CancellationToken.None);
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+
+        var paymentsAfterReconciliation = await assertionDb.Payments
+            .AsNoTracking()
+            .Where(item => item.OrderId == orderId)
+            .ToArrayAsync();
+        var paymentAfterReconciliation = Assert.Single(paymentsAfterReconciliation);
+        var orderAfterReconciliation = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+        var inventoryAfterReconciliation = await assertionDb.Inventories
+            .AsNoTracking()
+            .SingleAsync(item => item.ProductVariantId == productVariantId);
+        var transactionsAfterReconciliation = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item => item.ReferenceType == InventoryReferenceType.Order && item.ReferenceId == orderId)
+            .ToArrayAsync();
+        var historiesAfterReconciliation = await assertionDb.OrderStatusHistories
+            .AsNoTracking()
+            .Where(item => item.OrderId == orderId)
+            .ToArrayAsync();
+        var providerOperationsAfterReconciliation = await assertionDb.FakeProviderOperations
+            .AsNoTracking()
+            .Where(item =>
+                item.OperationType == FakeProviderOperationType.CreatePayment &&
+                item.IdempotencyKey == paymentAfterReconciliation.GatewayIdempotencyKey)
+            .ToArrayAsync();
+
+        var providerOperationAfterReconciliation =
+            Assert.Single(providerOperationsAfterReconciliation);
+
+        Assert.Equal(initiationResult.PaymentId, paymentAfterReconciliation.Id);
+        Assert.Equal(PaymentStatus.Succeeded, paymentAfterReconciliation.Status);
+        Assert.Null(paymentAfterReconciliation.FailureCode);
+        Assert.Equal(OrderStatus.Confirmed, orderAfterReconciliation.Status);
+        Assert.Equal(10, inventoryAfterReconciliation.OnHandQuantity);
+        Assert.Equal(2, inventoryAfterReconciliation.ReservedQuantity);
+        Assert.Single(
+            transactionsAfterReconciliation,
+            item => item.Type == InventoryTransactionType.Reserve);
+        Assert.Single(historiesAfterReconciliation);
+        Assert.Equal(
+            paymentAfterReconciliation.ProviderPaymentId,
+            providerOperationAfterReconciliation.ProviderResourceId);
+        Assert.Equal(
+            PaymentScenario.SuccessButResponseLost,
+            providerOperationAfterReconciliation.Scenario);
+        Assert.Equal(
+            FakeProviderOperationStatus.Succeeded,
+            providerOperationAfterReconciliation.Status);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-RACE-003")]
+    public async Task ReconcileAsync_OrderCancelledBeforeNotFoundEligibilityCheck_DoesNotRedriveCreate()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 2, 19, 0, 0, TimeSpan.Zero);
+        var reconciliationAt = createdAt.AddMinutes(1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var gateway = new BlockingNotFoundPaymentGateway();
+
+        await using var factory = CreateFactory(userId, clock, paymentGateway: gateway);
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, createdAt);
+        var productVariantId = await SeedReservationForOrderAsync(factory, orderId, createdAt);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(
+                orderId,
+                Guid.NewGuid(),
+                PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        Assert.Equal(PaymentStatus.Pending, initiationResult.Status);
+
+        clock.UtcNow = reconciliationAt;
+
+        using var processorScope = factory.Services.CreateScope();
+
+        var processor = new PaymentReconciliationProcessor(
+            clock,
+            new PaymentScopedReconciliationStore(
+                processorScope.ServiceProvider.GetRequiredService<IPaymentReconciliationStore>(),
+                initiationResult.PaymentId),
+            gateway,
+            processorScope.ServiceProvider.GetRequiredService<PaymentResultApplicationService>(),
+            batchSize: 100,
+            NullLogger<PaymentReconciliationProcessor>.Instance);
+
+        var reconciliationTask = processor.RunOnceAsync(CancellationToken.None);
+
+        await gateway.StatusQueryStarted.WaitAsync(TimeSpan.FromSeconds(2));
+
+        ApplicationResult<OrderDto> cancellationResult;
+
+        using (var cancellationScope = factory.Services.CreateScope())
+        {
+            var orderCommandService = cancellationScope.ServiceProvider
+                .GetRequiredService<OrderCommandService>();
+
+            cancellationResult = await orderCommandService.CancelAsync(
+                orderId,
+                new CancelOrderRequest(Reason: "Customer requested cancellation"),
+                CancellationToken.None);
+        }
+
+        gateway.ReleaseStatusQuery();
+
+        await reconciliationTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(cancellationResult.IsSuccess);
+
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+
+        var paymentAfterRace = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == initiationResult.PaymentId);
+        var orderAfterRace = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+        var inventoryAfterRace = await assertionDb.Inventories
+            .AsNoTracking()
+            .SingleAsync(item => item.ProductVariantId == productVariantId);
+        var transactionsAfterRace = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item => item.ReferenceType == InventoryReferenceType.Order && item.ReferenceId == orderId)
+            .ToArrayAsync();
+
+        Assert.Equal(PaymentStatus.Failed, paymentAfterRace.Status);
+        Assert.Equal(PaymentFailureCodes.OrderNotPayable, paymentAfterRace.FailureCode);
+        Assert.Equal(OrderStatus.Cancelled, orderAfterRace.Status);
+        Assert.Equal(10, inventoryAfterRace.OnHandQuantity);
+        Assert.Equal(0, inventoryAfterRace.ReservedQuantity);
+        Assert.Single(
+            transactionsAfterRace,
+            item => item.Type == InventoryTransactionType.Reserve);
+        Assert.Single(
+            transactionsAfterRace,
+            item => item.Type == InventoryTransactionType.Release);
+        Assert.Equal(1, gateway.CreateCallCount);
+        Assert.Equal(1, gateway.StatusQueryCount);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-RACE-003")]
+    public async Task ReconcileAsync_OrderExpiredBeforeNotFoundEligibilityCheck_DoesNotRedriveOrReleaseTwice()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 2, 20, 0, 0, TimeSpan.Zero);
+        var expiredAt = createdAt.AddMinutes(15);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var gateway = new BlockingNotFoundPaymentGateway();
+
+        await using var factory = CreateFactory(userId, clock, paymentGateway: gateway);
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, createdAt);
+        var productVariantId = await SeedReservationForOrderAsync(factory, orderId, createdAt);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(
+                orderId,
+                Guid.NewGuid(),
+                PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        Assert.Equal(PaymentStatus.Pending, initiationResult.Status);
+
+        clock.UtcNow = expiredAt;
+
+        using var processorScope = factory.Services.CreateScope();
+
+        var processor = new PaymentReconciliationProcessor(
+            clock,
+            new PaymentScopedReconciliationStore(
+                processorScope.ServiceProvider.GetRequiredService<IPaymentReconciliationStore>(),
+                initiationResult.PaymentId),
+            gateway,
+            processorScope.ServiceProvider.GetRequiredService<PaymentResultApplicationService>(),
+            batchSize: 100,
+            NullLogger<PaymentReconciliationProcessor>.Instance);
+
+        var reconciliationTask = processor.RunOnceAsync(CancellationToken.None);
+
+        await gateway.StatusQueryStarted.WaitAsync(TimeSpan.FromSeconds(2));
+
+        ReservationExpirationOutcome expirationOutcome;
+
+        using (var expirationScope = factory.Services.CreateScope())
+        {
+            var expirationStore = expirationScope.ServiceProvider
+                .GetRequiredService<IReservationExpirationStore>();
+
+            expirationOutcome = await expirationStore.TryExpireAsync(
+                orderId,
+                expiredAt,
+                CancellationToken.None);
+        }
+
+        gateway.ReleaseStatusQuery();
+
+        await reconciliationTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(ReservationExpirationOutcome.Expired, expirationOutcome);
+
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+
+        var paymentAfterRace = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == initiationResult.PaymentId);
+        var orderAfterRace = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+        var inventoryAfterRace = await assertionDb.Inventories
+            .AsNoTracking()
+            .SingleAsync(item => item.ProductVariantId == productVariantId);
+        var transactionsAfterRace = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item => item.ReferenceType == InventoryReferenceType.Order && item.ReferenceId == orderId)
+            .ToArrayAsync();
+        var historiesAfterRace = await assertionDb.OrderStatusHistories
+            .AsNoTracking()
+            .Where(item => item.OrderId == orderId)
+            .ToArrayAsync();
+
+        Assert.Equal(PaymentStatus.Failed, paymentAfterRace.Status);
+        Assert.Equal(PaymentFailureCodes.OrderNotPayable, paymentAfterRace.FailureCode);
+        Assert.Equal(OrderStatus.Expired, orderAfterRace.Status);
+        Assert.Equal(10, inventoryAfterRace.OnHandQuantity);
+        Assert.Equal(0, inventoryAfterRace.ReservedQuantity);
+        Assert.Single(
+            transactionsAfterRace,
+            item => item.Type == InventoryTransactionType.Reserve);
+        Assert.Single(
+            transactionsAfterRace,
+            item => item.Type == InventoryTransactionType.Release);
+        Assert.Single(historiesAfterRace);
+        Assert.Equal(1, gateway.CreateCallCount);
+        Assert.Equal(1, gateway.StatusQueryCount);
+    }
+
     private static async Task AssertSingleSucceededCreateOperationAsync(
         OrderSystemDbContext db,
         Payment payment)
@@ -1642,10 +2796,10 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
     }
 
     private static async Task<Guid> SeedReservationForOrderAsync(
-    WebApplicationFactory<Program> factory,
-    Guid orderId,
-    DateTimeOffset now,
-    int quantity = 2)
+        WebApplicationFactory<Program> factory,
+        Guid orderId,
+        DateTimeOffset now,
+        int quantity = 2)
     {
         var productId = Guid.NewGuid();
         var productVariantId = Guid.NewGuid();
@@ -1707,11 +2861,11 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
             productVariantId,
             InventoryTransactionType.Reserve,
             onHandQuantityDelta: 0,
-            reservedQuantityDelta: 2,
-            InventoryReferenceType.Order,
-            orderId,
-            reason: null,
-            createdAt: now)
+                reservedQuantityDelta: quantity,
+                InventoryReferenceType.Order,
+                orderId,
+                reason: null,
+                createdAt: now)
         ]);
 
         await store.SaveChangesAsync(CancellationToken.None);
@@ -1732,43 +2886,42 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
     }
 
     private WebApplicationFactory<Program> CreateFactory(
-    Guid userId,
-    IClock clock,
-    IOperationHook? operationHook = null,
-    IPaymentGateway? paymentGateway = null) =>
-    new WebApplicationFactory<Program>()
-        .WithWebHostBuilder(builder =>
-        {
-            builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddOimsTestConfiguration(
-                    new KeyValuePair<string, string?>(
-                        "Database:ConnectionString",
-                        postgres.ConnectionString)));
-
-            builder.ConfigureServices(services =>
+        Guid userId,
+        IClock clock,
+        IOperationHook? operationHook = null,
+        IPaymentGateway? paymentGateway = null) =>
+        new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder =>
             {
-                services.RemoveAll<ICurrentUser>();
-                services.AddScoped<ICurrentUser>(
-                    _ => new TestCurrentUser(userId));
+                builder.ConfigureAppConfiguration((_, configuration) =>
+                    configuration.AddOimsTestConfiguration(
+                        new KeyValuePair<string, string?>(
+                            "Database:ConnectionString",
+                            postgres.ConnectionString)));
 
-                services.RemoveAll<IClock>();
-                services.AddSingleton(clock);
+                builder.ConfigureServices(services =>
+                {
+                    services.RemoveAll<ICurrentUser>();
+                    services.AddScoped<ICurrentUser>(
+                        _ => new TestCurrentUser(userId));
 
-                if (operationHook is not null)
-                {
-                    services.RemoveAll<IOperationHook>();
-                    services.AddSingleton<IOperationHook>(operationHook);
-                }
-                if (paymentGateway is not null)
-                {
-                    services.RemoveAll<IPaymentGateway>();
-                    services.AddSingleton(paymentGateway);
-                }
+                    services.RemoveAll<IClock>();
+                    services.AddSingleton(clock);
+
+                    if (operationHook is not null)
+                    {
+                        services.RemoveAll<IOperationHook>();
+                        services.AddSingleton<IOperationHook>(operationHook);
+                    }
+                    if (paymentGateway is not null)
+                    {
+                        services.RemoveAll<IPaymentGateway>();
+                        services.AddSingleton(paymentGateway);
+                    }
+                });
             });
-        });
 
-    private static async Task<ApplicationResult<PaymentInitiationResult>>
-    ExecuteInitiationAsync(
+    private static async Task<ApplicationResult<PaymentInitiationResult>> ExecuteInitiationAsync(
         WebApplicationFactory<Program> factory,
         InitiatePaymentRequest request)
     {
@@ -1782,8 +2935,43 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
             CancellationToken.None);
     }
 
-    private sealed class BlockingPaymentGateway
-    : IPaymentGateway
+    private sealed class PaymentScopedReconciliationStore(
+        IPaymentReconciliationStore innerStore,
+        Guid paymentId) : IPaymentReconciliationStore
+    {
+        public async Task<IReadOnlyList<PaymentReconciliationCandidate>> ListDueAsync(
+            DateTimeOffset now,
+            int batchSize,
+            CancellationToken cancellationToken)
+        {
+            var candidates = await innerStore.ListDueAsync(now, batchSize, cancellationToken);
+            var targetCandidates = candidates
+                .Where(candidate => candidate.PaymentId == paymentId)
+                .ToArray();
+
+            if (targetCandidates.Length != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Expected exactly one due reconciliation candidate for Payment '{paymentId}', but found {targetCandidates.Length}");
+            }
+
+            return targetCandidates;
+        }
+
+        public Task RecordStatusCheckAsync(
+            Guid candidatePaymentId,
+            DateTimeOffset checkedAt,
+            CancellationToken cancellationToken) =>
+            innerStore.RecordStatusCheckAsync(candidatePaymentId, checkedAt, cancellationToken);
+
+        public Task<bool> IsCreateRedriveEligibleAsync(
+            Guid candidatePaymentId,
+            DateTimeOffset now,
+            CancellationToken cancellationToken) =>
+            innerStore.IsCreateRedriveEligibleAsync(candidatePaymentId, now, cancellationToken);
+    }
+
+    private sealed class BlockingPaymentGateway : IPaymentGateway
     {
         private readonly TaskCompletionSource reached =
             new(
@@ -1842,8 +3030,10 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
     private sealed class TimeoutPaymentGateway : IPaymentGateway
     {
         private int callCount;
+        private int statusQueryCount;
 
         public int CallCount => Volatile.Read(ref callCount);
+        public int StatusQueryCount => Volatile.Read(ref statusQueryCount);
 
         public CreatePaymentRequest? Request { get; private set; }
 
@@ -1864,7 +3054,9 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
             string providerPaymentId,
             CancellationToken cancellationToken)
         {
-            throw new NotSupportedException();
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref statusQueryCount);
+            return Task.FromResult(PaymentStatusResult.NotFound());
         }
 
         public Task<RefundPaymentResult> RefundAsync(
@@ -1872,6 +3064,64 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
             CancellationToken cancellationToken)
         {
             throw new NotSupportedException();
+        }
+    }
+
+    private sealed class BlockingNotFoundPaymentGateway : IPaymentGateway
+    {
+        private readonly TaskCompletionSource statusQueryStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseStatusQuery =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int createCallCount;
+        private int statusQueryCount;
+
+        public Task StatusQueryStarted => statusQueryStarted.Task;
+        public int CreateCallCount => Volatile.Read(ref createCallCount);
+        public int StatusQueryCount => Volatile.Read(ref statusQueryCount);
+
+        public Task<CreatePaymentResult> CreatePaymentAsync(
+            CreatePaymentRequest request,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentCallCount = Interlocked.Increment(ref createCallCount);
+
+            if (currentCallCount == 1)
+            {
+                throw new TimeoutException("The initial provider create timed out");
+            }
+
+            throw new InvalidOperationException(
+                "Reconciliation must not re-drive provider create after the Order is cancelled");
+        }
+
+        public async Task<PaymentStatusResult> GetStatusAsync(
+            string providerPaymentId,
+            CancellationToken cancellationToken)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(providerPaymentId);
+            Interlocked.Increment(ref statusQueryCount);
+            statusQueryStarted.TrySetResult();
+
+            await releaseStatusQuery.Task.WaitAsync(cancellationToken);
+
+            return PaymentStatusResult.NotFound();
+        }
+
+        public Task<RefundPaymentResult> RefundAsync(
+            RefundPaymentRequest request,
+            CancellationToken cancellationToken)
+        {
+            throw new InvalidOperationException(
+                "Reconciliation must not request a refund before a provider charge exists");
+        }
+
+        public void ReleaseStatusQuery()
+        {
+            releaseStatusQuery.TrySetResult();
         }
     }
 

@@ -19,7 +19,8 @@ public sealed class Payment
         string provider,
         string providerPaymentId,
         string gatewayIdempotencyKey,
-        DateTimeOffset createdAt
+        DateTimeOffset createdAt,
+        PaymentScenario? scenario = null
     )
     {
         Id = DomainGuard.RequiredGuid(id);
@@ -28,6 +29,7 @@ public sealed class Payment
         Provider = RequireProvider(provider);
         ProviderPaymentId = RequireProviderIdentifier(providerPaymentId, nameof(providerPaymentId));
         GatewayIdempotencyKey = RequireProviderIdentifier(gatewayIdempotencyKey, nameof(gatewayIdempotencyKey));
+        Scenario = scenario is null ? null : DomainGuard.DefinedEnum(scenario.Value, nameof(scenario));
         Status = PaymentStatus.Pending;
         RefundAttemptCount = 0;
         CreatedAt = createdAt;
@@ -41,6 +43,7 @@ public sealed class Payment
     public string Provider { get; private set; } = string.Empty;
     public string ProviderPaymentId { get; private set; } = string.Empty;
     public string GatewayIdempotencyKey { get; private set; } = string.Empty;
+    public PaymentScenario? Scenario { get; private set; }
     public string? RefundIdempotencyKey { get; private set; }
     public string? ProviderRefundId { get; private set; }
     public string? FailureCode { get; private set; }
@@ -95,6 +98,15 @@ public sealed class Payment
         {
             throw new ArgumentOutOfRangeException(paramName, "Payment transition timestamp cannot be earlier than the last update");
         }
+    }
+
+    public void RecordStatusCheck(DateTimeOffset checkedAt)
+    {
+        if (LastStatusCheckedAt is not null && checkedAt < LastStatusCheckedAt)
+        {
+            throw new ArgumentOutOfRangeException(nameof(checkedAt), "Payment status check timestamp cannot be earlier than the previous check");
+        }
+        LastStatusCheckedAt = checkedAt;
     }
 
     public void MarkProcessing(DateTimeOffset updatedAt)

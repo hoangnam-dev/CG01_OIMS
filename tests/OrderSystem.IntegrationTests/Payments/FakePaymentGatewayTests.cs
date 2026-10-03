@@ -10,6 +10,7 @@ using Microsoft.Extensions.Configuration;
 using OrderSystem.Infrastructure;
 using OrderSystem.Application.Common.Clock;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using OrderSystem.Domain.Payments;
 
 namespace OrderSystem.IntegrationTests.Payments;
 

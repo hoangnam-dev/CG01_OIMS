@@ -24,6 +24,10 @@ internal sealed class PaymentConfiguration : IEntityTypeConfiguration<Payment>
                 "status IN ('Pending', 'Processing', 'Succeeded', 'Failed', 'RefundPending', 'Refunded')");
 
             table.HasCheckConstraint(
+                "ck_payments_scenario",
+                "scenario IS NULL OR scenario IN ('SUCCESS', 'FAILED', 'SUCCESS_BUT_RESPONSE_LOST', 'DELAYED_SUCCESS')");
+
+            table.HasCheckConstraint(
                 "ck_payments_failure_code_lifecycle",
                 "(status = 'Failed' AND failure_code IS NOT NULL AND failure_code = btrim(failure_code) AND length(failure_code) BETWEEN 1 AND 64) OR (status <> 'Failed' AND failure_code IS NULL)");
 
@@ -98,6 +102,13 @@ internal sealed class PaymentConfiguration : IEntityTypeConfiguration<Payment>
             .HasColumnName("gateway_idempotency_key")
             .HasMaxLength(128)
             .IsRequired();
+
+        builder.Property(payment => payment.Scenario)
+            .HasColumnName("scenario")
+            .HasMaxLength(32)
+            .HasConversion(
+                scenario => scenario == null ? null : PaymentScenarioCodes.ToCode(scenario.Value),
+                code => code == null ? null : PaymentScenarioCodes.Parse(code));
 
         builder.Property(payment => payment.RefundIdempotencyKey)
             .HasColumnName("refund_idempotency_key")

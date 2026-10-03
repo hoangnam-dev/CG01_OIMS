@@ -147,7 +147,8 @@ public sealed class PaymentCommandService(
                 provider: PaymentProviderCodes.Fake,
                 providerPaymentId: $"fake-pay-{paymentId:D}",
                 gatewayIdempotencyKey: $"fake-gateway-{paymentId:D}",
-                createdAt: now
+                createdAt: now,
+                scenario: request.Scenario
             );
 
             store.AddPayment(payment);
@@ -166,6 +167,8 @@ public sealed class PaymentCommandService(
 
             await transaction.CommitAsync(cancellationToken);
         }
+
+        await operationHook.ReachAsync(PaymentOperationCheckpoints.AfterLocalCommit, cancellationToken);
 
         var providerCommitKnown = false;
         CreatePaymentResult? gatewayResult = null;
@@ -197,7 +200,7 @@ public sealed class PaymentCommandService(
             await operationHook.ReachAsync(PaymentOperationCheckpoints.AfterGatewayCreate, cancellationToken);
         }
 
-        if(gatewayResult is not null &&
+        if (gatewayResult is not null &&
             gatewayResultReceivedAt is { } occurredAt &&
             PaymentResultClassifier.TryClassify(gatewayResult.Status, out var outcome)
         )

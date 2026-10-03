@@ -1,4 +1,4 @@
-using OrderSystem.Application.Payments.Contracts;
+using OrderSystem.Domain.Payments;
 
 namespace OrderSystem.Infrastructure.Payments.FakeProvider;
 

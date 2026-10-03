@@ -17,6 +17,7 @@ builder.Services.AddMetrics();
 builder.Services.AddSingleton<ReservationExpirationMetrics>();
 
 builder.Services.AddHostedService<ReservationExpirationWorker>();
+builder.Services.AddHostedService<PaymentReconciliationWorker>();
 
 var host = builder.Build();
 host.Run();

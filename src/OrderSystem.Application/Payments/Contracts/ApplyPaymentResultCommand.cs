@@ -12,6 +12,14 @@ public sealed record ApplyPaymentResultCommand
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(providerPaymentId);
 
+        if (source == PaymentResultSource.Webhook)
+        {
+            ArgumentNullException.ThrowIfNull(providerEvent);
+        }
+        else if (providerEvent is not null)
+        {
+            throw new ArgumentException("Provider event must be null for a non-webhook source", nameof(providerEvent));
+        }
         if (outcome == ProviderPaymentOutcome.Failed)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(failureCode);

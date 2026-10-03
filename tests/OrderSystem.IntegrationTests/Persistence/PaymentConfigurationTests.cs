@@ -29,11 +29,18 @@ public sealed class PaymentConfigurationTests
         AssertProperty(entityType, table, nameof(Payment.Provider), "provider", false, 32);
         AssertProperty(entityType, table, nameof(Payment.ProviderPaymentId), "provider_payment_id", false, 128);
         AssertProperty(entityType, table, nameof(Payment.GatewayIdempotencyKey), "gateway_idempotency_key", false, 128);
+        AssertProperty(entityType, table, nameof(Payment.Scenario), "scenario", true, 32);
         AssertProperty(entityType, table, nameof(Payment.RefundIdempotencyKey), "refund_idempotency_key", true, 128);
         AssertProperty(entityType, table, nameof(Payment.ProviderRefundId), "provider_refund_id", true, 128);
         AssertProperty(entityType, table, nameof(Payment.FailureCode), "failure_code", true, 64);
         AssertProperty(entityType, table, nameof(Payment.CreatedAt), "created_at", false);
         AssertProperty(entityType, table, nameof(Payment.UpdatedAt), "updated_at", false);
+
+        var scenarioConverter = entityType.FindProperty(nameof(Payment.Scenario))!.GetValueConverter();
+
+        Assert.NotNull(scenarioConverter);
+        Assert.Equal(PaymentScenarioCodes.DelayedSuccess, scenarioConverter.ConvertToProvider(PaymentScenario.DelayedSuccess));
+        Assert.Equal(PaymentScenario.DelayedSuccess, scenarioConverter.ConvertFromProvider(PaymentScenarioCodes.DelayedSuccess));
 
         var foreignKey = Assert.Single(entityType.GetForeignKeys());
 
@@ -62,6 +69,9 @@ public sealed class PaymentConfigurationTests
         Assert.Equal(
             "status IN ('Pending', 'Processing', 'Succeeded', 'Failed', 'RefundPending', 'Refunded')",
             constraints["ck_payments_status"]);
+        Assert.Equal(
+            "scenario IS NULL OR scenario IN ('SUCCESS', 'FAILED', 'SUCCESS_BUT_RESPONSE_LOST', 'DELAYED_SUCCESS')",
+            constraints["ck_payments_scenario"]);
         Assert.Equal(
             "(status = 'Failed' AND failure_code IS NOT NULL AND failure_code = btrim(failure_code) AND length(failure_code) BETWEEN 1 AND 64) OR (status <> 'Failed' AND failure_code IS NULL)",
             constraints["ck_payments_failure_code_lifecycle"]);

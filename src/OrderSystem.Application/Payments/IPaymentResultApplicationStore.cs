@@ -16,6 +16,7 @@ public interface IPaymentResultApplicationStore
     Task<Order?> GetOrderForUpdateAsync(Guid orderId, CancellationToken cancellationToken);
     Task<IReadOnlyList<OrderItem>> ListOrderItemsAsync(Guid orderId, CancellationToken cancellationToken);
     Task<bool> TryReleaseReservationAsync(Guid productVariantId, int quantity, DateTimeOffset updatedAt, CancellationToken cancellationToken);
+    Task<ProviderPaymentEventClaimOutcome> ClaimProviderPaymentEventAsync(ProviderPaymentEvent providerPaymentEvent, CancellationToken cancellationToken);
     void AddInventoryTransactions(IEnumerable<InventoryTransaction> transactions);
     void AddOrderStatusHistory(OrderStatusHistory history);
     Task SaveChangesAsync(CancellationToken cancellationToken);

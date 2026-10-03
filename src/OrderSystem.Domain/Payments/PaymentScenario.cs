@@ -1,4 +1,4 @@
-namespace OrderSystem.Application.Payments.Contracts;
+namespace OrderSystem.Domain.Payments;
 
 public enum PaymentScenario
 {

@@ -23,13 +23,47 @@ public sealed class PaymentResultApplicationService(
         if (payment is null)
         {
             await transaction.CommitAsync(cancellationToken);
-            return new PaymentResultApplicationOutcome();
+            return new PaymentResultApplicationOutcome(PaymentResultApplicationStatus.PaymentNotFound);
+        }
+
+        var now = clock.UtcNow;
+        if (command.Source == PaymentResultSource.Webhook)
+        {
+            var providerEventData = command.ProviderEvent
+            ?? throw new InvalidOperationException("Webhook result is missing provider event data");
+
+            var providerEvent = new ProviderPaymentEvent(
+                idGenerator.NewId(),
+                payment.Id,
+                providerEventData.Provider,
+                providerEventData.ProviderEventId,
+                command.ProviderPaymentId,
+                providerEventData.EventType,
+                providerEventData.PayloadHash,
+                command.OccurredAt,
+                receivedAt: now,
+                processedAt: now
+            );
+
+            var claimOutcome = await store.ClaimProviderPaymentEventAsync(providerEvent, cancellationToken);
+
+            if (claimOutcome is ProviderPaymentEventClaimOutcome.Duplicate or
+    ProviderPaymentEventClaimOutcome.Conflict)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                var status = claimOutcome == ProviderPaymentEventClaimOutcome.Duplicate
+                    ? PaymentResultApplicationStatus.Duplicate
+                    : PaymentResultApplicationStatus.EventConflict;
+                return new PaymentResultApplicationOutcome(status);
+            }
         }
 
         var order = await store.GetOrderForUpdateAsync(payment.OrderId, cancellationToken)
         ?? throw new InvalidOperationException("Payment references a missing Order");
 
-        var now = clock.UtcNow;
+        var isOrderNotPayableReconciliation = command.Outcome == ProviderPaymentOutcome.Failed &&
+            command.Source == PaymentResultSource.Reconciliation &&
+            string.Equals(command.FailureCode, PaymentFailureCodes.OrderNotPayable, StringComparison.Ordinal);
 
         if (command.Outcome == ProviderPaymentOutcome.Succeeded &&
             payment.Status is PaymentStatus.Pending or PaymentStatus.Processing &&
@@ -54,7 +88,8 @@ public sealed class PaymentResultApplicationService(
         }
         else if (command.Outcome == ProviderPaymentOutcome.Failed &&
             payment.Status is PaymentStatus.Pending or PaymentStatus.Processing &&
-            order.Status == OrderStatus.PendingPayment)
+            order.Status == OrderStatus.PendingPayment &&
+            (!isOrderNotPayableReconciliation || payment.Status == PaymentStatus.Pending))
         {
             var failureCode = command.FailureCode ?? throw new InvalidOperationException("A failed Payment result is missing its failure code");
 
@@ -110,10 +145,17 @@ public sealed class PaymentResultApplicationService(
                 )
             );
         }
+        else if (isOrderNotPayableReconciliation &&
+            payment.Status == PaymentStatus.Pending &&
+            order.Status is OrderStatus.Expired or OrderStatus.Cancelled
+        )
+        {
+            payment.MarkFailed(command.ProviderPaymentId, PaymentFailureCodes.OrderNotPayable, now);
+        }
 
         await store.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        return new PaymentResultApplicationOutcome();
+        return new PaymentResultApplicationOutcome(PaymentResultApplicationStatus.Accepted);
     }
 }

@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using OrderSystem.Application.Payments.Contracts;
+using OrderSystem.Domain.Payments;
 using OrderSystem.Infrastructure.Payments.FakeProvider;
 
 namespace OrderSystem.Infrastructure.Persistence.Configurations;

@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
-using OrderSystem.Application.Payments.Contracts;
+using OrderSystem.Domain.Payments;
 
 namespace OrderSystem.Application.Payments;
 

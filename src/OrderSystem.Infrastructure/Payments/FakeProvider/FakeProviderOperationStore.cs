@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using OrderSystem.Application.Payments.Contracts;
+using OrderSystem.Domain.Payments;
 using OrderSystem.Infrastructure.Persistence;
 
 namespace OrderSystem.Infrastructure.Payments.FakeProvider;

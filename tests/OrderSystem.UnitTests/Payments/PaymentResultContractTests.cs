@@ -113,4 +113,65 @@ public sealed class PaymentResultContractTests
         Assert.Equal(payloadHash, actualProviderEvent.PayloadHash);
         Assert.Equal(occurredAt, command.OccurredAt);
     }
+
+    [Fact]
+    [Trait("Requirement", "PAY-WEB-001")]
+    public void ApplyPaymentResultCommand_WebhookWithoutProviderEvent_ThrowsArgumentException()
+    {
+        Action createCommand = () =>
+        {
+            _ = new ApplyPaymentResultCommand(
+                "fake-pay-123",
+                ProviderPaymentOutcome.Succeeded,
+                failureCode: null,
+                PaymentResultSource.Webhook,
+                providerEvent: null,
+                occurredAt: new DateTimeOffset(2026, 10, 2, 18, 0, 0, TimeSpan.Zero));
+        };
+
+        var exception = Assert.ThrowsAny<ArgumentException>(createCommand);
+
+        Assert.Equal("providerEvent", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(PaymentResultSource.SynchronousResponse)]
+    [InlineData(PaymentResultSource.Reconciliation)]
+    public void ApplyPaymentResultCommand_NonWebhookWithProviderEvent_ThrowsArgumentException(
+    PaymentResultSource source)
+    {
+        var providerEvent = new ProviderPaymentEventData(
+            "Fake",
+            "fake-event-invalid-source-001",
+            "payment.succeeded",
+            new string('a', 64));
+
+        Action createCommand = () =>
+        {
+            _ = new ApplyPaymentResultCommand(
+                "fake-pay-123",
+                ProviderPaymentOutcome.Succeeded,
+                failureCode: null,
+                source,
+                providerEvent,
+                occurredAt: new DateTimeOffset(2026, 10, 2, 18, 0, 0, TimeSpan.Zero));
+        };
+
+        var exception = Assert.ThrowsAny<ArgumentException>(createCommand);
+
+        Assert.Equal("providerEvent", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(PaymentResultApplicationStatus.Accepted)]
+    [InlineData(PaymentResultApplicationStatus.Duplicate)]
+    [InlineData(PaymentResultApplicationStatus.PaymentNotFound)]
+    [InlineData(PaymentResultApplicationStatus.EventConflict)]
+    public void PaymentResultApplicationOutcome_PreservesStatus(
+    PaymentResultApplicationStatus status)
+    {
+        var outcome = new PaymentResultApplicationOutcome(status);
+
+        Assert.Equal(status, outcome.Status);
+    }
 }

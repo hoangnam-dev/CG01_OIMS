@@ -3,6 +3,7 @@ using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Application.Payments;
 using OrderSystem.Application.Payments.Contracts;
+using OrderSystem.Domain.Payments;
 
 namespace OrderSystem.Infrastructure.Payments.FakeProvider;
 
@@ -91,16 +92,6 @@ internal sealed class FakePaymentGateway(
             FailureCode: outcome.FailureCode
         );
     }
-
-    private static PaymentGatewayStatus MapStatus(FakeProviderOperationStatus status) =>
-        status switch
-        {
-            FakeProviderOperationStatus.Pending => PaymentGatewayStatus.Pending,
-            FakeProviderOperationStatus.Processing => PaymentGatewayStatus.Processing,
-            FakeProviderOperationStatus.Succeeded => PaymentGatewayStatus.Succeeded,
-            FakeProviderOperationStatus.Failed => PaymentGatewayStatus.Failed,
-            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported fake provider operation status.")
-        };
 
     private static (PaymentGatewayStatus Status, string? FailureCode) MapProviderOutcome(FakeProviderOperation operation) =>
     (operation.Scenario, operation.Status) switch

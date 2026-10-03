@@ -26,8 +26,39 @@ using OrderSystem.Infrastructure.Configuration;
 using Serilog;
 using OrderSystem.Api.Idempotency;
 using OrderSystem.Application.Payments;
+using OrderSystem.Api.Payments;
 
 var builder = WebApplication.CreateBuilder(args);
+
+var fakeWebhookEnabled = builder.Environment.IsDevelopment() ||
+    builder.Environment.IsEnvironment("Test");
+
+if (fakeWebhookEnabled)
+{
+    builder.Services.AddSingleton(provider =>
+    {
+        var configuration = provider.GetRequiredService<IConfiguration>();
+        var encodedSecret = configuration["Payment:FakeWebhookSecret"]
+            ?? throw new InvalidOperationException("Payment:FakeWebhookSecret is required");
+
+        byte[] webhookSecret;
+        try
+        {
+            webhookSecret = Convert.FromBase64String(encodedSecret);
+        }
+        catch (FormatException exception)
+        {
+            throw new InvalidOperationException("Payment:FakeWebhookSecret must be valid Base64", exception);
+        }
+
+        if (webhookSecret.Length < 32)
+        {
+            throw new InvalidOperationException("Payment:FakeWebhookSecret must contain at least 32 bytes");
+        }
+
+        return new FakeWebhookSignatureValidator(webhookSecret, TimeSpan.FromMinutes(5));
+    });
+}
 
 builder.Services.AddSerilog(loggerConfiguration =>
     loggerConfiguration.ConfigureOimsLogging(builder.Configuration, "OrderSystem.Api"));
@@ -133,7 +164,6 @@ builder.Services.AddScoped<PaymentCommandService>(provider =>
         idempotency.ReplayWindow,
         idempotency.RetentionWindow);
 });
-builder.Services.AddScoped<PaymentResultApplicationService>();
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddOptions<AuthenticationWebOptions>()
     .Bind(builder.Configuration.GetRequiredSection(AuthenticationWebOptions.SectionName))
@@ -268,6 +298,10 @@ app.MapFoundationEndpoints();
 app.MapAuthenticationEndpoints();
 app.MapProductCatalogEndpoints();
 app.MapInventoryEndpoints();
+if (fakeWebhookEnabled)
+{
+    app.MapFakePaymentWebhookEndpoints();
+}
 app.MapOrderEndpoints();
 
 app.Run();

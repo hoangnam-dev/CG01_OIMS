@@ -21,7 +21,8 @@ public sealed class PaymentTests
             "Fake",
             providerPaymentId,
             gatewayIdempotencyKey,
-            CreatedAt);
+            CreatedAt,
+            PaymentScenario.DelayedSuccess);
 
         Assert.Equal(paymentId, payment.Id);
         Assert.Equal(orderId, payment.OrderId);
@@ -30,6 +31,7 @@ public sealed class PaymentTests
         Assert.Equal("Fake", payment.Provider);
         Assert.Equal(providerPaymentId, payment.ProviderPaymentId);
         Assert.Equal(gatewayIdempotencyKey, payment.GatewayIdempotencyKey);
+        Assert.Equal(PaymentScenario.DelayedSuccess, payment.Scenario);
 
         Assert.Null(payment.RefundIdempotencyKey);
         Assert.Null(payment.ProviderRefundId);
@@ -200,6 +202,36 @@ public sealed class PaymentTests
 
         Assert.Equal(PaymentStatus.Processing, payment.Status);
         Assert.Equal(updatedAt, payment.UpdatedAt);
+    }
+
+    [Fact]
+    public void RecordStatusCheck_WhenPending_StoresReconciliationEvidenceWithoutChangingState()
+    {
+        var payment = CreatePayment();
+        var checkedAt = CreatedAt.AddMinutes(1);
+
+        payment.RecordStatusCheck(checkedAt);
+
+        Assert.Equal(checkedAt, payment.LastStatusCheckedAt);
+        Assert.Equal(PaymentStatus.Pending, payment.Status);
+        Assert.Equal(CreatedAt, payment.UpdatedAt);
+    }
+
+    [Fact]
+    public void RecordStatusCheck_WithTimestampBeforePreviousCheck_ThrowsAndPreservesEvidence()
+    {
+        var payment = CreatePayment();
+        var firstCheckedAt = CreatedAt.AddMinutes(2);
+        var regressedCheckedAt = CreatedAt.AddMinutes(1);
+        payment.RecordStatusCheck(firstCheckedAt);
+
+        var action = () => payment.RecordStatusCheck(regressedCheckedAt);
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(action);
+
+        Assert.Equal("checkedAt", exception.ParamName);
+        Assert.Equal(firstCheckedAt, payment.LastStatusCheckedAt);
+        Assert.Equal(CreatedAt, payment.UpdatedAt);
     }
 
     [Fact]

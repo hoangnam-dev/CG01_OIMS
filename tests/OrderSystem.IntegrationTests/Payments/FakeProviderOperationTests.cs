@@ -1,4 +1,5 @@
 using OrderSystem.Application.Payments.Contracts;
+using OrderSystem.Domain.Payments;
 using OrderSystem.Infrastructure.Payments.FakeProvider;
 
 namespace OrderSystem.IntegrationTests.Payments;

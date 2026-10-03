@@ -62,6 +62,7 @@ public sealed class ConfigurationValidationTests
     [InlineData("Reservation:Duration", "00:00:00", "Duration")]
     [InlineData("Retry:MaxAttempts", "0", "MaxAttempts")]
     [InlineData("Payment:ReconciliationInterval", "00:00:00", "ReconciliationInterval")]
+    [InlineData("Payment:ReconciliationBatchSize", "101", "ReconciliationBatchSize")]
     [InlineData("Authentication:RefreshPermitLimit", "0", "RefreshPermitLimit")]
     [InlineData("Authentication:RefreshWindow", "00:00:00", "RefreshWindow")]
     [InlineData("Authentication:RefreshTokenCleanupInterval", "00:00:00", "RefreshTokenCleanupInterval")]
