@@ -7,6 +7,8 @@ internal static class TestConfiguration
 {
     public static string SigningKey { get; } =
         Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+    public static string FakeWebhookSecret { get; } =
+        Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
 
     public static IConfigurationBuilder AddOimsTestConfiguration(
         this IConfigurationBuilder configuration,
@@ -16,7 +18,8 @@ internal static class TestConfiguration
         {
             ["Jwt:SigningKey"] = SigningKey,
             ["AdminBootstrap:Enabled"] = bool.FalseString,
-            ["Idempotency:CleanupEnabled"] = bool.FalseString
+            ["Idempotency:CleanupEnabled"] = bool.FalseString,
+            ["Payment:FakeWebhookSecret"] = FakeWebhookSecret,
         };
         foreach (var setting in overrides)
         {

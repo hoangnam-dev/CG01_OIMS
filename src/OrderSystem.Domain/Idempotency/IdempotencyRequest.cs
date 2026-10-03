@@ -71,6 +71,10 @@ public sealed class IdempotencyRequest
       DateTimeOffset completedAt
     )
     {
+        if (Operation != IdempotencyOperation.CreateOrder)
+        {
+            throw new InvalidOperationException("Only CreateOrder idempotency requests can store a response snapshot.");
+        }
         if (Status != IdempotencyRequestStatus.Processing)
         {
             throw new InvalidOperationException("Only a Processing idempotency request can be completed");
@@ -98,6 +102,28 @@ public sealed class IdempotencyRequest
         Status = IdempotencyRequestStatus.Completed;
         HttpStatusCode = httpStatusCode;
         ResponseBodyJson = responseBodyJson;
+        CompletedAt = completedAt;
+    }
+
+    public void BindPaymentIntent(Guid paymentId, DateTimeOffset completedAt)
+    {
+        if (Operation != IdempotencyOperation.InitiatePayment)
+        {
+            throw new InvalidOperationException("Only InitiatePayment idempotency requests can bind a Payment.");
+        }
+        if (Status != IdempotencyRequestStatus.Processing)
+        {
+            throw new InvalidOperationException("Only a Processing idempotency request can be completed.");
+        }
+
+        var requiredPaymentId = DomainGuard.RequiredGuid(paymentId);
+        if (completedAt < CreatedAt)
+        {
+            throw new ArgumentOutOfRangeException(nameof(completedAt), "Completion cannot precede creation.");
+        }
+
+        ResourceId = requiredPaymentId;
+        Status = IdempotencyRequestStatus.Completed;
         CompletedAt = completedAt;
     }
 }

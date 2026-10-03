@@ -20,6 +20,9 @@ using OrderSystem.Infrastructure.Products;
 using OrderSystem.Infrastructure.Orders;
 using OrderSystem.Application.Idempotency;
 using OrderSystem.Infrastructure.Idempotency;
+using OrderSystem.Infrastructure.Payments.FakeProvider;
+using OrderSystem.Application.Payments;
+using OrderSystem.Infrastructure.Payments;
 
 namespace OrderSystem.Infrastructure;
 
@@ -191,8 +194,29 @@ public static class DependencyInjection
         services.AddOptions<PaymentOptions>()
             .Bind(configuration.GetRequiredSection(PaymentOptions.SectionName))
             .Validate(options => options.ReconciliationInterval > TimeSpan.Zero, "Payment:ReconciliationInterval must be positive.")
-            .Validate(options => options.ReconciliationBatchSize > 0, "Payment:ReconciliationBatchSize must be positive.")
+            .Validate(options => options.ReconciliationBatchSize is > 0 and <= 100, "Payment:ReconciliationBatchSize must be between 1 and 100")
             .ValidateOnStart();
+
+        services.AddScoped<IPaymentInitiationStore, EfPaymentInitiationStore>();
+        services.AddScoped<IPaymentResultApplicationStore, EfPaymentResultApplicationStore>();
+        services.AddScoped<IPaymentReconciliationStore, EfPaymentReconciliationStore>();
+        services.AddScoped<FakeProviderOperationStore>();
+        services.AddSingleton<IPaymentGateway, FakePaymentGateway>();
+
+        services.AddScoped<PaymentResultApplicationService>();
+        services.AddScoped(provider =>
+        {
+            var payment = provider.GetRequiredService<IOptions<PaymentOptions>>().Value;
+
+            return new PaymentReconciliationProcessor(
+                provider.GetRequiredService<IClock>(),
+                provider.GetRequiredService<IPaymentReconciliationStore>(),
+                provider.GetRequiredService<IPaymentGateway>(),
+                provider.GetRequiredService<PaymentResultApplicationService>(),
+                payment.ReconciliationBatchSize,
+                provider.GetRequiredService<ILogger<PaymentReconciliationProcessor>>()
+            );
+        });
 
         return services;
     }

@@ -9,11 +9,12 @@ namespace OrderSystem.IntegrationTests.Worker;
 public sealed class WorkerHostStartupTests
 {
     [Fact]
-    public async Task Executable_WithoutApiOnlyConfiguration_StartsSuccessfully()
+    public async Task Executable_WithoutApiOnlyConfiguration_StartsHostedWorkersSuccessfully()
     {
         var workerAssemblyPath = typeof(worker::OrderSystem.Worker.ReservationExpirationWorker).Assembly.Location;
         var output = new StringBuilder();
-        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reservationWorkerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reconciliationWorkerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         using var process = new Process
@@ -31,6 +32,7 @@ public sealed class WorkerHostStartupTests
         process.StartInfo.ArgumentList.Add(workerAssemblyPath);
         process.StartInfo.Environment["DOTNET_ENVIRONMENT"] = "Production";
         process.StartInfo.Environment.Remove("Jwt__SigningKey");
+        process.StartInfo.Environment.Remove("Payment__FakeWebhookSecret");
 
         void CaptureOutput(string? line)
         {
@@ -46,7 +48,12 @@ public sealed class WorkerHostStartupTests
 
             if (line.Contains("OrderSystem Worker started", StringComparison.Ordinal))
             {
-                started.TrySetResult();
+                reservationWorkerStarted.TrySetResult();
+            }
+
+            if (line.Contains("Payment reconciliation Worker started", StringComparison.Ordinal))
+            {
+                reconciliationWorkerStarted.TrySetResult();
             }
         }
 
@@ -60,12 +67,13 @@ public sealed class WorkerHostStartupTests
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
+            var hostedWorkersStarted = Task.WhenAll(reservationWorkerStarted.Task, reconciliationWorkerStarted.Task);
             var timeout = Task.Delay(TimeSpan.FromSeconds(10));
-            var completed = await Task.WhenAny(started.Task, exited.Task, timeout);
+            var completed = await Task.WhenAny(hostedWorkersStarted, exited.Task, timeout);
 
             Assert.True(
-                completed == started.Task,
-                $"Worker did not start without API-only configuration.{Environment.NewLine}{output}");
+                completed == hostedWorkersStarted,
+                $"Hosted workers did not start without API-only configuration{Environment.NewLine}{output}");
         }
         finally
         {

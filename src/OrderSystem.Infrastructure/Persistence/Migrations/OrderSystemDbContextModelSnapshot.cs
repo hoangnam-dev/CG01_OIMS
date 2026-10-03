@@ -98,13 +98,15 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_idempotency_requests_completion_time", "completed_at IS NULL OR completed_at >= created_at");
 
-                            t.HasCheckConstraint("ck_idempotency_requests_create_order_completed", "operation <> 'CreateOrder'\r\nOR status <> 'Completed'\r\nOR (resource_id IS NOT NULL AND http_status_code = 201)");
+                            t.HasCheckConstraint("ck_idempotency_requests_create_order_completed", "operation <> 'CreateOrder'\nOR status <> 'Completed'\nOR (\n    resource_id IS NOT NULL\n    AND http_status_code = 201\n    AND response_body_json IS NOT NULL)");
 
                             t.HasCheckConstraint("ck_idempotency_requests_http_status_code", "http_status_code IS NULL OR http_status_code BETWEEN 100 AND 599");
 
-                            t.HasCheckConstraint("ck_idempotency_requests_lifecycle", "(status = 'Processing'\r\n    AND resource_id IS NULL\r\n    AND http_status_code IS NULL\r\n    AND response_body_json IS NULL\r\n    AND completed_at IS NULL)\r\nOR\r\n(status = 'Completed'\r\n    AND http_status_code BETWEEN 200 AND 299\r\n    AND response_body_json IS NOT NULL\r\n    AND completed_at IS NOT NULL)");
+                            t.HasCheckConstraint("ck_idempotency_requests_initiate_payment_completed", "operation <> 'InitiatePayment'\nOR status <> 'Completed'\nOR (\n    resource_id IS NOT NULL\n    AND http_status_code IS NULL\n    AND response_body_json IS NULL)");
 
-                            t.HasCheckConstraint("ck_idempotency_requests_operation", "operation IN ('CreateOrder')");
+                            t.HasCheckConstraint("ck_idempotency_requests_lifecycle", "(status = 'Processing'\r\n    AND resource_id IS NULL\r\n    AND http_status_code IS NULL\r\n    AND response_body_json IS NULL\r\n    AND completed_at IS NULL)\r\nOR\n(status = 'Completed'\n    AND resource_id IS NOT NULL\n    AND completed_at IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_idempotency_requests_operation", "operation IN ('CreateOrder', 'InitiatePayment')");
 
                             t.HasCheckConstraint("ck_idempotency_requests_request_hash_length", "octet_length(request_hash) = 32");
 
@@ -427,6 +429,219 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("OrderSystem.Domain.Payments.Payment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("GatewayIdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("gateway_idempotency_key");
+
+                    b.Property<DateTimeOffset?>("LastStatusCheckedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_status_checked_at");
+
+                    b.Property<DateTimeOffset?>("ManualReviewRequiredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("manual_review_required_at");
+
+                    b.Property<DateTimeOffset?>("NextRefundAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_refund_attempt_at");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("provider");
+
+                    b.Property<string>("ProviderPaymentId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("provider_payment_id");
+
+                    b.Property<string>("ProviderRefundId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("provider_refund_id");
+
+                    b.Property<int>("RefundAttemptCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("refund_attempt_count");
+
+                    b.Property<string>("RefundIdempotencyKey")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("refund_idempotency_key");
+
+                    b.Property<DateTimeOffset?>("RefundRequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("refund_requested_at");
+
+                    b.Property<DateTimeOffset?>("RefundedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("refunded_at");
+
+                    b.Property<string>("Scenario")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("scenario");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.HasKey("Id")
+                        .HasName("pk_payments");
+
+                    b.HasIndex("GatewayIdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("uq_payments_gateway_idempotency_key");
+
+                    b.HasIndex("OrderId")
+                        .IsUnique()
+                        .HasDatabaseName("uq_payments_order_id");
+
+                    b.HasIndex("ProviderPaymentId")
+                        .IsUnique()
+                        .HasDatabaseName("uq_payments_provider_payment_id");
+
+                    b.HasIndex("ProviderRefundId")
+                        .IsUnique()
+                        .HasDatabaseName("uq_payments_provider_refund_id");
+
+                    b.HasIndex("RefundIdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("uq_payments_refund_idempotency_key");
+
+                    b.HasIndex("NextRefundAttemptAt", "Id")
+                        .HasDatabaseName("ix_payments_refund_pending")
+                        .HasFilter("status = 'RefundPending' AND manual_review_required_at IS NULL");
+
+                    b.HasIndex("LastStatusCheckedAt", "CreatedAt", "Id")
+                        .HasDatabaseName("ix_payments_unresolved")
+                        .HasFilter("status IN ('Pending', 'Processing')");
+
+                    b.ToTable("payments", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_payments_amount_non_negative", "amount >= 0");
+
+                            t.HasCheckConstraint("ck_payments_failure_code_lifecycle", "(status = 'Failed' AND failure_code IS NOT NULL AND failure_code = btrim(failure_code) AND length(failure_code) BETWEEN 1 AND 64) OR (status <> 'Failed' AND failure_code IS NULL)");
+
+                            t.HasCheckConstraint("ck_payments_refund_attempt_count_non_negative", "refund_attempt_count >= 0");
+
+                            t.HasCheckConstraint("ck_payments_refund_lifecycle", "(status IN ('Pending', 'Processing', 'Succeeded', 'Failed') AND refund_idempotency_key IS NULL AND provider_refund_id IS NULL AND refund_requested_at IS NULL AND refund_attempt_count = 0 AND next_refund_attempt_at IS NULL AND manual_review_required_at IS NULL AND refunded_at IS NULL) OR (status = 'RefundPending' AND refund_idempotency_key IS NOT NULL AND refund_idempotency_key = btrim(refund_idempotency_key) AND length(refund_idempotency_key) BETWEEN 1 AND 128 AND provider_refund_id IS NULL AND refund_requested_at IS NOT NULL AND refunded_at IS NULL AND ((manual_review_required_at IS NULL AND next_refund_attempt_at IS NOT NULL) OR (manual_review_required_at IS NOT NULL AND next_refund_attempt_at IS NULL))) OR (status = 'Refunded' AND refund_idempotency_key IS NOT NULL AND refund_idempotency_key = btrim(refund_idempotency_key) AND length(refund_idempotency_key) BETWEEN 1 AND 128 AND provider_refund_id IS NOT NULL AND provider_refund_id = btrim(provider_refund_id) AND length(provider_refund_id) BETWEEN 1 AND 128 AND refund_requested_at IS NOT NULL AND refunded_at IS NOT NULL AND refunded_at >= refund_requested_at AND next_refund_attempt_at IS NULL AND manual_review_required_at IS NULL)");
+
+                            t.HasCheckConstraint("ck_payments_scenario", "scenario IS NULL OR scenario IN ('SUCCESS', 'FAILED', 'SUCCESS_BUT_RESPONSE_LOST', 'DELAYED_SUCCESS')");
+
+                            t.HasCheckConstraint("ck_payments_status", "status IN ('Pending', 'Processing', 'Succeeded', 'Failed', 'RefundPending', 'Refunded')");
+                        });
+                });
+
+            modelBuilder.Entity("OrderSystem.Domain.Payments.ProviderPaymentEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("event_type");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<string>("PayloadHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("payload_hash");
+
+                    b.Property<Guid>("PaymentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payment_id");
+
+                    b.Property<DateTimeOffset>("ProcessedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("processed_at");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("provider");
+
+                    b.Property<string>("ProviderEventId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("provider_event_id");
+
+                    b.Property<string>("ProviderPaymentId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("provider_payment_id");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("received_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.HasKey("Id")
+                        .HasName("pk_provider_payment_events");
+
+                    b.HasIndex("PaymentId");
+
+                    b.HasIndex("Provider", "ProviderEventId")
+                        .IsUnique()
+                        .HasDatabaseName("uq_provider_payment_events_provider_event");
+
+                    b.HasIndex("Provider", "ProviderPaymentId", "OccurredAt", "Id")
+                        .HasDatabaseName("ix_provider_payment_events_provider_payment_occurred_id");
+
+                    b.ToTable("provider_payment_events", (string)null);
+                });
+
             modelBuilder.Entity("OrderSystem.Domain.Products.Product", b =>
                 {
                     b.Property<Guid>("Id")
@@ -672,6 +887,97 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("OrderSystem.Infrastructure.Payments.FakeProvider.FakeProviderOperation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<DateTimeOffset?>("AvailableAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("available_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("OperationType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("operation_type");
+
+                    b.Property<string>("ParentProviderPaymentId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("parent_provider_payment_id");
+
+                    b.Property<string>("ProviderResourceId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("provider_resource_id");
+
+                    b.Property<string>("Scenario")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("scenario");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.HasKey("Id")
+                        .HasName("pk_fake_provider_operations");
+
+                    b.HasIndex("OperationType", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("uq_fake_provider_operations_type_key");
+
+                    b.HasIndex("OperationType", "ProviderResourceId")
+                        .IsUnique()
+                        .HasDatabaseName("uq_fake_provider_operations_type_resource");
+
+                    b.ToTable("operations", "fake_provider", t =>
+                        {
+                            t.HasCheckConstraint("ck_fake_provider_operations_amount_non_negative", "amount >= 0");
+
+                            t.HasCheckConstraint("ck_fake_provider_operations_available_after_created", "available_at IS NULL OR available_at >= created_at");
+
+                            t.HasCheckConstraint("ck_fake_provider_operations_parent_identity", "(operation_type = 'CreatePayment' AND parent_provider_payment_id IS NULL) OR (operation_type = 'RefundPayment' AND parent_provider_payment_id IS NOT NULL AND parent_provider_payment_id = btrim(parent_provider_payment_id) AND length(parent_provider_payment_id) BETWEEN 1 AND 128)");
+
+                            t.HasCheckConstraint("ck_fake_provider_operations_scenario", "scenario IN ('SUCCESS', 'FAILED', 'SUCCESS_BUT_RESPONSE_LOST', 'DELAYED_SUCCESS')");
+
+                            t.HasCheckConstraint("ck_fake_provider_operations_status", "status IN ('Pending', 'Processing', 'Succeeded', 'Failed')");
+
+                            t.HasCheckConstraint("ck_fake_provider_operations_type", "operation_type IN ('CreatePayment', 'RefundPayment')");
+
+                            t.HasCheckConstraint("ck_fake_provider_operations_updated_after_created", "updated_at >= created_at");
+                        });
+                });
+
             modelBuilder.Entity("OrderSystem.Domain.Idempotency.IdempotencyRequest", b =>
                 {
                     b.HasOne("OrderSystem.Domain.Users.User", null)
@@ -743,6 +1049,26 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_order_status_history_orders_order_id");
+                });
+
+            modelBuilder.Entity("OrderSystem.Domain.Payments.Payment", b =>
+                {
+                    b.HasOne("OrderSystem.Domain.Orders.Order", null)
+                        .WithMany()
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_payments_orders_order_id");
+                });
+
+            modelBuilder.Entity("OrderSystem.Domain.Payments.ProviderPaymentEvent", b =>
+                {
+                    b.HasOne("OrderSystem.Domain.Payments.Payment", null)
+                        .WithMany()
+                        .HasForeignKey("PaymentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_provider_payment_events_payments_payment_id");
                 });
 
             modelBuilder.Entity("OrderSystem.Domain.Products.ProductVariant", b =>

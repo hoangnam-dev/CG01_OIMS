@@ -14,7 +14,7 @@ internal sealed class IdempotencyRequestConfiguration
         {
             table.HasCheckConstraint(
                 "ck_idempotency_requests_operation",
-                "operation IN ('CreateOrder')");
+                "operation IN ('CreateOrder', 'InitiatePayment')");
 
             table.HasCheckConstraint(
                 "ck_idempotency_requests_request_hash_length",
@@ -50,8 +50,7 @@ internal sealed class IdempotencyRequestConfiguration
                     AND completed_at IS NULL)
                 OR
                 (status = 'Completed'
-                    AND http_status_code BETWEEN 200 AND 299
-                    AND response_body_json IS NOT NULL
+                    AND resource_id IS NOT NULL
                     AND completed_at IS NOT NULL)
                 """);
 
@@ -60,7 +59,21 @@ internal sealed class IdempotencyRequestConfiguration
                 """
                 operation <> 'CreateOrder'
                 OR status <> 'Completed'
-                OR (resource_id IS NOT NULL AND http_status_code = 201)
+                OR (
+                    resource_id IS NOT NULL
+                    AND http_status_code = 201
+                    AND response_body_json IS NOT NULL)
+                """);
+
+            table.HasCheckConstraint(
+                "ck_idempotency_requests_initiate_payment_completed",
+                """
+                operation <> 'InitiatePayment'
+                OR status <> 'Completed'
+                OR (
+                    resource_id IS NOT NULL
+                    AND http_status_code IS NULL
+                    AND response_body_json IS NULL)
                 """);
         });
 
