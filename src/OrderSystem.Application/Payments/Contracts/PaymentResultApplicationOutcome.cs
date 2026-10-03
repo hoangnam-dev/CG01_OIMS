@@ -1,0 +1,3 @@
+namespace OrderSystem.Application.Payments.Contracts;
+
+public sealed record PaymentResultApplicationOutcome(PaymentResultApplicationStatus Status);

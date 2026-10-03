@@ -74,6 +74,9 @@ public sealed class Order
     public void RecoverFromExpiredPayment(DateTimeOffset updatedAt) =>
         Transition(OrderStatus.Expired, OrderStatus.Confirmed, updatedAt);
 
+    public void ExpireAfterPaymentFailure(DateTimeOffset updatedAt) =>
+        Transition(OrderStatus.PendingPayment, OrderStatus.Expired, updatedAt);
+
     private void Transition(OrderStatus expectedStatus, OrderStatus targetStatus, DateTimeOffset updatedAt)
     {
         EnsureStatus(expectedStatus);

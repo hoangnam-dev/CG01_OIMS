@@ -105,5 +105,33 @@ public static class ApplicationErrors
             ApplicationErrorKind.Conflict,
             "ORDER_NOT_CANCELLABLE",
             "The Order cannot be cancelled in its current status.");
+
+        public static readonly ApplicationErrorDefinition InvalidStatus = new(
+            ApplicationErrorKind.Conflict,
+            "INVALID_ORDER_STATUS",
+            "The Order status does not allow payment initiation.");
+
+        public static readonly ApplicationErrorDefinition ReservationExpired = new(
+            ApplicationErrorKind.Conflict,
+            "ORDER_RESERVATION_EXPIRED",
+            "The Order reservation has expired.");
+    }
+
+    public static class Payments
+    {
+        public static readonly ApplicationErrorDefinition AlreadyExists = new(
+            ApplicationErrorKind.Conflict,
+            "PAYMENT_ALREADY_EXISTS",
+            "The Order already has a Payment.");
+
+        public static readonly ApplicationErrorDefinition EventConflict = new(
+            ApplicationErrorKind.Conflict,
+            "PAYMENT_EVENT_CONFLICT",
+            "The provider event identity was reused with conflicting content");
+
+        public static readonly ApplicationErrorDefinition NotFound = new(
+            ApplicationErrorKind.NotFound,
+            "PAYMENT_NOT_FOUND",
+            "The Payment was not found");
     }
 }

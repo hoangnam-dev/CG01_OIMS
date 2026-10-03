@@ -68,7 +68,7 @@ public sealed class IdempotencyConfigurationTests
 
         var constraints = entityType.GetCheckConstraints()
             .ToDictionary(constraint => constraint.Name!, constraint => constraint.Sql);
-        Assert.Equal("operation IN ('CreateOrder')", constraints["ck_idempotency_requests_operation"]);
+        Assert.Equal("operation IN ('CreateOrder', 'InitiatePayment')", constraints["ck_idempotency_requests_operation"]);
         Assert.Equal("octet_length(request_hash) = 32", constraints["ck_idempotency_requests_request_hash_length"]);
         Assert.Equal("status IN ('Processing', 'Completed')", constraints["ck_idempotency_requests_status"]);
         Assert.Equal(
@@ -84,11 +84,28 @@ public sealed class IdempotencyConfigurationTests
             "response_body_json IS NULL OR octet_length(response_body_json) <= 65536",
             constraints["ck_idempotency_requests_response_body_size"]);
         AssertSql(
-            "(status = 'Processing' AND resource_id IS NULL AND http_status_code IS NULL AND response_body_json IS NULL AND completed_at IS NULL) OR (status = 'Completed' AND http_status_code BETWEEN 200 AND 299 AND response_body_json IS NOT NULL AND completed_at IS NOT NULL)",
+            """(status = 'Processing' AND resource_id IS NULL AND http_status_code IS NULL AND response_body_json IS NULL AND completed_at IS NULL) OR (status = 'Completed' AND resource_id IS NOT NULL AND completed_at IS NOT NULL)""",
             constraints["ck_idempotency_requests_lifecycle"]);
         AssertSql(
-            "operation <> 'CreateOrder' OR status <> 'Completed' OR (resource_id IS NOT NULL AND http_status_code = 201)",
+            """
+            operation <> 'CreateOrder'
+            OR status <> 'Completed'
+            OR (
+                resource_id IS NOT NULL
+                AND http_status_code = 201
+                AND response_body_json IS NOT NULL)
+            """,
             constraints["ck_idempotency_requests_create_order_completed"]);
+        AssertSql(
+            """
+            operation <> 'InitiatePayment'
+            OR status <> 'Completed'
+            OR (
+                resource_id IS NOT NULL
+                AND http_status_code IS NULL
+                AND response_body_json IS NULL)
+            """,
+            constraints["ck_idempotency_requests_initiate_payment_completed"]);
 
         var identityIndex = AssertIndex(
             entityType,

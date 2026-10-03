@@ -282,12 +282,133 @@ public sealed class IdempotencyRequestTests
     }
 
     [Fact]
-    public void Sprint5Catalogs_ContainOnlyApprovedOperationAndStatuses()
+    public void OperationCatalog_ContainsCreateOrderAndInitiatePayment()
     {
-        Assert.Equal([IdempotencyOperation.CreateOrder], Enum.GetValues<IdempotencyOperation>());
         Assert.Equal(
-            [IdempotencyRequestStatus.Processing, IdempotencyRequestStatus.Completed],
+            [
+                IdempotencyOperation.CreateOrder,
+                IdempotencyOperation.InitiatePayment
+            ],
+            Enum.GetValues<IdempotencyOperation>());
+
+        Assert.Equal(
+            [
+                IdempotencyRequestStatus.Processing,
+                IdempotencyRequestStatus.Completed
+            ],
             Enum.GetValues<IdempotencyRequestStatus>());
+    }
+
+    [Fact]
+    public void Constructor_ValidInitiatePaymentClaim_CreatesProcessingStateWithoutResult()
+    {
+        var request = CreateRequest(operation: IdempotencyOperation.InitiatePayment);
+
+        Assert.Equal(IdempotencyOperation.InitiatePayment, request.Operation);
+        Assert.Equal(IdempotencyRequestStatus.Processing, request.Status);
+        Assert.Null(request.ResourceId);
+        Assert.Null(request.HttpStatusCode);
+        Assert.Null(request.ResponseBodyJson);
+        Assert.Null(request.CompletedAt);
+    }
+
+    [Fact]
+    public void BindPaymentIntent_ValidPaymentId_CompletesResourceBindingWithoutSnapshot()
+    {
+        var request = CreateRequest(operation: IdempotencyOperation.InitiatePayment);
+
+        var paymentId = Guid.NewGuid();
+        var completedAt = CreatedAt.AddMinutes(1);
+
+        request.BindPaymentIntent(paymentId, completedAt);
+
+        Assert.Equal(IdempotencyRequestStatus.Completed, request.Status);
+        Assert.Equal(paymentId, request.ResourceId);
+        Assert.Equal(completedAt, request.CompletedAt);
+        Assert.Null(request.HttpStatusCode);
+        Assert.Null(request.ResponseBodyJson);
+    }
+
+    [Fact]
+    public void BindPaymentIntent_ForCreateOrder_ThrowsWithoutMutation()
+    {
+        var request = CreateRequest(operation: IdempotencyOperation.CreateOrder);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            request.BindPaymentIntent(
+                Guid.NewGuid(),
+                CreatedAt.AddMinutes(1)));
+
+        Assert.Equal(IdempotencyRequestStatus.Processing, request.Status);
+        Assert.Null(request.ResourceId);
+        Assert.Null(request.CompletedAt);
+    }
+
+    [Fact]
+    public void BindPaymentIntent_EmptyPaymentId_ThrowsWithoutMutation()
+    {
+        var request = CreateRequest(operation: IdempotencyOperation.InitiatePayment);
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            request.BindPaymentIntent(
+                Guid.Empty,
+                CreatedAt.AddMinutes(1)));
+
+        Assert.Equal("paymentId", exception.ParamName);
+        Assert.Equal(IdempotencyRequestStatus.Processing, request.Status);
+    }
+
+    [Fact]
+    public void BindPaymentIntent_CompletionBeforeCreation_ThrowsWithoutMutation()
+    {
+        var request = CreateRequest(operation: IdempotencyOperation.InitiatePayment);
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            request.BindPaymentIntent(
+                Guid.NewGuid(),
+                CreatedAt.AddTicks(-1)));
+
+        Assert.Equal("completedAt", exception.ParamName);
+        Assert.Equal(IdempotencyRequestStatus.Processing, request.Status);
+        Assert.Null(request.ResourceId);
+    }
+
+    [Fact]
+    public void BindPaymentIntent_WhenAlreadyCompleted_ThrowsWithoutReplacingPayment()
+    {
+        var request = CreateRequest(operation: IdempotencyOperation.InitiatePayment);
+
+        var originalPaymentId = Guid.NewGuid();
+        var originalCompletedAt = CreatedAt.AddMinutes(1);
+
+        request.BindPaymentIntent(originalPaymentId, originalCompletedAt);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            request.BindPaymentIntent(
+                Guid.NewGuid(),
+                CreatedAt.AddMinutes(2)));
+
+        Assert.Equal(originalPaymentId, request.ResourceId);
+        Assert.Equal(originalCompletedAt, request.CompletedAt);
+    }
+
+    [Fact]
+    public void CompleteCreateOrder_ForInitiatePayment_ThrowsWithoutMutation()
+    {
+        var request = CreateRequest(operation: IdempotencyOperation.InitiatePayment);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            request.Complete(
+                Guid.NewGuid(),
+                201,
+                "{}",
+                CreatedAt.AddMinutes(1)));
+
+        Assert.Equal(IdempotencyRequestStatus.Processing, request.Status);
+        Assert.Null(request.ResourceId);
+        Assert.Null(request.HttpStatusCode);
+        Assert.Null(request.ResponseBodyJson);
+        Assert.Null(request.CompletedAt);
     }
 
     private static IdempotencyRequest CreateRequest(
