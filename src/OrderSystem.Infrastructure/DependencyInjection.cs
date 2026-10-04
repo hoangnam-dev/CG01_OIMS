@@ -199,7 +199,9 @@ public static class DependencyInjection
 
         services.AddScoped<IPaymentInitiationStore, EfPaymentInitiationStore>();
         services.AddScoped<IPaymentResultApplicationStore, EfPaymentResultApplicationStore>();
+        services.AddSingleton<IPaymentResultApplicationScopeFactory, ScopedPaymentResultApplicationScopeFactory>();
         services.AddScoped<IPaymentReconciliationStore, EfPaymentReconciliationStore>();
+        services.AddScoped<IPaymentRefundStore, EfPaymentRefundStore>();
         services.AddScoped<FakeProviderOperationStore>();
         services.AddSingleton<IPaymentGateway, FakePaymentGateway>();
 
@@ -215,6 +217,18 @@ public static class DependencyInjection
                 provider.GetRequiredService<PaymentResultApplicationService>(),
                 payment.ReconciliationBatchSize,
                 provider.GetRequiredService<ILogger<PaymentReconciliationProcessor>>()
+            );
+        });
+        services.AddScoped(provider =>
+        {
+            var payment = provider.GetRequiredService<IOptions<PaymentOptions>>().Value;
+
+            return new PaymentRefundProcessor(
+                provider.GetRequiredService<IClock>(),
+                provider.GetRequiredService<IPaymentRefundStore>(),
+                provider.GetRequiredService<IPaymentGateway>(),
+                payment.ReconciliationBatchSize,
+                provider.GetRequiredService<ILogger<PaymentRefundProcessor>>()
             );
         });
 

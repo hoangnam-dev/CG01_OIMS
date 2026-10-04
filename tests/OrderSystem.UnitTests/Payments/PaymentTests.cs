@@ -657,6 +657,219 @@ public sealed class PaymentTests
         Assert.Equal(refundRequestedAt, payment.UpdatedAt);
     }
 
+    [Fact]
+    [Trait("Requirement", "PAY-REF-001")]
+    public void TryClaimRefundAttempt_WhenFirstAttemptIsDue_AdvancesRetryStateBeforeProviderCall()
+    {
+        var payment = CreatePayment();
+        var succeededAt = CreatedAt.AddMinutes(1);
+        var refundRequestedAt = CreatedAt.AddMinutes(2);
+        var attemptedAt = refundRequestedAt;
+        var nextAttemptAt = attemptedAt.AddMinutes(1);
+
+        payment.MarkSucceeded(
+            payment.ProviderPaymentId,
+            succeededAt);
+
+        payment.MarkRefundPending(
+            "fake-refund-stable-key",
+            refundRequestedAt);
+
+        var claimed = payment.TryClaimRefundAttempt(
+            attemptedAt,
+            nextAttemptAt);
+
+        Assert.True(claimed);
+        Assert.Equal(PaymentStatus.RefundPending, payment.Status);
+        Assert.Equal(1, payment.RefundAttemptCount);
+        Assert.Equal(nextAttemptAt, payment.NextRefundAttemptAt);
+        Assert.Null(payment.ManualReviewRequiredAt);
+        Assert.Null(payment.ProviderRefundId);
+        Assert.Null(payment.RefundedAt);
+        Assert.Equal(attemptedAt, payment.UpdatedAt);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-REF-001")]
+    public void TryClaimRefundAttempt_WhenRetryIsNotDue_ReturnsFalseAndPreservesState()
+    {
+        var payment = CreatePayment();
+        var succeededAt = CreatedAt.AddMinutes(1);
+        var refundRequestedAt = CreatedAt.AddMinutes(2);
+        var firstAttemptedAt = refundRequestedAt;
+        var firstNextAttemptAt = firstAttemptedAt.AddMinutes(1);
+        var earlyRetryAt = firstAttemptedAt.AddSeconds(30);
+
+        payment.MarkSucceeded(
+            payment.ProviderPaymentId,
+            succeededAt);
+
+        payment.MarkRefundPending(
+            "fake-refund-stable-key",
+            refundRequestedAt);
+
+        var firstClaimed = payment.TryClaimRefundAttempt(
+            firstAttemptedAt,
+            firstNextAttemptAt);
+
+        var earlyRetryClaimed = payment.TryClaimRefundAttempt(
+            earlyRetryAt,
+            earlyRetryAt.AddMinutes(1));
+
+        Assert.True(firstClaimed);
+        Assert.False(earlyRetryClaimed);
+
+        Assert.Equal(PaymentStatus.RefundPending, payment.Status);
+        Assert.Equal(1, payment.RefundAttemptCount);
+        Assert.Equal(firstNextAttemptAt, payment.NextRefundAttemptAt);
+        Assert.Equal(firstAttemptedAt, payment.UpdatedAt);
+
+        Assert.Null(payment.ManualReviewRequiredAt);
+        Assert.Null(payment.ProviderRefundId);
+        Assert.Null(payment.RefundedAt);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-REF-003")]
+    public void MarkRefundAttemptUnresolved_AfterFifthAttempt_RequiresManualReview()
+    {
+        const int maximumAutomaticAttempts = 5;
+
+        var payment = CreatePayment();
+        var succeededAt = CreatedAt.AddMinutes(1);
+        var refundRequestedAt = CreatedAt.AddMinutes(2);
+        var attemptedAt = refundRequestedAt;
+
+        payment.MarkSucceeded(
+            payment.ProviderPaymentId,
+            succeededAt);
+
+        payment.MarkRefundPending(
+            "fake-refund-stable-key",
+            refundRequestedAt);
+
+        for (var attempt = 1;
+             attempt <= maximumAutomaticAttempts;
+             attempt++)
+        {
+            var nextAttemptAt = attemptedAt.AddMinutes(1);
+
+            var claimed = payment.TryClaimRefundAttempt(
+                attemptedAt,
+                nextAttemptAt);
+
+            Assert.True(claimed);
+
+            attemptedAt = nextAttemptAt;
+        }
+
+        var unresolvedAt = attemptedAt.AddSeconds(1);
+
+        payment.MarkRefundAttemptUnresolved(
+            unresolvedAt,
+            maximumAutomaticAttempts);
+
+        Assert.Equal(PaymentStatus.RefundPending, payment.Status);
+        Assert.Equal(5, payment.RefundAttemptCount);
+        Assert.Equal(unresolvedAt, payment.ManualReviewRequiredAt);
+        Assert.Null(payment.NextRefundAttemptAt);
+
+        Assert.Null(payment.ProviderRefundId);
+        Assert.Null(payment.RefundedAt);
+        Assert.Equal(unresolvedAt, payment.UpdatedAt);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-REF-003")]
+    public void MarkRefundManualReviewRequired_AfterPermanentFailure_StopsAutomaticRetryImmediately()
+    {
+        var payment = CreatePayment();
+        var succeededAt = CreatedAt.AddMinutes(1);
+        var refundRequestedAt = CreatedAt.AddMinutes(2);
+        var attemptedAt = refundRequestedAt;
+        var failureObservedAt = attemptedAt;
+        var nextAttemptAt = attemptedAt.AddMinutes(1);
+
+        payment.MarkSucceeded(
+            payment.ProviderPaymentId,
+            succeededAt);
+
+        payment.MarkRefundPending(
+            "fake-refund-stable-key",
+            refundRequestedAt);
+
+        var claimed = payment.TryClaimRefundAttempt(
+            attemptedAt,
+            nextAttemptAt);
+
+        payment.MarkRefundManualReviewRequired(
+            failureObservedAt);
+
+        Assert.True(claimed);
+        Assert.Equal(PaymentStatus.RefundPending, payment.Status);
+        Assert.Equal(1, payment.RefundAttemptCount);
+        Assert.Equal(
+            failureObservedAt,
+            payment.ManualReviewRequiredAt);
+
+        Assert.Null(payment.NextRefundAttemptAt);
+        Assert.Null(payment.ProviderRefundId);
+        Assert.Null(payment.RefundedAt);
+        Assert.Equal(failureObservedAt, payment.UpdatedAt);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-REF-004")]
+    public void TryClaimManualRefundAttempt_WhenManualReviewRequired_ClaimsOnceAndSchedulesRecoveryFallback()
+    {
+        const string refundKey = "fake-refund-stable-key";
+
+        var payment = CreatePayment();
+        var succeededAt = CreatedAt.AddMinutes(1);
+        var refundRequestedAt = CreatedAt.AddMinutes(2);
+        var automaticAttemptAt = refundRequestedAt;
+        var automaticNextAttemptAt = automaticAttemptAt.AddMinutes(1);
+        var manualReviewRequiredAt = automaticAttemptAt;
+        var manualAttemptAt = manualReviewRequiredAt.AddMinutes(1);
+        var recoveryFallbackAt = manualAttemptAt.AddMinutes(15);
+
+        payment.MarkSucceeded(
+            payment.ProviderPaymentId,
+            succeededAt);
+
+        payment.MarkRefundPending(
+            refundKey,
+            refundRequestedAt);
+
+        var automaticClaimed = payment.TryClaimRefundAttempt(
+            automaticAttemptAt,
+            automaticNextAttemptAt);
+
+        payment.MarkRefundManualReviewRequired(
+            manualReviewRequiredAt);
+
+        var manualClaimed = payment.TryClaimManualRefundAttempt(
+            manualAttemptAt,
+            recoveryFallbackAt);
+
+        var duplicateClaimed = payment.TryClaimManualRefundAttempt(
+            manualAttemptAt,
+            recoveryFallbackAt);
+
+        Assert.True(automaticClaimed);
+        Assert.True(manualClaimed);
+        Assert.False(duplicateClaimed);
+
+        Assert.Equal(PaymentStatus.RefundPending, payment.Status);
+        Assert.Equal(refundKey, payment.RefundIdempotencyKey);
+        Assert.Equal(2, payment.RefundAttemptCount);
+        Assert.Equal(recoveryFallbackAt, payment.NextRefundAttemptAt);
+        Assert.Null(payment.ManualReviewRequiredAt);
+        Assert.Null(payment.ProviderRefundId);
+        Assert.Null(payment.RefundedAt);
+        Assert.Equal(manualAttemptAt, payment.UpdatedAt);
+    }
+
     private static Payment CreatePayment()
     {
         var paymentId = Guid.NewGuid();

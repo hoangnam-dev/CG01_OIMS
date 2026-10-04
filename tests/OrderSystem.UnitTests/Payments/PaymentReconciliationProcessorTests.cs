@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Identifiers;
+using OrderSystem.Application.Orders;
 using OrderSystem.Application.Payments;
 using OrderSystem.Application.Payments.Contracts;
 using OrderSystem.Domain.Inventories;
@@ -931,10 +932,10 @@ public sealed class PaymentReconciliationProcessorTests
             throw new NotSupportedException();
     }
 
-    private sealed class RecordingPaymentResultApplicationStore(Payment? payment = null, Order? order = null)
-        : IPaymentResultApplicationStore
+    private sealed class RecordingPaymentResultApplicationStore(Payment? payment = null, Order? order = null) : IPaymentResultApplicationStore
     {
         public bool TransactionCommitted { get; private set; }
+        public bool TransactionRolledBack { get; private set; }
         public int AddedInventoryTransactionCount { get; private set; }
 
         public Task<IPaymentResultApplicationTransaction> BeginTransactionAsync(CancellationToken cancellationToken) =>
@@ -949,6 +950,7 @@ public sealed class PaymentReconciliationProcessorTests
         public Task<IReadOnlyList<OrderItem>> ListOrderItemsAsync(Guid orderId, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<OrderItem>>([]);
 
+        public Task<InventoryReservationResult> TryReserveAsync(Guid productVariantId, int quantity, DateTimeOffset updatedAt, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<bool> TryReleaseReservationAsync(
             Guid productVariantId,
             int quantity,
@@ -970,12 +972,16 @@ public sealed class PaymentReconciliationProcessorTests
 
         public Task SaveChangesAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-        private sealed class Transaction(RecordingPaymentResultApplicationStore owner)
-            : IPaymentResultApplicationTransaction
+        private sealed class Transaction(RecordingPaymentResultApplicationStore owner) : IPaymentResultApplicationTransaction
         {
             public Task CommitAsync(CancellationToken cancellationToken)
             {
                 owner.TransactionCommitted = true;
+                return Task.CompletedTask;
+            }
+            public Task RollbackAsync(CancellationToken cancellationToken)
+            {
+                owner.TransactionRolledBack = true;
                 return Task.CompletedTask;
             }
 
