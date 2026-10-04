@@ -302,6 +302,7 @@ if (fakeWebhookEnabled)
 {
     app.MapFakePaymentWebhookEndpoints();
     app.MapPaymentRefundEndpoints();
+    app.MapPaymentInitiationEndpoints();
 }
 app.MapOrderEndpoints();
 

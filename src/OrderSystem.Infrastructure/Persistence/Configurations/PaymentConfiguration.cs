@@ -25,7 +25,7 @@ internal sealed class PaymentConfiguration : IEntityTypeConfiguration<Payment>
 
             table.HasCheckConstraint(
                 "ck_payments_scenario",
-                "scenario IS NULL OR scenario IN ('SUCCESS', 'FAILED', 'SUCCESS_BUT_RESPONSE_LOST', 'DELAYED_SUCCESS')");
+                $"scenario IS NULL OR scenario IN ('{PaymentScenarioCodes.Success}', '{PaymentScenarioCodes.Failed}', '{PaymentScenarioCodes.SuccessButClientResponseLost}', '{PaymentScenarioCodes.SuccessButProviderResponseLost}', '{PaymentScenarioCodes.DelayedSuccess}')");
 
             table.HasCheckConstraint(
                 "ck_payments_failure_code_lifecycle",

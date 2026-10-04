@@ -85,7 +85,7 @@ public sealed class PaymentRefundStoreTests(
                 gatewayIdempotencyKey:
                     $"gateway-create-{paymentId:D}",
                 createdAt,
-                PaymentScenario.SuccessButResponseLost);
+                PaymentScenario.SuccessButProviderResponseLost);
 
             payment.MarkSucceeded(
                 providerPaymentId,
@@ -129,7 +129,7 @@ public sealed class PaymentRefundStoreTests(
             Assert.Equal(providerPaymentId, candidate.ProviderPaymentId);
             Assert.Equal(125_000m, candidate.Amount);
             Assert.Equal(
-                PaymentScenario.SuccessButResponseLost,
+                PaymentScenario.SuccessButProviderResponseLost,
                 candidate.Scenario);
             Assert.Equal(0, candidate.RefundAttemptCount);
         }

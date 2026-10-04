@@ -216,6 +216,13 @@ public sealed class PaymentCommandService(
                 ),
                 cancellationToken
             );
+
+            if (request.Scenario == PaymentScenario.SuccessButClientResponseLost)
+            {
+                await operationHook.ReachAsync(
+                    PaymentOperationCheckpoints.AfterResultApplication,
+                    cancellationToken);
+            }
         }
 
         return ApplicationResult.Success(

@@ -55,7 +55,7 @@ public sealed class FakeProviderOperationConfigurationTests
             "operation_type IN ('CreatePayment', 'RefundPayment')",
             constraints["ck_fake_provider_operations_type"]);
         Assert.Equal(
-            "scenario IN ('SUCCESS', 'FAILED', 'SUCCESS_BUT_RESPONSE_LOST', 'DELAYED_SUCCESS')",
+            "scenario IN ('SUCCESS', 'FAILED', 'CLIENT_RESPONSE_LOST', 'PROVIDER_RESPONSE_LOST', 'DELAYED_SUCCESS')",
             constraints["ck_fake_provider_operations_scenario"]);
         Assert.Equal(
             "status IN ('Pending', 'Processing', 'Succeeded', 'Failed')",

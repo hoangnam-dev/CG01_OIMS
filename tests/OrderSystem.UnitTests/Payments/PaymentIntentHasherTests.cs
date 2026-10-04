@@ -95,7 +95,8 @@ public sealed class PaymentIntentHasherTests
     [Theory]
     [InlineData(PaymentScenario.Success, "SUCCESS")]
     [InlineData(PaymentScenario.Failed, "FAILED")]
-    [InlineData(PaymentScenario.SuccessButResponseLost, "SUCCESS_BUT_RESPONSE_LOST")]
+    [InlineData(PaymentScenario.SuccessButClientResponseLost, "CLIENT_RESPONSE_LOST")]
+    [InlineData(PaymentScenario.SuccessButProviderResponseLost, "PROVIDER_RESPONSE_LOST")]
     [InlineData(PaymentScenario.DelayedSuccess, "DELAYED_SUCCESS")]
     public void Hash_UsesStableScenarioCode(
     PaymentScenario scenario,
@@ -113,5 +114,15 @@ public sealed class PaymentIntentHasherTests
         var actual = PaymentIntentHasher.Hash(orderId, scenario);
 
         Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [InlineData("CLIENT_RESPONSE_LOST")]
+    [InlineData("PROVIDER_RESPONSE_LOST")]
+    public void ScenarioCode_ResponseLossBoundary_RoundTrips(string code)
+    {
+        var scenario = PaymentScenarioCodes.Parse(code);
+
+        Assert.Equal(code, PaymentScenarioCodes.ToCode(scenario));
     }
 }
