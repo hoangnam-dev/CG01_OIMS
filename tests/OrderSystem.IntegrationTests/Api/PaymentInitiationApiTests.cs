@@ -76,6 +76,110 @@ public sealed class PaymentInitiationApiTests(PostgreSqlFixture postgres)
         Assert.Equal(paymentId, replayDocument.RootElement.GetProperty("data").GetProperty("id").GetGuid());
     }
 
+    [Fact]
+    [Trait("Requirement", "API-PAY-QUERY-001")]
+    public async Task GetPayment_CustomerOwner_ReturnsCurrentAllowlistedPayment()
+    {
+        var now = DateTimeOffset.UtcNow;
+        await using var factory = CreateFactory();
+        var customer = await CreateCustomerAsync(factory, now);
+        var orderId = await SeedPendingPaymentOrderAsync(factory, customer.Id, now);
+
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, customer.Email);
+
+        client.DefaultRequestHeaders.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        using var initiationResponse = await client.PostAsJsonAsync(
+            $"/api/orders/{orderId}/payments",
+            new { scenario = "SUCCESS" });
+
+        initiationResponse.EnsureSuccessStatusCode();
+
+        using var initiationDocument = JsonDocument.Parse(
+            await initiationResponse.Content.ReadAsStringAsync());
+
+        var paymentId = initiationDocument.RootElement
+            .GetProperty("data")
+            .GetProperty("id")
+            .GetGuid();
+
+        using var response = await client.GetAsync($"/api/payments/{paymentId}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync());
+
+        var data = document.RootElement.GetProperty("data");
+
+        Assert.Equal(paymentId, data.GetProperty("id").GetGuid());
+        Assert.Equal(orderId, data.GetProperty("orderId").GetGuid());
+        Assert.Equal("Succeeded", data.GetProperty("status").GetString());
+        Assert.Equal("Fake", data.GetProperty("provider").GetString());
+        Assert.False(data.TryGetProperty("gatewayIdempotencyKey", out _));
+        Assert.False(data.TryGetProperty("refundIdempotencyKey", out _));
+        Assert.False(data.TryGetProperty("refundAttemptCount", out _));
+        Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("metadata").ValueKind);
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-PAY-QUERY-002")]
+    public async Task GetPaymentForOrder_CustomerOwner_ReturnsCurrentPayment()
+    {
+        var now = DateTimeOffset.UtcNow;
+        await using var factory = CreateFactory();
+        var customer = await CreateCustomerAsync(factory, now);
+        var orderId = await SeedPendingPaymentOrderAsync(factory, customer.Id, now);
+
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, customer.Email);
+
+        client.DefaultRequestHeaders.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        using var initiationResponse = await client.PostAsJsonAsync(
+            $"/api/orders/{orderId}/payments",
+            new { scenario = "SUCCESS" });
+
+        initiationResponse.EnsureSuccessStatusCode();
+
+        using var initiationDocument = JsonDocument.Parse(
+            await initiationResponse.Content.ReadAsStringAsync());
+
+        var paymentId = initiationDocument.RootElement
+            .GetProperty("data")
+            .GetProperty("id")
+            .GetGuid();
+
+        using var response = await client.GetAsync($"/api/orders/{orderId}/payment");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync());
+
+        var data = document.RootElement.GetProperty("data");
+
+        Assert.Equal(paymentId, data.GetProperty("id").GetGuid());
+        Assert.Equal(orderId, data.GetProperty("orderId").GetGuid());
+        Assert.Equal("Succeeded", data.GetProperty("status").GetString());
+        Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("metadata").ValueKind);
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-PAY-ENV-001")]
+    public async Task InitiatePayment_WhenPaymentModuleIsDisabled_ReturnsNotFound()
+    {
+        await using var factory = CreatePaymentDisabledFactory();
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsJsonAsync(
+            $"/api/orders/{Guid.NewGuid()}/payments",
+            new { scenario = "SUCCESS" });
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
     private WebApplicationFactory<Program> CreateFactory() =>
         new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
@@ -114,6 +218,17 @@ public sealed class PaymentInitiationApiTests(PostgreSqlFixture postgres)
 
         return customer;
     }
+
+    private static WebApplicationFactory<Program> CreatePaymentDisabledFactory() =>
+    new WebApplicationFactory<Program>()
+        .WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Development");
+            builder.ConfigureAppConfiguration(
+                (_, configuration) =>
+                    configuration.AddOimsTestConfiguration(
+                        new KeyValuePair<string, string?>("Payment:Enabled", "false")));
+        });
 
     private static async Task<Guid> SeedPendingPaymentOrderAsync(
         WebApplicationFactory<Program> factory,

@@ -147,6 +147,7 @@ builder.Services.AddScoped<OrderCommandService>(provider =>
         idempotency.ReplayWindow,
         idempotency.RetentionWindow);
 });
+builder.Services.AddScoped<PaymentQueryService>();
 builder.Services.AddScoped<PaymentCommandService>(provider =>
 {
     var idempotency = provider
