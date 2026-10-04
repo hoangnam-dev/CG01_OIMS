@@ -19,9 +19,34 @@ public sealed class PaymentReconciliationWorker(
             try
             {
                 await using var scope = scopeFactory.CreateAsyncScope();
-                var processor = scope.ServiceProvider.GetRequiredService<PaymentReconciliationProcessor>();
+                var reconciliationProcessor = scope.ServiceProvider.GetRequiredService<PaymentReconciliationProcessor>();
+                var refundProcessor = scope.ServiceProvider.GetRequiredService<PaymentRefundProcessor>();
 
-                await processor.RunOnceAsync(stoppingToken);
+                try
+                {
+                    await reconciliationProcessor.RunOnceAsync(stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    ReconciliationFailed(logger, exception);
+                }
+
+                try
+                {
+                    await refundProcessor.RunOnceAsync(stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    RefundRecoveryFailed(logger, exception);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -55,5 +80,12 @@ public sealed class PaymentReconciliationWorker(
             LogLevel.Error,
             new EventId(2, nameof(ReconciliationFailed)),
             "Payment reconciliation scan failed"
+        );
+
+    private static readonly Action<ILogger, Exception?> RefundRecoveryFailed =
+        LoggerMessage.Define(
+            LogLevel.Error,
+            new EventId(3, nameof(RefundRecoveryFailed)),
+            "Payment refund recovery scan failed"
         );
 }

@@ -165,6 +165,48 @@ public sealed class Payment
         UpdatedAt = updatedAt;
     }
 
+    public bool TryClaimRefundAttempt(DateTimeOffset attemptedAt, DateTimeOffset nextAttemptAt)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(nextAttemptAt, attemptedAt);
+
+        if (Status != PaymentStatus.RefundPending ||
+            ManualReviewRequiredAt is not null ||
+            NextRefundAttemptAt is null ||
+            attemptedAt < NextRefundAttemptAt)
+        {
+            return false;
+        }
+
+        EnsureTimestampDoesNotRegress(attemptedAt, nameof(attemptedAt));
+
+        RefundAttemptCount = checked(RefundAttemptCount + 1);
+        NextRefundAttemptAt = nextAttemptAt;
+        UpdatedAt = attemptedAt;
+
+        return true;
+    }
+
+    public bool TryClaimManualRefundAttempt(DateTimeOffset attemptedAt, DateTimeOffset recoveryFallbackAt)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(recoveryFallbackAt, attemptedAt);
+
+        if (Status != PaymentStatus.RefundPending ||
+            ManualReviewRequiredAt is null ||
+            NextRefundAttemptAt is not null)
+        {
+            return false;
+        }
+
+        EnsureTimestampDoesNotRegress(attemptedAt, nameof(attemptedAt));
+
+        RefundAttemptCount = checked(RefundAttemptCount + 1);
+        ManualReviewRequiredAt = null;
+        NextRefundAttemptAt = recoveryFallbackAt;
+        UpdatedAt = attemptedAt;
+
+        return true;
+    }
+
     public void MarkRefundPending(string refundIdempotencyKey, DateTimeOffset requestedAt)
     {
         var normalizedRefundIdempotencyKey = RequireProviderIdentifier(refundIdempotencyKey, nameof(refundIdempotencyKey));
@@ -219,5 +261,40 @@ public sealed class Payment
         NextRefundAttemptAt = null;
         Status = PaymentStatus.Refunded;
         UpdatedAt = refundedAt;
+    }
+
+    public void MarkRefundAttemptUnresolved(DateTimeOffset unresolvedAt, int maximumAutomaticAttempts)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumAutomaticAttempts);
+
+        if (Status != PaymentStatus.RefundPending || ManualReviewRequiredAt is not null)
+        {
+            return;
+        }
+
+        EnsureTimestampDoesNotRegress(unresolvedAt, nameof(unresolvedAt));
+
+        if (RefundAttemptCount < maximumAutomaticAttempts)
+        {
+            return;
+        }
+
+        ManualReviewRequiredAt = unresolvedAt;
+        NextRefundAttemptAt = null;
+        UpdatedAt = unresolvedAt;
+    }
+
+    public void MarkRefundManualReviewRequired(DateTimeOffset requiredAt)
+    {
+        if (Status != PaymentStatus.RefundPending || ManualReviewRequiredAt is not null)
+        {
+            return;
+        }
+
+        EnsureTimestampDoesNotRegress(requiredAt, nameof(requiredAt));
+
+        ManualReviewRequiredAt = requiredAt;
+        NextRefundAttemptAt = null;
+        UpdatedAt = requiredAt;
     }
 }

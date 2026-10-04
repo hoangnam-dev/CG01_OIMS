@@ -301,6 +301,7 @@ app.MapInventoryEndpoints();
 if (fakeWebhookEnabled)
 {
     app.MapFakePaymentWebhookEndpoints();
+    app.MapPaymentRefundEndpoints();
 }
 app.MapOrderEndpoints();
 

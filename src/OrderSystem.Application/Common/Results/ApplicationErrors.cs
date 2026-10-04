@@ -133,5 +133,10 @@ public static class ApplicationErrors
             ApplicationErrorKind.NotFound,
             "PAYMENT_NOT_FOUND",
             "The Payment was not found");
+
+        public static readonly ApplicationErrorDefinition RefundNotRetryable = new(
+            ApplicationErrorKind.Conflict,
+            "REFUND_NOT_RETRYABLE",
+            "The Payment refund is not eligible for manual retry.");
     }
 }

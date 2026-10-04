@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using OrderSystem.Application.Orders;
 using OrderSystem.Application.Payments;
 using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Orders;
@@ -61,6 +62,53 @@ internal sealed class EfPaymentResultApplicationStore(OrderSystemDbContext dbCon
             .OrderBy(item => item.ProductVariantId)
             .ThenBy(item => item.Id)
             .ToArrayAsync(cancellationToken);
+    }
+
+    public async Task<InventoryReservationResult> TryReserveAsync(
+        Guid productVariantId,
+        int quantity,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken)
+    {
+        if (productVariantId == Guid.Empty)
+        {
+            throw new ArgumentException("Product Variant ID cannot be empty", nameof(productVariantId));
+        }
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity);
+        EnsureActiveTransaction();
+
+        var affectedRows = await dbContext.Inventories
+            .Where(inventory =>
+                inventory.ProductVariantId == productVariantId &&
+                inventory.OnHandQuantity - inventory.ReservedQuantity >= quantity
+            )
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(
+                        inventory => inventory.ReservedQuantity,
+                        inventory => inventory.ReservedQuantity + quantity
+                    )
+                    .SetProperty(
+                        inventory => inventory.UpdatedAt,
+                        inventory => updatedAt
+                    ),
+                cancellationToken
+            );
+
+        if (affectedRows == 1)
+        {
+            return InventoryReservationResult.Reserved;
+        }
+
+        var inventoryExists = await dbContext.Inventories
+            .AnyAsync(
+                inventory => inventory.ProductVariantId == productVariantId,
+                cancellationToken
+            );
+
+        return inventoryExists
+            ? InventoryReservationResult.InsufficientStock
+            : InventoryReservationResult.InventoryMissing;
     }
 
     public async Task<bool> TryReleaseReservationAsync(
@@ -179,6 +227,8 @@ internal sealed class EfPaymentResultApplicationStore(OrderSystemDbContext dbCon
     private sealed class EfPaymentResultApplicationTransaction(IDbContextTransaction transaction) : IPaymentResultApplicationTransaction
     {
         public Task CommitAsync(CancellationToken cancellationToken) => transaction.CommitAsync(cancellationToken);
+
+        public Task RollbackAsync(CancellationToken cancellationToken) => transaction.RollbackAsync(cancellationToken);
 
         public ValueTask DisposeAsync() => transaction.DisposeAsync();
     }

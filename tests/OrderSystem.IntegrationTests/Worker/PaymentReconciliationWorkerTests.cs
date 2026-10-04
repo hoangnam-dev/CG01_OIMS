@@ -15,6 +15,7 @@ using OrderSystem.Domain.Orders;
 using OrderSystem.Domain.Payments;
 using OrderSystem.Infrastructure.Configuration;
 using OrderSystem.Infrastructure;
+using OrderSystem.Application.Orders;
 
 namespace OrderSystem.IntegrationTests.Worker;
 
@@ -127,6 +128,7 @@ public sealed class PaymentReconciliationWorkerTests
             .AddSingleton<IClock>(new FixedClock(FixedNow))
             .AddSingleton<IIdGenerator, GuidGenerator>()
             .AddScoped<IPaymentReconciliationStore>(_ => new ScopeTrackingReconciliationStore(tracker))
+            .AddScoped<IPaymentRefundStore, NoOpPaymentRefundStore>()
             .AddScoped<IPaymentGateway, UnexpectedPaymentGateway>()
             .AddScoped<IPaymentResultApplicationStore, UnexpectedPaymentResultApplicationStore>()
             .AddScoped<PaymentResultApplicationService>()
@@ -137,6 +139,12 @@ public sealed class PaymentReconciliationWorkerTests
                 serviceProvider.GetRequiredService<PaymentResultApplicationService>(),
                 options.ReconciliationBatchSize,
                 NullLogger<PaymentReconciliationProcessor>.Instance))
+            .AddScoped(provider => new PaymentRefundProcessor(
+                provider.GetRequiredService<IClock>(),
+                provider.GetRequiredService<IPaymentRefundStore>(),
+                provider.GetRequiredService<IPaymentGateway>(),
+                options.ReconciliationBatchSize,
+                NullLogger<PaymentRefundProcessor>.Instance))
             .BuildServiceProvider();
         using var workerInstance = new worker::OrderSystem.Worker.PaymentReconciliationWorker(
             provider.GetRequiredService<IServiceScopeFactory>(),
@@ -188,11 +196,111 @@ public sealed class PaymentReconciliationWorkerTests
         Assert.Equal(23, call.BatchSize);
     }
 
-    private static ServiceProvider CreateProvider(PaymentOptions options, IPaymentReconciliationStore store) =>
+    [Fact]
+    public async Task StartAsync_RunsOneRefundRecoveryScan()
+    {
+        var options = new PaymentOptions
+        {
+            ReconciliationInterval = TimeSpan.FromMinutes(5),
+            ReconciliationBatchSize = 23
+        };
+
+        var reconciliationStore = new RecordingReconciliationStore();
+        var refundStore = new RecordingRefundStore();
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IClock>(new FixedClock(FixedNow))
+            .AddSingleton<IIdGenerator, GuidGenerator>()
+            .AddScoped<IPaymentReconciliationStore>(_ => reconciliationStore)
+            .AddScoped<IPaymentRefundStore>(_ => refundStore)
+            .AddScoped<IPaymentGateway, UnexpectedPaymentGateway>()
+            .AddScoped<IPaymentResultApplicationStore, UnexpectedPaymentResultApplicationStore>()
+            .AddScoped<PaymentResultApplicationService>()
+            .AddScoped(serviceProvider => new PaymentReconciliationProcessor(
+                serviceProvider.GetRequiredService<IClock>(),
+                serviceProvider.GetRequiredService<IPaymentReconciliationStore>(),
+                serviceProvider.GetRequiredService<IPaymentGateway>(),
+                serviceProvider.GetRequiredService<PaymentResultApplicationService>(),
+                options.ReconciliationBatchSize,
+                NullLogger<PaymentReconciliationProcessor>.Instance))
+            .AddScoped(serviceProvider => new PaymentRefundProcessor(
+                serviceProvider.GetRequiredService<IClock>(),
+                serviceProvider.GetRequiredService<IPaymentRefundStore>(),
+                serviceProvider.GetRequiredService<IPaymentGateway>(),
+                options.ReconciliationBatchSize,
+                NullLogger<PaymentRefundProcessor>.Instance))
+            .BuildServiceProvider();
+
+        using var workerInstance = new worker::OrderSystem.Worker.PaymentReconciliationWorker(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            Options.Create(options),
+            NullLogger<worker::OrderSystem.Worker.PaymentReconciliationWorker>.Instance);
+
+        await workerInstance.StartAsync(CancellationToken.None);
+
+        try
+        {
+            var call = await refundStore.FirstCall.WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.Equal(FixedNow, call.Now);
+            Assert.Equal(23, call.BatchSize);
+        }
+        finally
+        {
+            await workerInstance.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenReconciliationScanFails_StillRunsRefundRecoveryScan()
+    {
+        var options = new PaymentOptions
+        {
+            ReconciliationInterval = TimeSpan.FromMinutes(5),
+            ReconciliationBatchSize = 23
+        };
+
+        var retryState = new RetryState();
+        var reconciliationStore = new FailFirstReconciliationStore(retryState);
+        var refundStore = new RecordingRefundStore();
+        var logger = new RecordingLogger<worker::OrderSystem.Worker.PaymentReconciliationWorker>();
+
+        await using var provider = CreateProvider(
+            options,
+            reconciliationStore,
+            refundStore);
+
+        using var workerInstance = new worker::OrderSystem.Worker.PaymentReconciliationWorker(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            Options.Create(options),
+            logger);
+
+        await workerInstance.StartAsync(CancellationToken.None);
+
+        try
+        {
+            var refundCall = await refundStore.FirstCall.WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.Equal(FixedNow, refundCall.Now);
+            Assert.Equal(23, refundCall.BatchSize);
+        }
+        finally
+        {
+            await workerInstance.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+        }
+
+        var failure = await logger.Failure.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal("ReconciliationFailed", failure.EventId.Name);
+        Assert.Same(retryState.Failure, failure.Exception);
+    }
+
+    private static ServiceProvider CreateProvider(PaymentOptions options, IPaymentReconciliationStore store, IPaymentRefundStore? refundStore = null) =>
         new ServiceCollection()
             .AddSingleton<IClock>(new FixedClock(FixedNow))
             .AddSingleton<IIdGenerator, GuidGenerator>()
             .AddScoped<IPaymentReconciliationStore>(_ => store)
+            .AddScoped<IPaymentRefundStore>(_ => refundStore ?? new NoOpPaymentRefundStore())
             .AddScoped<IPaymentGateway, UnexpectedPaymentGateway>()
             .AddScoped<IPaymentResultApplicationStore, UnexpectedPaymentResultApplicationStore>()
             .AddScoped<PaymentResultApplicationService>()
@@ -203,6 +311,12 @@ public sealed class PaymentReconciliationWorkerTests
                 provider.GetRequiredService<PaymentResultApplicationService>(),
                 options.ReconciliationBatchSize,
                 NullLogger<PaymentReconciliationProcessor>.Instance))
+            .AddScoped(provider => new PaymentRefundProcessor(
+                provider.GetRequiredService<IClock>(),
+                provider.GetRequiredService<IPaymentRefundStore>(),
+                provider.GetRequiredService<IPaymentGateway>(),
+                options.ReconciliationBatchSize,
+                NullLogger<PaymentRefundProcessor>.Instance))
             .BuildServiceProvider();
 
     private sealed record FixedClock(DateTimeOffset UtcNow) : IClock;
@@ -332,6 +446,9 @@ public sealed class PaymentReconciliationWorkerTests
         public Task<IReadOnlyList<OrderItem>> ListOrderItemsAsync(Guid orderId, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
+        public Task<InventoryReservationResult> TryReserveAsync(Guid productVariantId, int quantity, DateTimeOffset updatedAt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public Task<bool> TryReleaseReservationAsync(Guid productVariantId, int quantity, DateTimeOffset updatedAt, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
@@ -403,6 +520,103 @@ public sealed class PaymentReconciliationWorkerTests
             }
         }
     }
+
+    private sealed class NoOpPaymentRefundStore : IPaymentRefundStore
+    {
+        public Task<IReadOnlyList<PaymentRefundCandidate>> ListDueAsync(
+            DateTimeOffset now,
+            int batchSize,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<PaymentRefundCandidate>>([]);
+
+        public Task<PaymentRefundCandidate?> TryClaimAsync(
+            Guid paymentId,
+            DateTimeOffset attemptedAt,
+            DateTimeOffset nextAttemptAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<PaymentRefundManualClaimResult> TryClaimManualAsync(
+            Guid paymentId,
+            DateTimeOffset attemptedAt,
+            DateTimeOffset recoveryFallbackAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task MarkAttemptUnresolvedAsync(
+            Guid paymentId,
+            DateTimeOffset unresolvedAt,
+            int maximumAutomaticAttempts,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task MarkRefundedAsync(
+            Guid paymentId,
+            string providerRefundId,
+            DateTimeOffset refundedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task MarkRefundManualReviewRequiredAsync(
+            Guid paymentId,
+            DateTimeOffset requiredAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class RecordingRefundStore : IPaymentRefundStore
+    {
+        private readonly TaskCompletionSource<RefundScanCall> firstCall =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<RefundScanCall> FirstCall => firstCall.Task;
+
+        public Task<IReadOnlyList<PaymentRefundCandidate>> ListDueAsync(
+            DateTimeOffset now,
+            int batchSize,
+            CancellationToken cancellationToken)
+        {
+            firstCall.TrySetResult(new RefundScanCall(now, batchSize));
+
+            return Task.FromResult<IReadOnlyList<PaymentRefundCandidate>>([]);
+        }
+
+        public Task<PaymentRefundCandidate?> TryClaimAsync(
+            Guid paymentId,
+            DateTimeOffset attemptedAt,
+            DateTimeOffset nextAttemptAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<PaymentRefundManualClaimResult> TryClaimManualAsync(
+            Guid paymentId,
+            DateTimeOffset attemptedAt,
+            DateTimeOffset recoveryFallbackAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task MarkAttemptUnresolvedAsync(
+            Guid paymentId,
+            DateTimeOffset unresolvedAt,
+            int maximumAutomaticAttempts,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task MarkRefundedAsync(
+            Guid paymentId,
+            string providerRefundId,
+            DateTimeOffset refundedAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task MarkRefundManualReviewRequiredAsync(
+            Guid paymentId,
+            DateTimeOffset requiredAt,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed record RefundScanCall(DateTimeOffset Now, int BatchSize);
 
     private sealed record LogEntry(LogLevel Level, EventId EventId, Exception? Exception);
 
