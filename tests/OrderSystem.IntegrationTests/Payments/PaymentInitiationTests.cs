@@ -2745,6 +2745,1140 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
         Assert.Equal(1, gateway.StatusQueryCount);
     }
 
+    [Fact]
+    [Trait("Requirement", "API-PAY-006")]
+    public async Task LateSuccessAfterExpiry_StockAvailable_ReacquiresAndConfirmsAtomically()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 3, 8, 0, 0, TimeSpan.Zero);
+        var expiredAt = createdAt.AddMinutes(15);
+        var succeededAt = expiredAt.AddMinutes(1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var gateway = new TimeoutPaymentGateway();
+
+        await using var factory = CreateFactory(userId, clock, paymentGateway: gateway);
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, createdAt);
+
+        var productVariantId = await SeedReservationForOrderAsync(
+            factory,
+            orderId,
+            createdAt,
+            quantity: 2);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(
+                orderId,
+                Guid.NewGuid(),
+                PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+        string providerPaymentId;
+
+        using (var preparationScope = factory.Services.CreateScope())
+        {
+            var db = preparationScope.ServiceProvider
+                .GetRequiredService<OrderSystemDbContext>();
+
+            providerPaymentId = await db.Payments
+                .Where(item => item.Id == initiationResult.PaymentId)
+                .Select(item => item.ProviderPaymentId)
+                .SingleAsync();
+
+            var expirationStore = preparationScope.ServiceProvider
+                .GetRequiredService<IReservationExpirationStore>();
+
+            var expirationOutcome = await expirationStore.TryExpireAsync(
+                orderId,
+                expiredAt,
+                CancellationToken.None);
+
+            Assert.Equal(ReservationExpirationOutcome.Expired, expirationOutcome);
+        }
+
+        clock.UtcNow = succeededAt;
+
+        using (var applicationScope = factory.Services.CreateScope())
+        {
+            var service = applicationScope.ServiceProvider
+                .GetRequiredService<PaymentResultApplicationService>();
+
+            var outcome = await service.ApplyAsync(
+                new ApplyPaymentResultCommand(
+                    providerPaymentId,
+                    ProviderPaymentOutcome.Succeeded,
+                    failureCode: null,
+                    PaymentResultSource.Reconciliation,
+                    providerEvent: null,
+                    occurredAt: succeededAt),
+                CancellationToken.None);
+
+            Assert.Equal(PaymentResultApplicationStatus.Accepted, outcome.Status);
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+
+        var assertionDb = assertionScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>();
+
+        var payment = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == initiationResult.PaymentId);
+
+        var order = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+
+        var inventory = await assertionDb.Inventories
+            .AsNoTracking()
+            .SingleAsync(item => item.ProductVariantId == productVariantId);
+
+        var inventoryTransactions = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item =>
+                item.ReferenceType == InventoryReferenceType.Order &&
+                item.ReferenceId == orderId)
+            .ToArrayAsync();
+
+        var histories = await assertionDb.OrderStatusHistories
+            .AsNoTracking()
+            .Where(item => item.OrderId == orderId)
+            .ToArrayAsync();
+
+        Assert.Equal(PaymentStatus.Succeeded, payment.Status);
+        Assert.Equal(OrderStatus.Confirmed, order.Status);
+        Assert.Equal(10, inventory.OnHandQuantity);
+        Assert.Equal(2, inventory.ReservedQuantity);
+
+        var recoveryReserve = Assert.Single(
+            inventoryTransactions,
+            item =>
+                item.Type == InventoryTransactionType.Reserve &&
+                item.CreatedAt == succeededAt);
+
+        Assert.Equal(0, recoveryReserve.OnHandQuantityDelta);
+        Assert.Equal(2, recoveryReserve.ReservedQuantityDelta);
+
+        Assert.Single(
+            histories,
+            item =>
+                item.FromStatus == OrderStatus.Expired &&
+                item.ToStatus == OrderStatus.Confirmed);
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-PAY-007")]
+    public async Task LateSuccessAfterExpiry_PartialReacquisitionRollsBackBeforeRefundPending()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 3, 9, 0, 0, TimeSpan.Zero);
+        var expiredAt = createdAt.AddMinutes(15);
+        var stockChangedAt = expiredAt.AddSeconds(1);
+        var succeededAt = expiredAt.AddMinutes(1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var gateway = new TimeoutPaymentGateway();
+
+        var variantSeed = Guid.NewGuid().ToString("N");
+        var availableVariantId = Guid.ParseExact(
+            $"{variantSeed[..30]}01",
+            "N");
+        var unavailableVariantId = Guid.ParseExact(
+            $"{variantSeed[..30]}02",
+            "N");
+
+        await using var factory = CreateFactory(
+            userId,
+            clock,
+            paymentGateway: gateway);
+
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(
+            factory,
+            userId,
+            orderId,
+            createdAt);
+
+        await SeedReservationForOrderAsync(
+            factory,
+            orderId,
+            createdAt,
+            quantity: 2,
+            productVariantId: availableVariantId,
+            initialOnHand: 2);
+
+        await SeedReservationForOrderAsync(
+            factory,
+            orderId,
+            createdAt,
+            quantity: 2,
+            productVariantId: unavailableVariantId,
+            initialOnHand: 2);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(
+                orderId,
+                Guid.NewGuid(),
+                PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        string providerPaymentId;
+
+        using (var paymentScope = factory.Services.CreateScope())
+        {
+            var db = paymentScope.ServiceProvider
+                .GetRequiredService<OrderSystemDbContext>();
+
+            providerPaymentId = await db.Payments
+                .Where(item => item.Id == initiationResult.PaymentId)
+                .Select(item => item.ProviderPaymentId)
+                .SingleAsync();
+        }
+
+        using (var expirationScope = factory.Services.CreateScope())
+        {
+            var expirationStore = expirationScope.ServiceProvider
+                .GetRequiredService<IReservationExpirationStore>();
+
+            var expirationOutcome = await expirationStore.TryExpireAsync(
+                orderId,
+                expiredAt,
+                CancellationToken.None);
+
+            Assert.Equal(
+                ReservationExpirationOutcome.Expired,
+                expirationOutcome);
+        }
+
+        using (var adjustmentScope = factory.Services.CreateScope())
+        {
+            var db = adjustmentScope.ServiceProvider
+                .GetRequiredService<OrderSystemDbContext>();
+
+            var unavailableInventory = await db.Inventories
+                .SingleAsync(
+                    item =>
+                        item.ProductVariantId ==
+                        unavailableVariantId);
+
+            unavailableInventory.AdjustOnHand(
+                quantityDelta: -2,
+                updatedAt: stockChangedAt);
+
+            db.InventoryTransactions.Add(
+                new InventoryTransaction(
+                    Guid.NewGuid(),
+                    unavailableVariantId,
+                    InventoryTransactionType.Adjustment,
+                    onHandQuantityDelta: -2,
+                    reservedQuantityDelta: 0,
+                    referenceType: null,
+                    referenceId: null,
+                    reason: "Simulate stock becoming unavailable",
+                    createdAt: stockChangedAt));
+
+            await db.SaveChangesAsync();
+        }
+
+        clock.UtcNow = succeededAt;
+
+        using (var applicationScope = factory.Services.CreateScope())
+        {
+            var service = applicationScope.ServiceProvider
+                .GetRequiredService<PaymentResultApplicationService>();
+
+            var outcome = await service.ApplyAsync(
+                new ApplyPaymentResultCommand(
+                    providerPaymentId,
+                    ProviderPaymentOutcome.Succeeded,
+                    failureCode: null,
+                    PaymentResultSource.Reconciliation,
+                    providerEvent: null,
+                    occurredAt: succeededAt),
+                CancellationToken.None);
+
+            Assert.Equal(
+                PaymentResultApplicationStatus.Accepted,
+                outcome.Status);
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+
+        var assertionDb = assertionScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>();
+
+        var payment = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(
+                item => item.Id == initiationResult.PaymentId);
+
+        var order = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+
+        var inventories = await assertionDb.Inventories
+            .AsNoTracking()
+            .Where(item =>
+                item.ProductVariantId == availableVariantId ||
+                item.ProductVariantId == unavailableVariantId)
+            .ToDictionaryAsync(
+                item => item.ProductVariantId);
+
+        var recoveryReserves = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item =>
+                item.ReferenceType == InventoryReferenceType.Order &&
+                item.ReferenceId == orderId &&
+                item.Type == InventoryTransactionType.Reserve &&
+                item.CreatedAt == succeededAt)
+            .ToArrayAsync();
+
+        var recoveryHistories = await assertionDb.OrderStatusHistories
+            .AsNoTracking()
+            .Where(item =>
+                item.OrderId == orderId &&
+                item.FromStatus == OrderStatus.Expired &&
+                item.ToStatus == OrderStatus.Confirmed)
+            .ToArrayAsync();
+
+        Assert.Equal(PaymentStatus.RefundPending, payment.Status);
+        Assert.Equal($"fake-refund-{payment.Id:D}", payment.RefundIdempotencyKey);
+        Assert.Equal(succeededAt, payment.RefundRequestedAt);
+        Assert.Equal(succeededAt, payment.NextRefundAttemptAt);
+
+        Assert.Equal(OrderStatus.Expired, order.Status);
+
+        Assert.Equal(0, inventories[availableVariantId].ReservedQuantity);
+
+        Assert.Equal(0, inventories[unavailableVariantId].ReservedQuantity);
+
+        Assert.Empty(recoveryReserves);
+        Assert.Empty(recoveryHistories);
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-PAY-008")]
+    public async Task LateSuccessAfterCancellation_RefundsAndNeverRecoversOrder()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 3, 10, 0, 0, TimeSpan.Zero);
+        var cancelledAt = createdAt.AddMinutes(1);
+        var succeededAt = createdAt.AddMinutes(2);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var gateway = new TimeoutPaymentGateway();
+
+        await using var factory = CreateFactory(
+            userId,
+            clock,
+            paymentGateway: gateway);
+
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(
+            factory,
+            userId,
+            orderId,
+            createdAt);
+
+        var productVariantId = await SeedReservationForOrderAsync(
+            factory,
+            orderId,
+            createdAt,
+            quantity: 2);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(
+                orderId,
+                Guid.NewGuid(),
+                PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult =
+            Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        string providerPaymentId;
+
+        using (var paymentScope = factory.Services.CreateScope())
+        {
+            var db = paymentScope.ServiceProvider
+                .GetRequiredService<OrderSystemDbContext>();
+
+            providerPaymentId = await db.Payments
+                .Where(item => item.Id == initiationResult.PaymentId)
+                .Select(item => item.ProviderPaymentId)
+                .SingleAsync();
+        }
+
+        clock.UtcNow = cancelledAt;
+
+        using (var cancellationScope = factory.Services.CreateScope())
+        {
+            var orderService = cancellationScope.ServiceProvider
+                .GetRequiredService<OrderCommandService>();
+
+            var cancellation = await orderService.CancelAsync(
+                orderId,
+                new CancelOrderRequest(
+                    Reason: "Customer requested cancellation"),
+                CancellationToken.None);
+
+            Assert.True(cancellation.IsSuccess);
+        }
+
+        clock.UtcNow = succeededAt;
+
+        using (var applicationScope = factory.Services.CreateScope())
+        {
+            var service = applicationScope.ServiceProvider
+                .GetRequiredService<PaymentResultApplicationService>();
+
+            var outcome = await service.ApplyAsync(
+                new ApplyPaymentResultCommand(
+                    providerPaymentId,
+                    ProviderPaymentOutcome.Succeeded,
+                    failureCode: null,
+                    PaymentResultSource.Reconciliation,
+                    providerEvent: null,
+                    occurredAt: succeededAt),
+                CancellationToken.None);
+
+            Assert.Equal(
+                PaymentResultApplicationStatus.Accepted,
+                outcome.Status);
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+
+        var assertionDb = assertionScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>();
+
+        var payment = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == initiationResult.PaymentId);
+
+        var order = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+
+        var inventory = await assertionDb.Inventories
+            .AsNoTracking()
+            .SingleAsync(
+                item => item.ProductVariantId == productVariantId);
+
+        var inventoryTransactions = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item =>
+                item.ReferenceType == InventoryReferenceType.Order &&
+                item.ReferenceId == orderId)
+            .ToArrayAsync();
+
+        var recoveryHistories = await assertionDb.OrderStatusHistories
+            .AsNoTracking()
+            .Where(item =>
+                item.OrderId == orderId &&
+                item.ToStatus == OrderStatus.Confirmed)
+            .ToArrayAsync();
+
+        Assert.Equal(PaymentStatus.RefundPending, payment.Status);
+        Assert.NotNull(payment.RefundIdempotencyKey);
+        Assert.Equal(succeededAt, payment.RefundRequestedAt);
+        Assert.Equal(succeededAt, payment.NextRefundAttemptAt);
+
+        Assert.Equal(OrderStatus.Cancelled, order.Status);
+        Assert.Equal(10, inventory.OnHandQuantity);
+        Assert.Equal(0, inventory.ReservedQuantity);
+
+        Assert.Single(
+            inventoryTransactions,
+            item => item.Type == InventoryTransactionType.Reserve);
+
+        Assert.Single(
+            inventoryTransactions,
+            item => item.Type == InventoryTransactionType.Release);
+
+        Assert.DoesNotContain(
+            inventoryTransactions,
+            item =>
+                item.Type == InventoryTransactionType.Reserve &&
+                item.CreatedAt == succeededAt);
+
+        Assert.Empty(recoveryHistories);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-WEB-004")]
+    public async Task LateSuccessWebhook_ReacquisitionRollback_ReclaimsReceiptWithCompensationAtomically()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 3, 9, 0, 0, TimeSpan.Zero);
+        var expiredAt = createdAt.AddMinutes(15);
+        var stockChangedAt = expiredAt.AddSeconds(1);
+        var succeededAt = expiredAt.AddMinutes(1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var gateway = new TimeoutPaymentGateway();
+        var providerEventId = $"late-success-{Guid.NewGuid():N}";
+
+        var variantSeed = Guid.NewGuid().ToString("N");
+        var availableVariantId = Guid.ParseExact(
+            $"{variantSeed[..30]}01",
+            "N");
+        var unavailableVariantId = Guid.ParseExact(
+            $"{variantSeed[..30]}02",
+            "N");
+
+        await using var factory = CreateFactory(
+            userId,
+            clock,
+            paymentGateway: gateway);
+
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(
+            factory,
+            userId,
+            orderId,
+            createdAt);
+
+        await SeedReservationForOrderAsync(
+            factory,
+            orderId,
+            createdAt,
+            quantity: 2,
+            productVariantId: availableVariantId,
+            initialOnHand: 2);
+
+        await SeedReservationForOrderAsync(
+            factory,
+            orderId,
+            createdAt,
+            quantity: 2,
+            productVariantId: unavailableVariantId,
+            initialOnHand: 2);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(
+                orderId,
+                Guid.NewGuid(),
+                PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult =
+            Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        string providerPaymentId;
+
+        using (var paymentScope = factory.Services.CreateScope())
+        {
+            var db = paymentScope.ServiceProvider
+                .GetRequiredService<OrderSystemDbContext>();
+
+            providerPaymentId = await db.Payments
+                .Where(item => item.Id == initiationResult.PaymentId)
+                .Select(item => item.ProviderPaymentId)
+                .SingleAsync();
+        }
+
+        using (var expirationScope = factory.Services.CreateScope())
+        {
+            var expirationStore = expirationScope.ServiceProvider
+                .GetRequiredService<IReservationExpirationStore>();
+
+            var expirationOutcome = await expirationStore.TryExpireAsync(
+                orderId,
+                expiredAt,
+                CancellationToken.None);
+
+            Assert.Equal(
+                ReservationExpirationOutcome.Expired,
+                expirationOutcome);
+        }
+
+        using (var adjustmentScope = factory.Services.CreateScope())
+        {
+            var db = adjustmentScope.ServiceProvider
+                .GetRequiredService<OrderSystemDbContext>();
+
+            var unavailableInventory = await db.Inventories
+                .SingleAsync(
+                    item =>
+                        item.ProductVariantId ==
+                        unavailableVariantId);
+
+            unavailableInventory.AdjustOnHand(
+                quantityDelta: -2,
+                updatedAt: stockChangedAt);
+
+            db.InventoryTransactions.Add(
+                new InventoryTransaction(
+                    Guid.NewGuid(),
+                    unavailableVariantId,
+                    InventoryTransactionType.Adjustment,
+                    onHandQuantityDelta: -2,
+                    reservedQuantityDelta: 0,
+                    referenceType: null,
+                    referenceId: null,
+                    reason: "Simulate stock becoming unavailable",
+                    createdAt: stockChangedAt));
+
+            await db.SaveChangesAsync();
+        }
+
+        clock.UtcNow = succeededAt;
+
+        using (var applicationScope = factory.Services.CreateScope())
+        {
+            var service = applicationScope.ServiceProvider
+                .GetRequiredService<PaymentResultApplicationService>();
+
+            var providerEvent = new ProviderPaymentEventData(
+                PaymentProviderCodes.Fake,
+                providerEventId,
+                "payment.succeeded",
+                new string('a', 64)
+            );
+
+            var outcome = await service.ApplyAsync(
+                new ApplyPaymentResultCommand(
+                    providerPaymentId,
+                    ProviderPaymentOutcome.Succeeded,
+                    failureCode: null,
+                    PaymentResultSource.Webhook,
+                    providerEvent,
+                    occurredAt: succeededAt),
+                CancellationToken.None);
+
+            Assert.Equal(PaymentResultApplicationStatus.Accepted, outcome.Status);
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+
+        var assertionDb = assertionScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>();
+
+        var payment = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(
+                item => item.Id == initiationResult.PaymentId);
+
+        var order = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+
+        var inventories = await assertionDb.Inventories
+            .AsNoTracking()
+            .Where(item =>
+                item.ProductVariantId == availableVariantId ||
+                item.ProductVariantId == unavailableVariantId)
+            .ToDictionaryAsync(
+                item => item.ProductVariantId);
+
+        var recoveryReserves = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item =>
+                item.ReferenceType == InventoryReferenceType.Order &&
+                item.ReferenceId == orderId &&
+                item.Type == InventoryTransactionType.Reserve &&
+                item.CreatedAt == succeededAt)
+            .ToArrayAsync();
+
+        var recoveryHistories = await assertionDb.OrderStatusHistories
+            .AsNoTracking()
+            .Where(item =>
+                item.OrderId == orderId &&
+                item.FromStatus == OrderStatus.Expired &&
+                item.ToStatus == OrderStatus.Confirmed)
+            .ToArrayAsync();
+
+        Assert.Equal(PaymentStatus.RefundPending, payment.Status);
+        Assert.NotNull(payment.RefundIdempotencyKey);
+        Assert.Equal(succeededAt, payment.RefundRequestedAt);
+        Assert.Equal(succeededAt, payment.NextRefundAttemptAt);
+
+        Assert.Equal(OrderStatus.Expired, order.Status);
+
+        Assert.Equal(
+            0,
+            inventories[availableVariantId].ReservedQuantity);
+
+        Assert.Equal(
+            0,
+            inventories[unavailableVariantId].ReservedQuantity);
+
+        Assert.Empty(recoveryReserves);
+        Assert.Empty(recoveryHistories);
+
+
+
+        var receipts = await assertionDb.ProviderPaymentEvents
+            .AsNoTracking()
+            .Where(item =>
+                item.Provider == PaymentProviderCodes.Fake &&
+                item.ProviderEventId == providerEventId)
+            .ToArrayAsync();
+
+        Assert.Equal(PaymentStatus.RefundPending, payment.Status);
+        Assert.Equal(OrderStatus.Expired, order.Status);
+        Assert.Equal(0, inventories[availableVariantId].ReservedQuantity);
+        Assert.Equal(0, inventories[unavailableVariantId].ReservedQuantity);
+        Assert.Empty(recoveryReserves);
+        Assert.Empty(recoveryHistories);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-RACE-004")]
+    public async Task LateSuccessCompensation_AfterConcurrentRecovery_DoesNotRefundConfirmedOrder()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 3, 11, 0, 0, TimeSpan.Zero);
+        var expiredAt = createdAt.AddMinutes(15);
+        var stockChangedAt = expiredAt.AddSeconds(1);
+        var succeededAt = expiredAt.AddMinutes(1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var gateway = new TimeoutPaymentGateway();
+
+        var variantSeed = Guid.NewGuid().ToString("N");
+        var availableVariantId = Guid.ParseExact($"{variantSeed[..30]}01", "N");
+        var unavailableVariantId = Guid.ParseExact($"{variantSeed[..30]}02", "N");
+
+        await using var factory = CreateFactory(
+            userId,
+            clock,
+            paymentGateway: gateway,
+            blockFreshCompensation: true);
+
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, createdAt);
+
+        await SeedReservationForOrderAsync(
+            factory,
+            orderId,
+            createdAt,
+            quantity: 2,
+            productVariantId: availableVariantId,
+            initialOnHand: 2);
+
+        await SeedReservationForOrderAsync(
+            factory,
+            orderId,
+            createdAt,
+            quantity: 2,
+            productVariantId: unavailableVariantId,
+            initialOnHand: 2);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(
+                orderId,
+                Guid.NewGuid(),
+                PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult = Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        string providerPaymentId;
+
+        using (var paymentScope = factory.Services.CreateScope())
+        {
+            var db = paymentScope.ServiceProvider
+                .GetRequiredService<OrderSystemDbContext>();
+
+            providerPaymentId = await db.Payments
+                .Where(item => item.Id == initiationResult.PaymentId)
+                .Select(item => item.ProviderPaymentId)
+                .SingleAsync();
+        }
+
+        using (var expirationScope = factory.Services.CreateScope())
+        {
+            var expirationStore = expirationScope.ServiceProvider
+                .GetRequiredService<IReservationExpirationStore>();
+
+            var expirationOutcome = await expirationStore.TryExpireAsync(
+                orderId,
+                expiredAt,
+                CancellationToken.None);
+
+            Assert.Equal(
+                ReservationExpirationOutcome.Expired,
+                expirationOutcome);
+        }
+
+        using (var adjustmentScope = factory.Services.CreateScope())
+        {
+            var db = adjustmentScope.ServiceProvider
+                .GetRequiredService<OrderSystemDbContext>();
+
+            var unavailableInventory = await db.Inventories
+                .SingleAsync(
+                    item => item.ProductVariantId == unavailableVariantId);
+
+            unavailableInventory.AdjustOnHand(
+                quantityDelta: -2,
+                updatedAt: stockChangedAt);
+
+            db.InventoryTransactions.Add(
+                new InventoryTransaction(
+                    Guid.NewGuid(),
+                    unavailableVariantId,
+                    InventoryTransactionType.Adjustment,
+                    onHandQuantityDelta: -2,
+                    reservedQuantityDelta: 0,
+                    referenceType: null,
+                    referenceId: null,
+                    reason: "Simulate stock becoming unavailable",
+                    createdAt: stockChangedAt));
+
+            await db.SaveChangesAsync();
+        }
+
+        clock.UtcNow = succeededAt;
+
+        var command = new ApplyPaymentResultCommand(
+            providerPaymentId,
+            ProviderPaymentOutcome.Succeeded,
+            failureCode: null,
+            PaymentResultSource.Reconciliation,
+            providerEvent: null,
+            occurredAt: succeededAt);
+
+        var compensationGate = factory.Services
+            .GetRequiredService<BlockingPaymentResultApplicationScopeFactory>();
+
+        var firstActor = ApplyPaymentResultFromIndependentScopeAsync(
+            factory,
+            command);
+
+        await compensationGate.Reached.WaitAsync(TimeSpan.FromSeconds(10));
+
+        PaymentResultApplicationOutcome secondOutcome;
+
+        try
+        {
+            using (var restockScope = factory.Services.CreateScope())
+            {
+                var db = restockScope.ServiceProvider
+                    .GetRequiredService<OrderSystemDbContext>();
+
+                var unavailableInventory = await db.Inventories
+                    .SingleAsync(
+                        item => item.ProductVariantId == unavailableVariantId);
+
+                unavailableInventory.AdjustOnHand(
+                    quantityDelta: 2,
+                    updatedAt: succeededAt);
+
+                db.InventoryTransactions.Add(
+                    new InventoryTransaction(
+                        Guid.NewGuid(),
+                        unavailableVariantId,
+                        InventoryTransactionType.Adjustment,
+                        onHandQuantityDelta: 2,
+                        reservedQuantityDelta: 0,
+                        referenceType: null,
+                        referenceId: null,
+                        reason: "Restore stock before concurrent recovery",
+                        createdAt: succeededAt));
+
+                await db.SaveChangesAsync();
+            }
+
+            secondOutcome = await ApplyPaymentResultFromIndependentScopeAsync(
+                factory,
+                command);
+        }
+        finally
+        {
+            compensationGate.Release();
+        }
+
+        var firstOutcome = await firstActor.WaitAsync(
+            TimeSpan.FromSeconds(15));
+
+        Assert.Equal(
+            PaymentResultApplicationStatus.Accepted,
+            firstOutcome.Status);
+
+        Assert.Equal(
+            PaymentResultApplicationStatus.Accepted,
+            secondOutcome.Status);
+
+        using var assertionScope = factory.Services.CreateScope();
+
+        var assertionDb = assertionScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>();
+
+        var payment = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == initiationResult.PaymentId);
+
+        var order = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+
+        var inventories = await assertionDb.Inventories
+            .AsNoTracking()
+            .Where(item =>
+                item.ProductVariantId == availableVariantId ||
+                item.ProductVariantId == unavailableVariantId)
+            .ToDictionaryAsync(item => item.ProductVariantId);
+
+        var recoveryReserves = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item =>
+                item.ReferenceType == InventoryReferenceType.Order &&
+                item.ReferenceId == orderId &&
+                item.Type == InventoryTransactionType.Reserve &&
+                item.CreatedAt == succeededAt)
+            .ToArrayAsync();
+
+        var recoveryHistories = await assertionDb.OrderStatusHistories
+            .AsNoTracking()
+            .Where(item =>
+                item.OrderId == orderId &&
+                item.FromStatus == OrderStatus.Expired &&
+                item.ToStatus == OrderStatus.Confirmed)
+            .ToArrayAsync();
+
+        Assert.Equal(PaymentStatus.Succeeded, payment.Status);
+        Assert.Null(payment.RefundIdempotencyKey);
+        Assert.Null(payment.RefundRequestedAt);
+        Assert.Null(payment.NextRefundAttemptAt);
+
+        Assert.Equal(OrderStatus.Confirmed, order.Status);
+
+        Assert.Equal(2, inventories[availableVariantId].OnHandQuantity);
+        Assert.Equal(2, inventories[availableVariantId].ReservedQuantity);
+        Assert.Equal(0, inventories[availableVariantId].AvailableQuantity);
+
+        Assert.Equal(2, inventories[unavailableVariantId].OnHandQuantity);
+        Assert.Equal(2, inventories[unavailableVariantId].ReservedQuantity);
+        Assert.Equal(0, inventories[unavailableVariantId].AvailableQuantity);
+
+        Assert.Equal(2, recoveryReserves.Length);
+        Assert.Single(recoveryHistories);
+    }
+
+    [Fact]
+    [Trait("Requirement", "PAY-RACE-002")]
+    public async Task LateSuccessAndCompetingOrder_ForLastStock_OnlyOneAllocationSucceeds()
+    {
+        var createdAt = new DateTimeOffset(2026, 10, 3, 12, 0, 0, TimeSpan.Zero);
+        var expiredAt = createdAt.AddMinutes(15);
+        var raceAt = expiredAt.AddMinutes(1);
+        var userId = Guid.NewGuid();
+        var expiredOrderId = Guid.NewGuid();
+        var competingOrderId = Guid.NewGuid();
+        var clock = new FakeClock(createdAt);
+        var gateway = new TimeoutPaymentGateway();
+
+        await using var factory = CreateFactory(
+            userId,
+            clock,
+            paymentGateway: gateway);
+
+        await MigrateAsync(factory);
+
+        await SeedPendingPaymentOrderAsync(
+            factory,
+            userId,
+            expiredOrderId,
+            createdAt);
+
+        var productVariantId = await SeedReservationForOrderAsync(
+            factory,
+            expiredOrderId,
+            createdAt,
+            quantity: 1,
+            initialOnHand: 1);
+
+        var initiation = await ExecuteInitiationAsync(
+            factory,
+            new InitiatePaymentRequest(
+                expiredOrderId,
+                Guid.NewGuid(),
+                PaymentScenario.Success));
+
+        Assert.True(initiation.IsSuccess);
+
+        var initiationResult =
+            Assert.IsType<PaymentInitiationResult>(initiation.Value);
+
+        string providerPaymentId;
+
+        using (var paymentScope = factory.Services.CreateScope())
+        {
+            var db = paymentScope.ServiceProvider
+                .GetRequiredService<OrderSystemDbContext>();
+
+            providerPaymentId = await db.Payments
+                .Where(item => item.Id == initiationResult.PaymentId)
+                .Select(item => item.ProviderPaymentId)
+                .SingleAsync();
+        }
+
+        using (var expirationScope = factory.Services.CreateScope())
+        {
+            var expirationStore = expirationScope.ServiceProvider
+                .GetRequiredService<IReservationExpirationStore>();
+
+            var expirationOutcome = await expirationStore.TryExpireAsync(
+                expiredOrderId,
+                expiredAt,
+                CancellationToken.None);
+
+            Assert.Equal(
+                ReservationExpirationOutcome.Expired,
+                expirationOutcome);
+        }
+
+        clock.UtcNow = raceAt;
+
+        var command = new ApplyPaymentResultCommand(
+            providerPaymentId,
+            ProviderPaymentOutcome.Succeeded,
+            failureCode: null,
+            PaymentResultSource.Reconciliation,
+            providerEvent: null,
+            occurredAt: raceAt);
+
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var lateSuccessActor = ApplyPaymentResultAfterSignalAsync(
+            factory,
+            command,
+            start.Task
+        );
+
+        var competingOrderActor = TryCreateCompetingOrderAfterSignalAsync(
+            factory,
+            start.Task,
+            userId,
+            competingOrderId,
+            productVariantId,
+            raceAt
+        );
+
+        start.TrySetResult();
+
+        await Task.WhenAll(
+                lateSuccessActor,
+                competingOrderActor)
+            .WaitAsync(TimeSpan.FromSeconds(15));
+
+        var lateSuccessOutcome = await lateSuccessActor;
+        var competingReservationResult = await competingOrderActor;
+
+        Assert.Equal(
+            PaymentResultApplicationStatus.Accepted,
+            lateSuccessOutcome.Status);
+
+        using var assertionScope = factory.Services.CreateScope();
+
+        var assertionDb = assertionScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>();
+
+        var payment = await assertionDb.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == initiationResult.PaymentId);
+
+        var expiredOrder = await assertionDb.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == expiredOrderId);
+
+        var competingOrderExists = await assertionDb.Orders
+            .AsNoTracking()
+            .AnyAsync(item => item.Id == competingOrderId);
+
+        var inventory = await assertionDb.Inventories
+            .AsNoTracking()
+            .SingleAsync(
+                item => item.ProductVariantId == productVariantId);
+
+        var raceReservations = await assertionDb.InventoryTransactions
+            .AsNoTracking()
+            .Where(item =>
+                item.ProductVariantId == productVariantId &&
+                item.Type == InventoryTransactionType.Reserve &&
+                item.CreatedAt == raceAt)
+            .ToArrayAsync();
+
+        var lateSuccessRecovered =
+            payment.Status == PaymentStatus.Succeeded;
+
+        var competingOrderReserved =
+            competingReservationResult ==
+            InventoryReservationResult.Reserved;
+
+        Assert.NotEqual(
+            lateSuccessRecovered,
+            competingOrderReserved);
+
+        Assert.Equal(
+            competingOrderReserved,
+            competingOrderExists);
+
+        Assert.Equal(1, inventory.OnHandQuantity);
+        Assert.Equal(1, inventory.ReservedQuantity);
+        Assert.Equal(0, inventory.AvailableQuantity);
+
+        Assert.Single(raceReservations);
+
+        if (lateSuccessRecovered)
+        {
+            Assert.Equal(
+                InventoryReservationResult.InsufficientStock,
+                competingReservationResult);
+
+            Assert.Equal(
+                OrderStatus.Confirmed,
+                expiredOrder.Status);
+
+            Assert.Null(payment.RefundIdempotencyKey);
+            Assert.Null(payment.RefundRequestedAt);
+            Assert.Null(payment.NextRefundAttemptAt);
+
+            Assert.Equal(
+                expiredOrderId,
+                raceReservations[0].ReferenceId);
+        }
+        else
+        {
+            Assert.Equal(
+                InventoryReservationResult.Reserved,
+                competingReservationResult);
+
+            Assert.Equal(
+                PaymentStatus.RefundPending,
+                payment.Status);
+
+            Assert.Equal(
+                OrderStatus.Expired,
+                expiredOrder.Status);
+
+            Assert.NotNull(payment.RefundIdempotencyKey);
+            Assert.Equal(raceAt, payment.RefundRequestedAt);
+            Assert.Equal(raceAt, payment.NextRefundAttemptAt);
+
+            Assert.Equal(
+                competingOrderId,
+                raceReservations[0].ReferenceId);
+        }
+    }
+
     private static async Task AssertSingleSucceededCreateOperationAsync(
         OrderSystemDbContext db,
         Payment payment)
@@ -2799,10 +3933,12 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
         WebApplicationFactory<Program> factory,
         Guid orderId,
         DateTimeOffset now,
-        int quantity = 2)
+        int quantity = 2,
+        Guid? productVariantId = null,
+        int initialOnHand = 10)
     {
         var productId = Guid.NewGuid();
-        var productVariantId = Guid.NewGuid();
+        var resolvedProductVariantId = productVariantId ?? Guid.NewGuid();
 
         using var scope = factory.Services.CreateScope();
 
@@ -2819,7 +3955,7 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
             now);
 
         var variant = new ProductVariant(
-            productVariantId,
+            resolvedProductVariantId,
             productId,
             $"PAY-{Guid.NewGuid():N}"[..16],
             "Payment failure test variant",
@@ -2829,15 +3965,15 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
 
         var inventory = new Inventory(
             Guid.NewGuid(),
-            productVariantId,
-            initialOnHand: 10,
+            resolvedProductVariantId,
+            initialOnHand,
             now);
 
         db.AddRange(product, variant, inventory);
         await db.SaveChangesAsync();
 
         var reservation = await store.TryReserveAsync(
-            productVariantId,
+            resolvedProductVariantId,
             quantity: quantity,
             updatedAt: now,
             CancellationToken.None);
@@ -2849,7 +3985,7 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
             new OrderItem(
             Guid.NewGuid(),
             orderId,
-            productVariantId,
+            resolvedProductVariantId,
             quantity: quantity,
             unitPrice: 62_500m)
         ]);
@@ -2858,7 +3994,7 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
         [
             new InventoryTransaction(
             Guid.NewGuid(),
-            productVariantId,
+            resolvedProductVariantId,
             InventoryTransactionType.Reserve,
             onHandQuantityDelta: 0,
                 reservedQuantityDelta: quantity,
@@ -2871,7 +4007,89 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
         await store.SaveChangesAsync(CancellationToken.None);
         await transaction.CommitAsync(CancellationToken.None);
 
-        return productVariantId;
+        return resolvedProductVariantId;
+    }
+
+    private static async Task<PaymentResultApplicationOutcome> ApplyPaymentResultAfterSignalAsync(
+        WebApplicationFactory<Program> factory,
+        ApplyPaymentResultCommand command,
+        Task start)
+    {
+        await start;
+
+        return await ApplyPaymentResultFromIndependentScopeAsync(
+            factory,
+            command);
+    }
+
+    private static async Task<InventoryReservationResult>
+    TryCreateCompetingOrderAfterSignalAsync(
+        WebApplicationFactory<Program> factory,
+        Task start,
+        Guid userId,
+        Guid orderId,
+        Guid productVariantId,
+        DateTimeOffset now)
+    {
+        await start;
+
+        using var scope = factory.Services.CreateScope();
+
+        var store = scope.ServiceProvider
+            .GetRequiredService<IOrderCommandStore>();
+
+        await using var transaction = await store.BeginTransactionAsync(CancellationToken.None);
+
+        var reservationResult = await store.TryReserveAsync(
+            productVariantId,
+            quantity: 1,
+            updatedAt: now,
+            CancellationToken.None);
+
+        if (reservationResult != InventoryReservationResult.Reserved)
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+
+            return reservationResult;
+        }
+
+        store.AddOrder(
+            new Order(
+                orderId,
+                userId,
+                totalAmount: 62_500m,
+                reservationExpiresAt: now.AddMinutes(15),
+                createdAt: now));
+
+        store.AddOrderItems(
+        [
+            new OrderItem(
+            Guid.NewGuid(),
+            orderId,
+            productVariantId,
+            quantity: 1,
+            unitPrice: 62_500m)
+        ]);
+
+        store.AddInventoryTransactions(
+        [
+            new InventoryTransaction(
+            Guid.NewGuid(),
+            productVariantId,
+            InventoryTransactionType.Reserve,
+            onHandQuantityDelta: 0,
+            reservedQuantityDelta: 1,
+            InventoryReferenceType.Order,
+            orderId,
+            reason: null,
+            createdAt: now)
+        ]);
+
+        await store.SaveChangesAsync(CancellationToken.None);
+
+        await transaction.CommitAsync(CancellationToken.None);
+
+        return reservationResult;
     }
 
     private static async Task MigrateAsync(
@@ -2889,7 +4107,8 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
         Guid userId,
         IClock clock,
         IOperationHook? operationHook = null,
-        IPaymentGateway? paymentGateway = null) =>
+        IPaymentGateway? paymentGateway = null,
+        bool blockFreshCompensation = false) =>
         new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
             {
@@ -2917,6 +4136,18 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
                     {
                         services.RemoveAll<IPaymentGateway>();
                         services.AddSingleton(paymentGateway);
+                    }
+                    if (blockFreshCompensation)
+                    {
+                        services.RemoveAll<IPaymentResultApplicationScopeFactory>();
+
+                        services.AddSingleton<
+                            BlockingPaymentResultApplicationScopeFactory>();
+
+                        services.AddSingleton<
+                            IPaymentResultApplicationScopeFactory>(
+                            provider => provider.GetRequiredService<
+                                BlockingPaymentResultApplicationScopeFactory>());
                     }
                 });
             });
@@ -3145,5 +4376,80 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
         public bool IsAuthenticated => true;
         public Guid? UserId => userId;
         public UserRole? Role => UserRole.Customer;
+    }
+
+    private static async Task<PaymentResultApplicationOutcome> ApplyPaymentResultFromIndependentScopeAsync(
+        WebApplicationFactory<Program> factory,
+        ApplyPaymentResultCommand command)
+    {
+        using var scope = factory.Services.CreateScope();
+
+        var service = scope.ServiceProvider
+            .GetRequiredService<PaymentResultApplicationService>();
+
+        return await service.ApplyAsync(
+            command,
+            CancellationToken.None);
+    }
+
+    private sealed class BlockingPaymentResultApplicationScopeFactory(
+    IServiceScopeFactory serviceScopeFactory)
+    : IPaymentResultApplicationScopeFactory
+    {
+        private readonly TaskCompletionSource reached =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private int createCount;
+
+        public Task Reached => reached.Task;
+
+        public async ValueTask<IPaymentResultApplicationScope> CreateAsync(
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref createCount) == 1)
+            {
+                reached.TrySetResult();
+
+                await release.Task.WaitAsync(cancellationToken);
+            }
+
+            var serviceScope = serviceScopeFactory.CreateAsyncScope();
+
+            try
+            {
+                var store = serviceScope.ServiceProvider
+                    .GetRequiredService<IPaymentResultApplicationStore>();
+
+                return new PaymentResultApplicationScope(
+                    serviceScope,
+                    store);
+            }
+            catch
+            {
+                await serviceScope.DisposeAsync();
+                throw;
+            }
+        }
+
+        public void Release()
+        {
+            release.TrySetResult();
+        }
+
+        private sealed class PaymentResultApplicationScope(
+            AsyncServiceScope serviceScope,
+            IPaymentResultApplicationStore store)
+            : IPaymentResultApplicationScope
+        {
+            public IPaymentResultApplicationStore Store { get; } = store;
+
+            public ValueTask DisposeAsync()
+            {
+                return serviceScope.DisposeAsync();
+            }
+        }
     }
 }
