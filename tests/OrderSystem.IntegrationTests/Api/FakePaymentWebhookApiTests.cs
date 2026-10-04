@@ -82,14 +82,15 @@ public sealed class FakePaymentWebhookApiTests
     }
 
     [Fact]
-    public async Task Post_ProductionEnvironment_ReturnsNotFound()
+    public async Task Post_ProductionEnvironmentWithPaymentModuleDisabled_ReturnsNotFound()
     {
         await using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
             {
                 builder.UseEnvironment("Production");
                 builder.ConfigureAppConfiguration((_, configuration) =>
-                    configuration.AddOimsTestConfiguration());
+                    configuration.AddOimsTestConfiguration(
+                        new KeyValuePair<string, string?>("Payment:Enabled", bool.FalseString)));
             });
         using var client = factory.CreateClient();
         using var content = new StringContent("{}", Encoding.UTF8, "application/json");

@@ -180,11 +180,59 @@ public sealed class PaymentInitiationApiTests(PostgreSqlFixture postgres)
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
-    private WebApplicationFactory<Program> CreateFactory() =>
+    [Fact]
+    [Trait("Requirement", "API-PAY-ENV-002")]
+    public async Task InitiatePayment_WhenPaymentModuleIsExplicitlyEnabledInProduction_ReturnsUnauthorized()
+    {
+        await using var factory = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder =>
+            {
+                builder.UseEnvironment("Production");
+                builder.ConfigureAppConfiguration(
+                    (_, configuration) =>
+                        configuration.AddOimsTestConfiguration(
+                            new KeyValuePair<string, string?>("Payment:Enabled", bool.TrueString)));
+            });
+
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsJsonAsync(
+            $"/api/orders/{Guid.NewGuid()}/payments",
+            new { scenario = "SUCCESS" });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-PAY-ENV-003")]
+    public async Task InitiatePayment_WhenPaymentModuleIsEnabledInProduction_CreatesSimulatedPayment()
+    {
+        var now = DateTimeOffset.UtcNow;
+        await using var factory = CreateFactory("Production");
+        var customer = await CreateCustomerAsync(factory, now);
+        var orderId = await SeedPendingPaymentOrderAsync(factory, customer.Id, now);
+
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, customer.Email);
+        client.DefaultRequestHeaders.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        using var response = await client.PostAsJsonAsync(
+            $"/api/orders/{orderId}/payments",
+            new { scenario = "SUCCESS" });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(orderId, document.RootElement.GetProperty("data").GetProperty("orderId").GetGuid());
+        Assert.Equal("Succeeded", document.RootElement.GetProperty("data").GetProperty("status").GetString());
+    }
+
+    private WebApplicationFactory<Program> CreateFactory(string environment = "Development") =>
         new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
             {
-                builder.UseEnvironment("Development");
+                builder.UseEnvironment(environment);
                 builder.ConfigureAppConfiguration(
                     (_, configuration) =>
                         configuration.AddOimsTestConfiguration(
