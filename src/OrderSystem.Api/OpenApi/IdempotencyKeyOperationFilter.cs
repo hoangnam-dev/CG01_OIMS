@@ -12,16 +12,28 @@ public sealed class IdempotencyKeyOperationFilter : IOperationFilter
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentNullException.ThrowIfNull(context);
 
+        var relativePath = context.ApiDescription.RelativePath?.Trim('/');
+
         var isCreateOrder = string.Equals(
                 context.ApiDescription.HttpMethod,
                 HttpMethods.Post,
                 StringComparison.OrdinalIgnoreCase)
             && string.Equals(
-                context.ApiDescription.RelativePath?.Trim('/'),
+                relativePath,
                 "api/orders",
                 StringComparison.OrdinalIgnoreCase);
 
-        if (!isCreateOrder)
+        var isInitialPayment = string.Equals(
+            context.ApiDescription.HttpMethod,
+            HttpMethods.Post,
+            StringComparison.OrdinalIgnoreCase)
+            && string.Equals(
+                relativePath,
+                "api/orders/{orderId}/payments",
+                StringComparison.OrdinalIgnoreCase
+            );
+
+        if (!isCreateOrder && !isInitialPayment)
         {
             return;
         }
@@ -33,9 +45,13 @@ public sealed class IdempotencyKeyOperationFilter : IOperationFilter
             Name = "Idempotency-Key",
             In = ParameterLocation.Header,
             Required = true,
-            Description = "Required UUID identifying one immutable CreateOrder intent for the authenticated user. " +
-                "Repeating the same semantic request replays the original response; reusing the key for a " +
-                "different request returns HTTP 409.",
+            Description = isCreateOrder
+            ? "Required UUID identifying one immutable CreateOrder intent for the authenticated user. " +
+              "Repeating the same semantic request replays the original response; reusing the key for a " +
+              "different request returns HTTP 409."
+            : "Required UUID identifying one immutable payment-initiation intent for the authenticated user. " +
+              "Repeating the same semantic request returns the current Payment response; reusing the key for a " +
+              "different request returns HTTP 409.",
             Schema = new OpenApiSchema
             {
                 Type = JsonSchemaType.String,
@@ -43,8 +59,10 @@ public sealed class IdempotencyKeyOperationFilter : IOperationFilter
             }
         });
 
-        if (operation.Responses?.TryGetValue("201", out var createdResponse) is true &&
-            createdResponse is OpenApiResponse concreteCreatedResponse)
+        var replayResponseStatus = isCreateOrder ? "201" : "200";
+
+        if (operation.Responses?.TryGetValue(replayResponseStatus, out var replayResponse) is true &&
+            replayResponse is OpenApiResponse concreteCreatedResponse)
         {
             concreteCreatedResponse.Headers ??= new Dictionary<string, IOpenApiHeader>();
             concreteCreatedResponse.Headers.TryAdd(ReplayHeaderName, new OpenApiHeader

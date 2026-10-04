@@ -1,5 +1,6 @@
 using OrderSystem.Api.Authentication;
 using OrderSystem.Api.Contracts;
+using OrderSystem.Api.Diagnostics;
 using OrderSystem.Api.Errors;
 using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Common.Results;
@@ -44,6 +45,16 @@ public static class PaymentInitiationEndpoints
         return endpoints;
     }
 
+    private static readonly Action<ILogger, Guid, Guid, string, Exception?> ClientResponseLost =
+    LoggerMessage.Define<Guid, Guid, string>(
+        LogLevel.Warning,
+        new EventId(1, nameof(ClientResponseLost)), "Payment response was aborted after committed success for Payment {PaymentId}, Order {OrderId}, ProviderPaymentId {ProviderPaymentId}");
+
+    private static readonly Action<ILogger, Guid, Guid, string, PaymentStatus, Exception?> PaymentInitiated =
+    LoggerMessage.Define<Guid, Guid, string, PaymentStatus>(
+        LogLevel.Information,
+        new EventId(2, nameof(PaymentInitiated)), "Payment initiation completed for Payment {PaymentId}, Order {OrderId}, ProviderPaymentId {ProviderPaymentId}, PaymentStatus {PaymentStatus}");
+
     private static async Task<IResult> InitiateAsync(
         string orderId,
         InitiatePaymentRequestBody request,
@@ -51,6 +62,8 @@ public static class PaymentInitiationEndpoints
         PaymentCommandService paymentCommandService,
         IPaymentInitiationStore paymentStore,
         ICurrentUser currentUser,
+        PaymentInitiationMetrics paymentInitiationMetrics,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(orderId, out var parsedOrderId) || parsedOrderId == Guid.Empty)
@@ -122,6 +135,43 @@ public static class PaymentInitiationEndpoints
             context.Response.Headers["Idempotency-Replayed"] = "true";
             return Results.Ok(new ApiResponse<PaymentResponse>(response, null));
         }
+        if (scenario == PaymentScenario.SuccessButClientResponseLost &&
+            payment.Status == PaymentStatus.Succeeded)
+        {
+            ClientResponseLost(
+                loggerFactory.CreateLogger(typeof(PaymentInitiationEndpoints).FullName!),
+                payment.Id,
+                payment.OrderId,
+                payment.ProviderPaymentId,
+                null
+            );
+
+            paymentInitiationMetrics.RecordResponseLost();
+            context.Abort();
+            return Results.Empty;
+        }
+
+        if (payment.Status == PaymentStatus.Succeeded)
+        {
+            paymentInitiationMetrics.RecordSucceeded();
+        }
+        else if (payment.Status == PaymentStatus.Failed)
+        {
+            paymentInitiationMetrics.RecordFailed();
+        }
+        else if (payment.Status is PaymentStatus.Pending or PaymentStatus.Processing)
+        {
+            paymentInitiationMetrics.RecordUnresolved();
+        }
+
+        PaymentInitiated(
+            loggerFactory.CreateLogger(typeof(PaymentInitiationEndpoints).FullName!),
+            payment.Id,
+            payment.OrderId,
+            payment.ProviderPaymentId,
+            payment.Status,
+            null
+        );
 
         return payment.Status is PaymentStatus.Pending or PaymentStatus.Processing
             ? Results.Json(new ApiResponse<PaymentResponse>(response, null), statusCode: StatusCodes.Status202Accepted)

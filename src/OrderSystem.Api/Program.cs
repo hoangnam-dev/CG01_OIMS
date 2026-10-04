@@ -119,6 +119,8 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy(AuthorizationPolicies.Admin, policy => policy.RequireRole("Admin"))
     .AddPolicy(AuthorizationPolicies.Customer, policy => policy.RequireRole("Customer"));
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddMetrics();
+builder.Services.AddSingleton<PaymentInitiationMetrics>();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddSingleton<ICreateOrderResponseSnapshotSerializer, CreateOrderResponseSnapshotSerializer>();
