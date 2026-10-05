@@ -30,35 +30,29 @@ using OrderSystem.Api.Payments;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var fakeWebhookEnabled = builder.Environment.IsDevelopment() ||
-    builder.Environment.IsEnvironment("Test");
-
-if (fakeWebhookEnabled)
+builder.Services.AddSingleton(provider =>
 {
-    builder.Services.AddSingleton(provider =>
+    var configuration = provider.GetRequiredService<IConfiguration>();
+    var encodedSecret = configuration["Payment:FakeWebhookSecret"]
+        ?? throw new InvalidOperationException("Payment:FakeWebhookSecret is required");
+
+    byte[] webhookSecret;
+    try
     {
-        var configuration = provider.GetRequiredService<IConfiguration>();
-        var encodedSecret = configuration["Payment:FakeWebhookSecret"]
-            ?? throw new InvalidOperationException("Payment:FakeWebhookSecret is required");
+        webhookSecret = Convert.FromBase64String(encodedSecret);
+    }
+    catch (FormatException exception)
+    {
+        throw new InvalidOperationException("Payment:FakeWebhookSecret must be valid Base64", exception);
+    }
 
-        byte[] webhookSecret;
-        try
-        {
-            webhookSecret = Convert.FromBase64String(encodedSecret);
-        }
-        catch (FormatException exception)
-        {
-            throw new InvalidOperationException("Payment:FakeWebhookSecret must be valid Base64", exception);
-        }
+    if (webhookSecret.Length < 32)
+    {
+        throw new InvalidOperationException("Payment:FakeWebhookSecret must contain at least 32 bytes");
+    }
 
-        if (webhookSecret.Length < 32)
-        {
-            throw new InvalidOperationException("Payment:FakeWebhookSecret must contain at least 32 bytes");
-        }
-
-        return new FakeWebhookSignatureValidator(webhookSecret, TimeSpan.FromMinutes(5));
-    });
-}
+    return new FakeWebhookSignatureValidator(webhookSecret, TimeSpan.FromMinutes(5));
+});
 
 builder.Services.AddSerilog(loggerConfiguration =>
     loggerConfiguration.ConfigureOimsLogging(builder.Configuration, "OrderSystem.Api"));
@@ -125,6 +119,8 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy(AuthorizationPolicies.Admin, policy => policy.RequireRole("Admin"))
     .AddPolicy(AuthorizationPolicies.Customer, policy => policy.RequireRole("Customer"));
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddMetrics();
+builder.Services.AddSingleton<PaymentInitiationMetrics>();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddSingleton<ICreateOrderResponseSnapshotSerializer, CreateOrderResponseSnapshotSerializer>();
@@ -147,6 +143,7 @@ builder.Services.AddScoped<OrderCommandService>(provider =>
         idempotency.ReplayWindow,
         idempotency.RetentionWindow);
 });
+builder.Services.AddScoped<PaymentQueryService>();
 builder.Services.AddScoped<PaymentCommandService>(provider =>
 {
     var idempotency = provider
@@ -263,6 +260,9 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
+var paymentModuleOptions = app.Services.GetRequiredService<IOptions<PaymentOptions>>().Value;
+var fakePaymentModuleEnabled = paymentModuleOptions.Enabled;
+
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseRateLimiter();
 app.UseAuthentication();
@@ -298,10 +298,11 @@ app.MapFoundationEndpoints();
 app.MapAuthenticationEndpoints();
 app.MapProductCatalogEndpoints();
 app.MapInventoryEndpoints();
-if (fakeWebhookEnabled)
+if (fakePaymentModuleEnabled)
 {
     app.MapFakePaymentWebhookEndpoints();
     app.MapPaymentRefundEndpoints();
+    app.MapPaymentInitiationEndpoints();
 }
 app.MapOrderEndpoints();
 

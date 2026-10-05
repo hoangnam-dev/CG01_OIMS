@@ -885,6 +885,66 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
     }
 
     [Fact]
+    public async Task InitiateAsync_ClientResponseLostAfterCommit_RetryReturnsSucceededWithoutSecondProviderOperation()
+    {
+        var now = new DateTimeOffset(2026, 10, 2, 12, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var idempotencyKey = Guid.NewGuid();
+        var clock = new FakeClock(now);
+        var hook = new ThrowingCheckpointHook(PaymentOperationCheckpoints.AfterResultApplication);
+
+        await using var factory = CreateFactory(userId, clock, operationHook: hook);
+
+        await MigrateAsync(factory);
+        await SeedPendingPaymentOrderAsync(factory, userId, orderId, now);
+
+        var request = new InitiatePaymentRequest(
+            OrderId: orderId,
+            IdempotencyKey: idempotencyKey,
+            Scenario: PaymentScenario.SuccessButClientResponseLost);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => ExecuteInitiationAsync(factory, request));
+
+        Assert.Equal(
+            $"Injected failure at '{PaymentOperationCheckpoints.AfterResultApplication}'",
+            exception.Message);
+
+        var retryHandling = await ExecuteInitiationAsync(factory, request);
+
+        Assert.True(retryHandling.IsSuccess);
+
+        var retryResult = Assert.IsType<PaymentInitiationResult>(retryHandling.Value);
+
+        Assert.True(retryResult.IsReplay);
+        Assert.Equal(PaymentStatus.Succeeded, retryResult.Status);
+
+        using var assertionScope = factory.Services.CreateScope();
+
+        var db = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+
+        var payment = await db.Payments
+            .AsNoTracking()
+            .SingleAsync(item => item.OrderId == orderId);
+
+        var order = await db.Orders
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == orderId);
+
+        var providerOperations = await db.FakeProviderOperations
+            .AsNoTracking()
+            .Where(item =>
+                item.OperationType == FakeProviderOperationType.CreatePayment &&
+                item.IdempotencyKey == payment.GatewayIdempotencyKey)
+            .ToListAsync();
+
+        Assert.Equal(PaymentStatus.Succeeded, payment.Status);
+        Assert.Equal(OrderStatus.Confirmed, order.Status);
+        Assert.Single(providerOperations);
+    }
+
+    [Fact]
     public async Task InitiateAsync_ProviderResponseLostAfterCommit_ReturnsUnresolvedPayment()
     {
         var now = new DateTimeOffset(2026, 10, 2, 12, 0, 0, TimeSpan.Zero);
@@ -901,7 +961,7 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
         var request = new InitiatePaymentRequest(
             OrderId: orderId,
             IdempotencyKey: idempotencyKey,
-            Scenario: PaymentScenario.SuccessButResponseLost);
+            Scenario: PaymentScenario.SuccessButProviderResponseLost);
 
         var handling = await ExecuteInitiationAsync(factory, request);
 
@@ -950,7 +1010,7 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
         var providerOperation = Assert.Single(providerOperations);
 
         Assert.Equal(payment.ProviderPaymentId, providerOperation.ProviderResourceId);
-        Assert.Equal(PaymentScenario.SuccessButResponseLost, providerOperation.Scenario);
+        Assert.Equal(PaymentScenario.SuccessButProviderResponseLost, providerOperation.Scenario);
         Assert.Equal(FakeProviderOperationStatus.Succeeded, providerOperation.Status);
         Assert.Equal(payment.Amount, providerOperation.Amount);
     }
@@ -1041,7 +1101,7 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
         var request = new InitiatePaymentRequest(
             OrderId: orderId,
             IdempotencyKey: idempotencyKey,
-            Scenario: PaymentScenario.SuccessButResponseLost);
+            Scenario: PaymentScenario.SuccessButProviderResponseLost);
 
         var firstHandling = await ExecuteInitiationAsync(factory, request);
         var retryHandling = await ExecuteInitiationAsync(factory, request);
@@ -1096,7 +1156,7 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
         var providerOperation = Assert.Single(providerOperations);
 
         Assert.Equal(payment.ProviderPaymentId, providerOperation.ProviderResourceId);
-        Assert.Equal(PaymentScenario.SuccessButResponseLost, providerOperation.Scenario);
+        Assert.Equal(PaymentScenario.SuccessButProviderResponseLost, providerOperation.Scenario);
         Assert.Equal(FakeProviderOperationStatus.Succeeded, providerOperation.Status);
         Assert.Equal(payment.Amount, providerOperation.Amount);
     }
@@ -2466,7 +2526,7 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
             new InitiatePaymentRequest(
                 orderId,
                 Guid.NewGuid(),
-                PaymentScenario.SuccessButResponseLost));
+                PaymentScenario.SuccessButProviderResponseLost));
 
         Assert.True(initiation.IsSuccess);
 
@@ -2537,7 +2597,7 @@ public sealed class PaymentInitiationTests(PostgreSqlFixture postgres)
             paymentAfterReconciliation.ProviderPaymentId,
             providerOperationAfterReconciliation.ProviderResourceId);
         Assert.Equal(
-            PaymentScenario.SuccessButResponseLost,
+            PaymentScenario.SuccessButProviderResponseLost,
             providerOperationAfterReconciliation.Scenario);
         Assert.Equal(
             FakeProviderOperationStatus.Succeeded,

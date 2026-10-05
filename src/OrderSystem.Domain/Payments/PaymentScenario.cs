@@ -4,22 +4,25 @@ public enum PaymentScenario
 {
     Success = 1,
     Failed = 2,
-    SuccessButResponseLost = 3,
-    DelayedSuccess = 4
+    SuccessButProviderResponseLost = 3,
+    DelayedSuccess = 4,
+    SuccessButClientResponseLost = 5
 }
 
 public static class PaymentScenarioCodes
 {
     public const string Success = "SUCCESS";
     public const string Failed = "FAILED";
-    public const string SuccessButResponseLost = "SUCCESS_BUT_RESPONSE_LOST";
+    public const string SuccessButClientResponseLost = "CLIENT_RESPONSE_LOST";
+    public const string SuccessButProviderResponseLost = "PROVIDER_RESPONSE_LOST";
     public const string DelayedSuccess = "DELAYED_SUCCESS";
 
     public static string ToCode(PaymentScenario scenario) => scenario switch
     {
         PaymentScenario.Success => Success,
         PaymentScenario.Failed => Failed,
-        PaymentScenario.SuccessButResponseLost => SuccessButResponseLost,
+        PaymentScenario.SuccessButClientResponseLost => SuccessButClientResponseLost,
+        PaymentScenario.SuccessButProviderResponseLost => SuccessButProviderResponseLost,
         PaymentScenario.DelayedSuccess => DelayedSuccess,
         _ => throw new ArgumentOutOfRangeException(
             nameof(scenario),
@@ -31,7 +34,8 @@ public static class PaymentScenarioCodes
     {
         Success => PaymentScenario.Success,
         Failed => PaymentScenario.Failed,
-        SuccessButResponseLost => PaymentScenario.SuccessButResponseLost,
+        SuccessButClientResponseLost => PaymentScenario.SuccessButClientResponseLost,
+        SuccessButProviderResponseLost => PaymentScenario.SuccessButProviderResponseLost,
         DelayedSuccess => PaymentScenario.DelayedSuccess,
         _ => throw new ArgumentOutOfRangeException(
             nameof(code),

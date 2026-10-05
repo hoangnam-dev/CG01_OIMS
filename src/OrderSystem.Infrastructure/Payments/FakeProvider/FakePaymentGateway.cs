@@ -98,7 +98,8 @@ internal sealed class FakePaymentGateway(
     {
         (PaymentScenario.Success, FakeProviderOperationStatus.Succeeded) => (PaymentGatewayStatus.Succeeded, null),
         (PaymentScenario.Failed, FakeProviderOperationStatus.Failed) => (PaymentGatewayStatus.Failed, FakeProviderScenarioPolicy.DeclinedFailureCode),
-        (PaymentScenario.SuccessButResponseLost, FakeProviderOperationStatus.Succeeded) => (PaymentGatewayStatus.Succeeded, null),
+        (PaymentScenario.SuccessButClientResponseLost, FakeProviderOperationStatus.Succeeded) => (PaymentGatewayStatus.Succeeded, null),
+        (PaymentScenario.SuccessButProviderResponseLost, FakeProviderOperationStatus.Succeeded) => (PaymentGatewayStatus.Succeeded, null),
         (PaymentScenario.DelayedSuccess, FakeProviderOperationStatus.Processing) => (PaymentGatewayStatus.Processing, null),
         (PaymentScenario.DelayedSuccess, FakeProviderOperationStatus.Succeeded) => (PaymentGatewayStatus.Succeeded, null),
         _ => throw new InvalidOperationException($"Provider operation has an invalid scenario/status combination: '{operation.Scenario}/{operation.Status}'.")
@@ -107,7 +108,7 @@ internal sealed class FakePaymentGateway(
     private static void ThrowIfResponseWasLost(FakeProviderOperationResolution resolution)
     {
         if (!resolution.WasCreated ||
-        resolution.Operation.Scenario != PaymentScenario.SuccessButResponseLost)
+        resolution.Operation.Scenario != PaymentScenario.SuccessButProviderResponseLost)
         {
             return;
         }

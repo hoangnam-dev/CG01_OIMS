@@ -148,7 +148,7 @@ public sealed class PaymentRefundApiTests(PostgreSqlFixture postgres)
             admin.Id,
             now,
             requiresManualReview: true,
-            scenario: PaymentScenario.SuccessButResponseLost);
+            scenario: PaymentScenario.SuccessButProviderResponseLost);
 
         using var client = factory.CreateClient();
         await AuthenticateAsync(client, admin.Email);

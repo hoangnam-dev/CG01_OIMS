@@ -11,7 +11,8 @@ internal static class FakeProviderScenarioPolicy
     {
         PaymentScenario.Success => FakeProviderOperationStatus.Succeeded,
         PaymentScenario.Failed => FakeProviderOperationStatus.Failed,
-        PaymentScenario.SuccessButResponseLost => FakeProviderOperationStatus.Succeeded,
+        PaymentScenario.SuccessButClientResponseLost => FakeProviderOperationStatus.Succeeded,
+        PaymentScenario.SuccessButProviderResponseLost => FakeProviderOperationStatus.Succeeded,
         PaymentScenario.DelayedSuccess => FakeProviderOperationStatus.Processing,
         _ => throw new ArgumentOutOfRangeException(nameof(scenario), scenario, "Unsupported payment scenario.")
     };
@@ -21,7 +22,8 @@ internal static class FakeProviderScenarioPolicy
     {
         PaymentScenario.Success => null,
         PaymentScenario.Failed => DeclinedFailureCode,
-        PaymentScenario.SuccessButResponseLost or
+        PaymentScenario.SuccessButClientResponseLost or
+        PaymentScenario.SuccessButProviderResponseLost or
         PaymentScenario.DelayedSuccess => throw new NotSupportedException($"Payment scenario '{scenario}' is not implemented yet."),
         _ => throw new ArgumentOutOfRangeException(nameof(scenario), scenario, "Unsupported payment scenario.")
     };
@@ -32,7 +34,8 @@ internal static class FakeProviderScenarioPolicy
             PaymentScenario.DelayedSuccess => now.Add(DelayedSuccessDuration),
             PaymentScenario.Success or
             PaymentScenario.Failed or
-            PaymentScenario.SuccessButResponseLost
+            PaymentScenario.SuccessButClientResponseLost or
+            PaymentScenario.SuccessButProviderResponseLost
             => null,
             _ => throw new ArgumentOutOfRangeException(nameof(scenario), scenario, "Unsupported payment scenario.")
         };

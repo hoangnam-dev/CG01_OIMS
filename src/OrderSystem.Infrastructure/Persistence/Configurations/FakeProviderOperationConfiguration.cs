@@ -18,7 +18,7 @@ internal sealed class FakeProviderOperationConfiguration
 
             table.HasCheckConstraint(
                 "ck_fake_provider_operations_scenario",
-                $"scenario IN ('{PaymentScenarioCodes.Success}', '{PaymentScenarioCodes.Failed}', '{PaymentScenarioCodes.SuccessButResponseLost}', '{PaymentScenarioCodes.DelayedSuccess}')");
+                $"scenario IN ('{PaymentScenarioCodes.Success}', '{PaymentScenarioCodes.Failed}', '{PaymentScenarioCodes.SuccessButClientResponseLost}', '{PaymentScenarioCodes.SuccessButProviderResponseLost}', '{PaymentScenarioCodes.DelayedSuccess}')");
 
             table.HasCheckConstraint(
                 "ck_fake_provider_operations_status",

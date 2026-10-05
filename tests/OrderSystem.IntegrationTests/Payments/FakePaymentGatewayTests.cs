@@ -745,6 +745,53 @@ public sealed class FakePaymentGatewayTests(PostgreSqlFixture postgres)
     }
 
     [Fact]
+    public async Task CreatePaymentAsync_ClientResponseLoss_ReturnsSucceededAndPersistsAvailableOperation()
+    {
+        await using var factory = CreateFactory();
+        await MigrateAsync(factory);
+
+        var paymentId = Guid.NewGuid();
+
+        var request = new CreatePaymentRequest(
+            PaymentId: paymentId,
+            IdempotencyKey: $"payment-{Guid.NewGuid():N}",
+            ProviderPaymentId: $"fake-pay-{paymentId:D}",
+            Amount: 125_000m,
+            Scenario: PaymentScenario.SuccessButClientResponseLost);
+
+        CreatePaymentResult result;
+
+        using (var requestScope = factory.Services.CreateScope())
+        {
+            var gateway = requestScope.ServiceProvider
+                .GetRequiredService<IPaymentGateway>();
+
+            result = await gateway.CreatePaymentAsync(
+                request,
+                CancellationToken.None);
+        }
+
+        Assert.Equal(request.ProviderPaymentId, result.ProviderPaymentId);
+        Assert.Equal(PaymentGatewayStatus.Succeeded, result.Status);
+        Assert.Null(result.FailureCode);
+
+        using var assertionScope = factory.Services.CreateScope();
+
+        var db = assertionScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>();
+
+        var persisted = await db.FakeProviderOperations
+            .AsNoTracking()
+            .SingleAsync(operation =>
+                operation.OperationType == FakeProviderOperationType.CreatePayment &&
+                operation.IdempotencyKey == request.IdempotencyKey);
+
+        Assert.Equal(PaymentScenario.SuccessButClientResponseLost, persisted.Scenario);
+        Assert.Equal(FakeProviderOperationStatus.Succeeded, persisted.Status);
+        Assert.Null(persisted.AvailableAt);
+    }
+
+    [Fact]
     public async Task CreatePaymentAsync_ResponseLostAfterProviderCommit_RetryReturnsPersistedSuccess()
     {
         await using var factory = CreateFactory();
@@ -757,7 +804,7 @@ public sealed class FakePaymentGatewayTests(PostgreSqlFixture postgres)
             IdempotencyKey: $"payment-{Guid.NewGuid():N}",
             ProviderPaymentId: $"fake-pay-{paymentId:D}",
             Amount: 125_000m,
-            Scenario: PaymentScenario.SuccessButResponseLost);
+            Scenario: PaymentScenario.SuccessButProviderResponseLost);
 
         using (var initialScope = factory.Services.CreateScope())
         {
@@ -787,7 +834,7 @@ public sealed class FakePaymentGatewayTests(PostgreSqlFixture postgres)
 
             Assert.Equal(request.ProviderPaymentId, committed.ProviderResourceId);
             Assert.Equal(
-                PaymentScenario.SuccessButResponseLost,
+                PaymentScenario.SuccessButProviderResponseLost,
                 committed.Scenario);
             Assert.Equal(
                 FakeProviderOperationStatus.Succeeded,
@@ -846,7 +893,7 @@ public sealed class FakePaymentGatewayTests(PostgreSqlFixture postgres)
             ProviderRefundId: $"fake-refund-{refundId:D}",
             ParentProviderPaymentId: createRequest.ProviderPaymentId,
             Amount: createRequest.Amount,
-            Scenario: PaymentScenario.SuccessButResponseLost);
+            Scenario: PaymentScenario.SuccessButProviderResponseLost);
 
         using (var initialScope = factory.Services.CreateScope())
         {
@@ -885,7 +932,7 @@ public sealed class FakePaymentGatewayTests(PostgreSqlFixture postgres)
                 refundRequest.ParentProviderPaymentId,
                 committed.ParentProviderPaymentId);
             Assert.Equal(
-                PaymentScenario.SuccessButResponseLost,
+                PaymentScenario.SuccessButProviderResponseLost,
                 committed.Scenario);
             Assert.Equal(
                 FakeProviderOperationStatus.Succeeded,
