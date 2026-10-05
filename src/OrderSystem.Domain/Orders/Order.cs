@@ -52,6 +52,9 @@ public sealed class Order
     public void Complete(DateTimeOffset updatedAt) =>
         Transition(OrderStatus.Processing, OrderStatus.Completed, updatedAt);
 
+    public void FailFulfillment(DateTimeOffset updatedAt) =>
+        Transition(OrderStatus.Processing, OrderStatus.FulfillmentFailed, updatedAt);
+
     public void Cancel(DateTimeOffset updatedAt) =>
         Transition(OrderStatus.PendingPayment, OrderStatus.Cancelled, updatedAt);
 

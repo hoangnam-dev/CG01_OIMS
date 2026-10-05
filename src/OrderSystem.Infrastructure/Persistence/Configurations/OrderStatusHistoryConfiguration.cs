@@ -13,7 +13,7 @@ internal sealed class OrderStatusHistoryConfiguration : IEntityTypeConfiguration
         {
             table.HasCheckConstraint(
                 "ck_order_status_history_status_transition",
-                "from_status IN ('PendingPayment', 'Confirmed', 'Processing', 'Completed', 'Cancelled', 'Expired') AND to_status IN ('PendingPayment', 'Confirmed', 'Processing', 'Completed', 'Cancelled', 'Expired') AND from_status <> to_status");
+                "from_status IN ('PendingPayment', 'Confirmed', 'Processing', 'Completed', 'FulfillmentFailed', 'Cancelled', 'Expired') AND to_status IN ('PendingPayment', 'Confirmed', 'Processing', 'Completed', 'FulfillmentFailed', 'Cancelled', 'Expired') AND from_status <> to_status");
             table.HasCheckConstraint(
                 "ck_order_status_history_actor_type",
                 "actor_type IN ('Customer', 'Admin', 'System')");
@@ -22,7 +22,7 @@ internal sealed class OrderStatusHistoryConfiguration : IEntityTypeConfiguration
                 "(actor_type = 'System' AND actor_user_id IS NULL) OR (actor_type IN ('Customer', 'Admin') AND actor_user_id IS NOT NULL)");
             table.HasCheckConstraint(
                 "ck_order_status_history_reason_code",
-                "reason_code IN ('CustomerRequested', 'CustomerSupport', 'FraudSuspected', 'DuplicateOrder', 'InventoryIssue', 'PolicyViolation', 'Other', 'ReservationExpired')");
+                "reason_code IN ('CustomerRequested', 'CustomerSupport', 'FraudSuspected', 'DuplicateOrder', 'InventoryIssue', 'PolicyViolation', 'Other', 'ReservationExpired', 'ShipmentCreated', 'ShipmentDelivered', 'ShipmentReturned')");
             table.HasCheckConstraint(
                 "ck_order_status_history_reason_format",
                 "reason IS NULL OR (reason = btrim(reason) AND length(reason) <= 500)");

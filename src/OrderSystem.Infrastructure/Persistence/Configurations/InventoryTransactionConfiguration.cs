@@ -13,7 +13,7 @@ public sealed class InventoryTransactionConfiguration : IEntityTypeConfiguration
         {
             table.HasCheckConstraint(
                 "ck_inventory_transactions_type",
-                "type IN ('Receipt', 'Reserve', 'Release', 'Issue', 'Adjustment')");
+                "type IN ('Receipt', 'Reserve', 'Release', 'Issue', 'Return', 'Adjustment')");
             table.HasCheckConstraint(
                 "ck_inventory_transactions_non_zero_delta",
                 "on_hand_delta <> 0 OR reserved_delta <> 0");
@@ -29,6 +29,7 @@ public sealed class InventoryTransactionConfiguration : IEntityTypeConfiguration
                 "(type = 'Reserve' AND on_hand_delta = 0 AND reserved_delta > 0) OR " +
                 "(type = 'Release' AND on_hand_delta = 0 AND reserved_delta < 0) OR " +
                 "(type = 'Issue' AND on_hand_delta < 0 AND reserved_delta = on_hand_delta) OR " +
+                "(type = 'Return' AND on_hand_delta > 0 AND reserved_delta = 0) OR " +
                 "(type = 'Adjustment' AND on_hand_delta <> 0 AND reserved_delta = 0)");
             table.HasCheckConstraint(
                 "ck_inventory_transactions_adjustment_reason",
@@ -36,6 +37,9 @@ public sealed class InventoryTransactionConfiguration : IEntityTypeConfiguration
             table.HasCheckConstraint(
                 "ck_inventory_transactions_order_reference",
                 "type NOT IN ('Reserve', 'Release') OR (reference_type = 'Order' AND reference_id IS NOT NULL)");
+            table.HasCheckConstraint(
+                "ck_inventory_transactions_return_reference",
+                "type <> 'Return' OR (reference_type = 'Shipment' AND reference_id IS NOT NULL)");
         });
 
         builder.HasKey(transaction => transaction.Id)

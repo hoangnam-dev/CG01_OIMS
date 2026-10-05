@@ -5,6 +5,32 @@ namespace OrderSystem.UnitTests.Inventories;
 public sealed class InventoryTransactionTests
 {
     [Fact]
+    public void Constructor_WithInspectedShipmentReturn_CreatesReturnLedgerEntry()
+    {
+        var transactionType = Enum.Parse<InventoryTransactionType>("Return", ignoreCase: false);
+        var shipmentId = Guid.NewGuid();
+        var createdAt = DateTimeOffset.UtcNow;
+
+        var transaction = new InventoryTransaction(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            transactionType,
+            onHandQuantityDelta: 2,
+            reservedQuantityDelta: 0,
+            referenceType: InventoryReferenceType.Shipment,
+            referenceId: shipmentId,
+            reason: null,
+            createdAt);
+
+        Assert.Equal("Return", transaction.Type.ToString());
+        Assert.Equal(2, transaction.OnHandQuantityDelta);
+        Assert.Equal(0, transaction.ReservedQuantityDelta);
+        Assert.Equal(InventoryReferenceType.Shipment, transaction.ReferenceType);
+        Assert.Equal(shipmentId, transaction.ReferenceId);
+        Assert.Null(transaction.Reason);
+    }
+
+    [Fact]
     public void Constructor_WithValidAdjustment_CreatesTransaction()
     {
         // Arrange

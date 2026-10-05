@@ -6,5 +6,6 @@ public enum InventoryTransactionType
     Receipt = 2,
     Reserve = 3,
     Release = 4,
-    Issue = 5
+    Issue = 5,
+    Return = 6
 }

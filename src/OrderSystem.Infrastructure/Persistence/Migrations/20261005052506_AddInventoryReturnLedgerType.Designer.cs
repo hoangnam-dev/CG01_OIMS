@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using OrderSystem.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using OrderSystem.Infrastructure.Persistence;
 namespace OrderSystem.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(OrderSystemDbContext))]
-    partial class OrderSystemDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261005052506_AddInventoryReturnLedgerType")]
+    partial class AddInventoryReturnLedgerType
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -764,77 +767,6 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         });
                 });
 
-            modelBuilder.Entity("OrderSystem.Domain.Shipments.Shipment", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<DateTimeOffset?>("DeliveredAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("delivered_at");
-
-                    b.Property<string>("FailureReason")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("failure_reason");
-
-                    b.Property<Guid>("OrderId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("order_id");
-
-                    b.Property<DateTimeOffset?>("RestockedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("restocked_at");
-
-                    b.Property<DateTimeOffset?>("ReturnedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("returned_at");
-
-                    b.Property<DateTimeOffset?>("ShippedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("shipped_at");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasColumnName("status");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.HasKey("Id")
-                        .HasName("pk_shipments");
-
-                    b.HasIndex("OrderId")
-                        .IsUnique()
-                        .HasDatabaseName("uq_shipments_order_id");
-
-                    b.HasIndex("Status", "UpdatedAt", "Id")
-                        .HasDatabaseName("ix_shipments_status_updated_id");
-
-                    b.ToTable("shipments", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_shipments_failure_reason_lifecycle", "(status = 'DeliveryFailed' AND failure_reason IS NOT NULL AND failure_reason = btrim(failure_reason) AND length(failure_reason) BETWEEN 1 AND 500) OR (status <> 'DeliveryFailed' AND failure_reason IS NULL)");
-
-                            t.HasCheckConstraint("ck_shipments_lifecycle_timestamps_after_created", "(shipped_at IS NULL OR shipped_at >= created_at) AND (delivered_at IS NULL OR delivered_at >= created_at) AND (returned_at IS NULL OR returned_at >= created_at) AND (restocked_at IS NULL OR restocked_at >= created_at)");
-
-                            t.HasCheckConstraint("ck_shipments_status", "status IN ('Pending', 'Picking', 'Packed', 'Shipped', 'OutForDelivery', 'Delivered', 'DeliveryFailed', 'Returning', 'Returned')");
-
-                            t.HasCheckConstraint("ck_shipments_updated_after_created", "updated_at >= created_at");
-                        });
-                });
-
             modelBuilder.Entity("OrderSystem.Domain.Users.RefreshToken", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1154,16 +1086,6 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         .HasConstraintName("fk_product_variants_products_product_id");
 
                     b.Navigation("Product");
-                });
-
-            modelBuilder.Entity("OrderSystem.Domain.Shipments.Shipment", b =>
-                {
-                    b.HasOne("OrderSystem.Domain.Orders.Order", null)
-                        .WithMany()
-                        .HasForeignKey("OrderId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired()
-                        .HasConstraintName("fk_shipments_orders_order_id");
                 });
 
             modelBuilder.Entity("OrderSystem.Domain.Users.RefreshToken", b =>

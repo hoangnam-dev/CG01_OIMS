@@ -11,6 +11,42 @@ namespace OrderSystem.IntegrationTests.Persistence;
 public sealed class OrderStatusHistoryDatabaseTests(PostgreSqlFixture postgres)
 {
     [Fact]
+    [Trait("Requirement", "DB-CONSTRAINT-016")]
+    public async Task Order_FulfillmentFailedStatus_IsAcceptedByPostgreSql()
+    {
+        var seeded = await CreateSeededDbContextAsync();
+        await using var dbContext = seeded.DbContext;
+
+        var affectedRows = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE orders
+            SET status = {"FulfillmentFailed"}
+            WHERE id = {seeded.OrderId}
+            """);
+
+        Assert.Equal(1, affectedRows);
+    }
+
+    [Fact]
+    [Trait("Requirement", "DB-CONSTRAINT-017")]
+    public async Task OrderStatusHistory_ShipmentReturnedTransition_IsAcceptedByPostgreSql()
+    {
+        var seeded = await CreateSeededDbContextAsync();
+        await using var dbContext = seeded.DbContext;
+
+        var affectedRows = await InsertHistoryAsync(
+            dbContext,
+            seeded.OrderId,
+            seeded.UserId,
+            fromStatus: "Processing",
+            toStatus: "FulfillmentFailed",
+            actorType: "Admin",
+            reasonCode: "ShipmentReturned",
+            reason: "Shipment returned to warehouse");
+
+        Assert.Equal(1, affectedRows);
+    }
+
+    [Fact]
     [Trait("Requirement", "DB-CONSTRAINT-015")]
     public async Task OrderStatusHistory_AdminCancelledWithoutExplanation_IsRejectedByPostgreSql()
     {

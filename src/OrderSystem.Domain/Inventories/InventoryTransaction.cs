@@ -80,7 +80,8 @@ public sealed class InventoryTransaction
 
         if (type is not InventoryTransactionType.Adjustment
             and not InventoryTransactionType.Reserve
-            and not InventoryTransactionType.Release)
+            and not InventoryTransactionType.Release
+            and not InventoryTransactionType.Return)
         {
             throw new ArgumentException($"Inventory transaction type '{type}' is not supported yet.");
         }
@@ -148,6 +149,18 @@ public sealed class InventoryTransaction
                 }
 
                 break;
+            case InventoryTransactionType.Return:
+                if (onHandQuantityDelta <= 0)
+                {
+                    throw new ArgumentException("On-hand quantity delta must be greater than zero for return transactions.", nameof(onHandQuantityDelta));
+                }
+
+                if (reservedQuantityDelta != 0)
+                {
+                    throw new ArgumentException("Reserved quantity delta must be zero for return transactions.", nameof(reservedQuantityDelta));
+                }
+
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(type), "Unsupported inventory transaction type.");
         }
@@ -204,6 +217,18 @@ public sealed class InventoryTransaction
                 if (referenceId is null)
                 {
                     throw new ArgumentException("Reference ID is required for release transactions.", nameof(referenceId));
+                }
+
+                break;
+            case InventoryTransactionType.Return:
+                if (referenceType != InventoryReferenceType.Shipment)
+                {
+                    throw new ArgumentException("Reference type must be 'Shipment' for return transactions.", nameof(referenceType));
+                }
+
+                if (referenceId is null)
+                {
+                    throw new ArgumentException("Reference ID is required for return transactions.", nameof(referenceId));
                 }
 
                 break;
