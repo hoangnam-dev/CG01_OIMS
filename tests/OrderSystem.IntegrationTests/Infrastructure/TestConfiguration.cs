@@ -19,6 +19,7 @@ internal static class TestConfiguration
             ["Jwt:SigningKey"] = SigningKey,
             ["AdminBootstrap:Enabled"] = bool.FalseString,
             ["Idempotency:CleanupEnabled"] = bool.FalseString,
+            ["Payment:Enabled"] = bool.TrueString,
             ["Payment:FakeWebhookSecret"] = FakeWebhookSecret,
         };
         foreach (var setting in overrides)

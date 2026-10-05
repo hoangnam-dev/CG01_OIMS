@@ -70,7 +70,7 @@ public sealed class PaymentConfigurationTests
             "status IN ('Pending', 'Processing', 'Succeeded', 'Failed', 'RefundPending', 'Refunded')",
             constraints["ck_payments_status"]);
         Assert.Equal(
-            "scenario IS NULL OR scenario IN ('SUCCESS', 'FAILED', 'SUCCESS_BUT_RESPONSE_LOST', 'DELAYED_SUCCESS')",
+            "scenario IS NULL OR scenario IN ('SUCCESS', 'FAILED', 'CLIENT_RESPONSE_LOST', 'PROVIDER_RESPONSE_LOST', 'DELAYED_SUCCESS')",
             constraints["ck_payments_scenario"]);
         Assert.Equal(
             "(status = 'Failed' AND failure_code IS NOT NULL AND failure_code = btrim(failure_code) AND length(failure_code) BETWEEN 1 AND 64) OR (status <> 'Failed' AND failure_code IS NULL)",
