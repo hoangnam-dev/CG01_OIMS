@@ -88,6 +88,18 @@ public sealed class OrderTests
     }
 
     [Fact]
+    public void FailFulfillment_WhenProcessing_TransitionsToFulfillmentFailed()
+    {
+        var order = CreateProcessingOrder();
+        var updatedAt = order.UpdatedAt.AddMinutes(1);
+
+        order.FailFulfillment(updatedAt);
+
+        Assert.Equal(OrderStatus.FulfillmentFailed, order.Status);
+        Assert.Equal(updatedAt, order.UpdatedAt);
+    }
+
+    [Fact]
     public void Cancel_WhenPendingPayment_TransitionsToCancelled()
     {
         var order = CreateOrder();
@@ -227,6 +239,13 @@ public sealed class OrderTests
         return order;
     }
 
+    private static Order CreateFulfillmentFailedOrder()
+    {
+        var order = CreateProcessingOrder();
+        order.FailFulfillment(CreatedAt.AddMinutes(3));
+        return order;
+    }
+
     private static Order CreateCancelledOrder()
     {
         var order = CreateOrder();
@@ -245,8 +264,9 @@ public sealed class OrderTests
     [
         new("PendingPayment", CreateOrder, ["Confirm", "Cancel", "Expire", "ExpireAfterPaymentFailure"]),
         new("Confirmed", CreateConfirmedOrder, ["StartProcessing"]),
-        new("Processing", CreateProcessingOrder, ["Complete"]),
+        new("Processing", CreateProcessingOrder, ["Complete", "FailFulfillment"]),
         new("Completed", CreateCompletedOrder, []),
+        new("FulfillmentFailed", CreateFulfillmentFailedOrder, []),
         new("Cancelled", CreateCancelledOrder, []),
         new("Expired", CreateExpiredOrder, ["RecoverFromExpiredPayment"])
     ];
@@ -256,6 +276,7 @@ public sealed class OrderTests
         new("Confirm", order => order.Confirm(order.UpdatedAt.AddMinutes(1))),
         new("StartProcessing", order => order.StartProcessing(order.UpdatedAt.AddMinutes(1))),
         new("Complete", order => order.Complete(order.UpdatedAt.AddMinutes(1))),
+        new("FailFulfillment", order => order.FailFulfillment(order.UpdatedAt.AddMinutes(1))),
         new("Cancel", order => order.Cancel(order.UpdatedAt.AddMinutes(1))),
         new("Expire", order => order.Expire(order.UpdatedAt > ReservationExpiresAt
             ? order.UpdatedAt.AddMinutes(1)

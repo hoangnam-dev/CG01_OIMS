@@ -9,5 +9,8 @@ public enum OrderStatusReasonCode
     InventoryIssue,
     PolicyViolation,
     Other,
-    ReservationExpired
+    ReservationExpired,
+    ShipmentCreated,
+    ShipmentDelivered,
+    ShipmentReturned
 }

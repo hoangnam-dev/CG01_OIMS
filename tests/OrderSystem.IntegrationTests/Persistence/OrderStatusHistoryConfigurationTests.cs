@@ -46,9 +46,13 @@ public sealed class OrderStatusHistoryConfigurationTests
             });
 
         var constraints = entityType.GetCheckConstraints().ToDictionary(constraint => constraint.Name!, constraint => constraint.Sql);
-        Assert.Contains("from_status <> to_status", constraints["ck_order_status_history_status_transition"]);
+        Assert.Equal(
+            "from_status IN ('PendingPayment', 'Confirmed', 'Processing', 'Completed', 'FulfillmentFailed', 'Cancelled', 'Expired') AND " +
+            "to_status IN ('PendingPayment', 'Confirmed', 'Processing', 'Completed', 'FulfillmentFailed', 'Cancelled', 'Expired') AND " +
+            "from_status <> to_status",
+            constraints["ck_order_status_history_status_transition"]);
         Assert.Equal("actor_type IN ('Customer', 'Admin', 'System')", constraints["ck_order_status_history_actor_type"]);
-        Assert.Equal("reason_code IN ('CustomerRequested', 'CustomerSupport', 'FraudSuspected', 'DuplicateOrder', 'InventoryIssue', 'PolicyViolation', 'Other', 'ReservationExpired')", constraints["ck_order_status_history_reason_code"]);
+        Assert.Equal("reason_code IN ('CustomerRequested', 'CustomerSupport', 'FraudSuspected', 'DuplicateOrder', 'InventoryIssue', 'PolicyViolation', 'Other', 'ReservationExpired', 'ShipmentCreated', 'ShipmentDelivered', 'ShipmentReturned')", constraints["ck_order_status_history_reason_code"]);
 
         var orderIndex = entityType.GetIndexes().Single(index => index.GetDatabaseName() == "ix_order_status_history_order_occurred_id");
         Assert.Equal([nameof(OrderStatusHistory.OrderId), nameof(OrderStatusHistory.OccurredAt), nameof(OrderStatusHistory.Id)], orderIndex.Properties.Select(property => property.Name));

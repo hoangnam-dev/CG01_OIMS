@@ -40,7 +40,7 @@ public sealed class OrderConfigurationTests
         Assert.Equal("fk_orders_users_user_id", userForeignKey.GetConstraintName());
 
         var constraints = entityType.GetCheckConstraints().ToDictionary(constraint => constraint.Name!, constraint => constraint.Sql);
-        Assert.Equal("status IN ('PendingPayment', 'Confirmed', 'Processing', 'Completed', 'Cancelled', 'Expired')", constraints["ck_orders_status"]);
+        Assert.Equal("status IN ('PendingPayment', 'Confirmed', 'Processing', 'Completed', 'FulfillmentFailed', 'Cancelled', 'Expired')", constraints["ck_orders_status"]);
         Assert.Equal("total_amount >= 0", constraints["ck_orders_total_amount_non_negative"]);
         Assert.Equal("reservation_expires_at > created_at", constraints["ck_orders_reservation_expires_after_created"]);
 
