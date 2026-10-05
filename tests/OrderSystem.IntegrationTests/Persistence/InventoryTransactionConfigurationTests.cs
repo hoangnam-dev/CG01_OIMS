@@ -45,7 +45,7 @@ public sealed class InventoryTransactionConfigurationTests
             constraint => constraint.Sql);
 
         Assert.Equal(
-            "type IN ('Receipt', 'Reserve', 'Release', 'Issue', 'Adjustment')",
+            "type IN ('Receipt', 'Reserve', 'Release', 'Issue', 'Return', 'Adjustment')",
             constraints["ck_inventory_transactions_type"]);
         Assert.Equal(
             "on_hand_delta <> 0 OR reserved_delta <> 0",
@@ -61,6 +61,7 @@ public sealed class InventoryTransactionConfigurationTests
             "(type = 'Reserve' AND on_hand_delta = 0 AND reserved_delta > 0) OR " +
             "(type = 'Release' AND on_hand_delta = 0 AND reserved_delta < 0) OR " +
             "(type = 'Issue' AND on_hand_delta < 0 AND reserved_delta = on_hand_delta) OR " +
+            "(type = 'Return' AND on_hand_delta > 0 AND reserved_delta = 0) OR " +
             "(type = 'Adjustment' AND on_hand_delta <> 0 AND reserved_delta = 0)",
             constraints["ck_inventory_transactions_delta_shape"]);
         Assert.Equal(
@@ -69,6 +70,9 @@ public sealed class InventoryTransactionConfigurationTests
         Assert.Equal(
             "type NOT IN ('Reserve', 'Release') OR (reference_type = 'Order' AND reference_id IS NOT NULL)",
             constraints["ck_inventory_transactions_order_reference"]);
+        Assert.Equal(
+            "type <> 'Return' OR (reference_type = 'Shipment' AND reference_id IS NOT NULL)",
+            constraints["ck_inventory_transactions_return_reference"]);
     }
 
     [Fact]

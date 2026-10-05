@@ -4,6 +4,16 @@ namespace OrderSystem.UnitTests.Orders;
 
 public sealed class OrderFulfillmentContractTests
 {
+    [Fact]
+    public void ShipmentStatusCatalog_DefinesPendingAsStablePersistedValue()
+    {
+        var shipmentStatusType = typeof(OrderStatus).Assembly.GetType("OrderSystem.Domain.Shipments.ShipmentStatus");
+
+        Assert.NotNull(shipmentStatusType);
+        Assert.True(shipmentStatusType!.IsEnum);
+        Assert.Contains("Pending", Enum.GetNames(shipmentStatusType));
+    }
+
     [Theory]
     [InlineData("FulfillmentFailed")]
     public void OrderStatus_FulfillmentCatalog_ContainsStablePersistedValue(string persistedValue)
