@@ -13,7 +13,7 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         {
             table.HasCheckConstraint(
                 "ck_orders_status",
-                "status IN ('PendingPayment', 'Confirmed', 'Processing', 'Completed', 'Cancelled', 'Expired')");
+                "status IN ('PendingPayment', 'Confirmed', 'Processing', 'Completed', 'FulfillmentFailed', 'Cancelled', 'Expired')");
             table.HasCheckConstraint(
                 "ck_orders_total_amount_non_negative",
                 "total_amount >= 0");
