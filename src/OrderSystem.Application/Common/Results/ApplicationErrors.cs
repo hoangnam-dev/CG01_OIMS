@@ -119,6 +119,11 @@ public static class ApplicationErrors
 
     public static class Shipments
     {
+
+        public static readonly ApplicationErrorDefinition NotFound = new(
+            ApplicationErrorKind.NotFound,
+            "SHIPMENT_NOT_FOUND",
+            "The Shipment was not found.");
         public static readonly ApplicationErrorDefinition AlreadyExists = new(
             ApplicationErrorKind.Conflict,
             "SHIPMENT_ALREADY_EXISTS",

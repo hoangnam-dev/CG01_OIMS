@@ -61,11 +61,33 @@ internal sealed class EfShipmentCommandStore(OrderSystemDbContext dbContext) : I
     public Task SaveChangesAsync(CancellationToken cancellationToken) =>
         dbContext.SaveChangesAsync(cancellationToken);
 
+    public void AddShipmentActivityHistory(ShipmentActivityHistory shipmentActivityHistory)
+    {
+        ArgumentNullException.ThrowIfNull(shipmentActivityHistory);
+        EnsureTransaction();
+
+        dbContext.ShipmentActivityHistories.Add(shipmentActivityHistory);
+    }
+
+    public async Task<Shipment?> GetShipmentForUpdateAsync(Guid shipmentId, CancellationToken cancellationToken)
+    {
+        if (shipmentId == Guid.Empty)
+        {
+            throw new ArgumentException("Shipment ID cannot be empty.", nameof(shipmentId));
+        }
+
+        EnsureTransaction();
+
+        return await dbContext.Shipments
+            .FromSqlInterpolated($"SELECT * FROM shipments WHERE id = {shipmentId} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+    }
+
     private void EnsureTransaction()
     {
         if (dbContext.Database.CurrentTransaction is null)
         {
-            throw new InvalidOperationException("An active database transaction is required for Shipment creation.");
+            throw new InvalidOperationException("An active database transaction is required for a Shipment command.");
         }
     }
 

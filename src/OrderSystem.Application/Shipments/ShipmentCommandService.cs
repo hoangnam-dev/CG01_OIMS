@@ -74,12 +74,149 @@ public sealed class ShipmentCommandService(
             OrderStatusReasonCode.ShipmentCreated
         );
 
+        var shipmentActivity = new ShipmentActivityHistory(
+            idGenerator.NewId(),
+            shipment.Id,
+            ShipmentActivityType.Created,
+            fromStatus: null,
+            toStatus: ShipmentStatus.Pending,
+            ShipmentActivityActorType.Admin,
+            userId,
+            now,
+            reason: null
+        );
+
         store.AddShipment(shipment);
         store.AddOrderStatusHistory(orderHistory);
+        store.AddShipmentActivityHistory(shipmentActivity);
 
         await store.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
         return ApplicationResult.Success(shipmentId);
+    }
+
+    public async Task<ApplicationResult<Guid>> StartPickingAsync(
+    Guid shipmentId,
+    CancellationToken cancellationToken)
+    {
+        if (!currentUser.IsAuthenticated ||
+            currentUser.UserId is not { } userId ||
+            userId == Guid.Empty ||
+            currentUser.Role is null)
+        {
+            return ApplicationResult.Failure<Guid>(ApplicationErrors.Unauthorized.Create());
+        }
+
+        if (currentUser.Role is not UserRole.Admin)
+        {
+            return ApplicationResult.Failure<Guid>(
+                ApplicationErrors.Forbidden.Create(
+                    message: "Only Administrators can update Shipments."));
+        }
+
+        if (shipmentId == Guid.Empty)
+        {
+            return ApplicationResult.Failure<Guid>(ApplicationErrors.ValidationFailed.Create(
+                validationErrors: new Dictionary<string, string[]>
+                {
+                    ["id"] = ["A valid Shipment ID is required."]
+                }));
+        }
+
+        await using var transaction = await store.BeginTransactionAsync(cancellationToken);
+
+        var shipment = await store.GetShipmentForUpdateAsync(shipmentId, cancellationToken);
+        if (shipment is null)
+        {
+            return ApplicationResult.Failure<Guid>(ApplicationErrors.Shipments.NotFound.Create());
+        }
+
+        if (shipment.Status != ShipmentStatus.Pending)
+        {
+            return ApplicationResult.Failure<Guid>(ApplicationErrors.Shipments.InvalidStatus.Create());
+        }
+
+        var now = clock.UtcNow;
+        shipment.StartPicking(now);
+
+        var activity = new ShipmentActivityHistory(
+            idGenerator.NewId(),
+            shipment.Id,
+            ShipmentActivityType.PickingStarted,
+            ShipmentStatus.Pending,
+            ShipmentStatus.Picking,
+            ShipmentActivityActorType.Admin,
+            userId,
+            now,
+            reason: null);
+
+        store.AddShipmentActivityHistory(activity);
+
+        await store.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return ApplicationResult.Success(shipment.Id);
+    }
+
+    public async Task<ApplicationResult<Guid>> PackAsync(Guid shipmentId, CancellationToken cancellationToken)
+    {
+        if (!currentUser.IsAuthenticated ||
+            currentUser.UserId is not { } userId ||
+            userId == Guid.Empty ||
+            currentUser.Role is null)
+        {
+            return ApplicationResult.Failure<Guid>(ApplicationErrors.Unauthorized.Create());
+        }
+
+        if (currentUser.Role is not UserRole.Admin)
+        {
+            return ApplicationResult.Failure<Guid>(ApplicationErrors.Forbidden.Create(message: "Only Administrators can update Shipments."));
+        }
+
+        if (shipmentId == Guid.Empty)
+        {
+            return ApplicationResult.Failure<Guid>(ApplicationErrors.ValidationFailed.Create(
+                validationErrors: new Dictionary<string, string[]>
+                {
+                    ["id"] = ["A valid Shipment ID is required."]
+                })
+            );
+        }
+
+        await using var transaction = await store.BeginTransactionAsync(cancellationToken);
+
+        var shipment = await store.GetShipmentForUpdateAsync(shipmentId, cancellationToken);
+        if (shipment is null)
+        {
+            return ApplicationResult.Failure<Guid>(ApplicationErrors.Shipments.NotFound.Create());
+        }
+
+        if (shipment.Status != ShipmentStatus.Picking)
+        {
+            return ApplicationResult.Failure<Guid>(ApplicationErrors.Shipments.InvalidStatus.Create());
+        }
+
+        var now = clock.UtcNow;
+        shipment.Pack(now);
+
+        var activityHistory = new ShipmentActivityHistory(
+            idGenerator.NewId(),
+            shipment.Id,
+            ShipmentActivityType.Packed,
+            ShipmentStatus.Picking,
+            ShipmentStatus.Packed,
+            ShipmentActivityActorType.Admin,
+            userId,
+            now,
+            reason: null
+        );
+
+        store.AddShipmentActivityHistory(activityHistory);
+
+        await store.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return ApplicationResult.Success(shipment.Id);
     }
 }

@@ -28,6 +28,7 @@ public sealed class ShipmentCreationTests(PostgreSqlFixture postgres)
         var orderId = Guid.NewGuid();
         var shipmentId = Guid.NewGuid();
         var historyId = Guid.NewGuid();
+        var activityId = Guid.NewGuid();
 
         await SeedConfirmedOrderAsync(factory, ownerId, adminId, orderId);
 
@@ -40,7 +41,7 @@ public sealed class ShipmentCreationTests(PostgreSqlFixture postgres)
                 store,
                 new FakeCurrentUser(true, adminId, UserRole.Admin),
                 new FakeClock(Now),
-                new SequenceIdGenerator(shipmentId, historyId));
+                new SequenceIdGenerator(shipmentId, historyId, activityId));
 
             var result = await service.CreateAsync(orderId, CancellationToken.None);
 
@@ -66,6 +67,10 @@ public sealed class ShipmentCreationTests(PostgreSqlFixture postgres)
                 candidate.OrderId == orderId &&
                 candidate.ReasonCode == OrderStatusReasonCode.ShipmentCreated);
 
+        var activity = await dbContext.ShipmentActivityHistories
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == activityId);
+
         var inventoryTransactions = await dbContext.InventoryTransactions
             .AsNoTracking()
             .Where(candidate => candidate.ReferenceId == orderId)
@@ -84,6 +89,15 @@ public sealed class ShipmentCreationTests(PostgreSqlFixture postgres)
         Assert.Equal(OrderStatusHistoryActorType.Admin, history.ActorType);
         Assert.Equal(adminId, history.ActorUserId);
         Assert.Equal(Now, history.OccurredAt);
+
+        Assert.Equal(shipmentId, activity.ShipmentId);
+        Assert.Equal(ShipmentActivityType.Created, activity.ActivityType);
+        Assert.Null(activity.FromStatus);
+        Assert.Equal(ShipmentStatus.Pending, activity.ToStatus);
+        Assert.Equal(ShipmentActivityActorType.Admin, activity.ActorType);
+        Assert.Equal(adminId, activity.ActorUserId);
+        Assert.Equal(Now, activity.OccurredAt);
+        Assert.Null(activity.Reason);
 
         Assert.Empty(inventoryTransactions);
     }

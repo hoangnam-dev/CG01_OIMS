@@ -18,4 +18,7 @@ public interface IShipmentCommandStore
     void AddShipment(Shipment shipment);
     void AddOrderStatusHistory(OrderStatusHistory orderStatusHistory);
     Task SaveChangesAsync(CancellationToken cancellationToken);
+
+    void AddShipmentActivityHistory(ShipmentActivityHistory shipmentActivityHistory);
+    Task<Shipment?> GetShipmentForUpdateAsync(Guid shipmentId, CancellationToken cancellationToken);
 }
