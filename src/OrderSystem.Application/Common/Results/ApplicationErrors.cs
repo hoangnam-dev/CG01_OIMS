@@ -117,6 +117,34 @@ public static class ApplicationErrors
             "The Order reservation has expired.");
     }
 
+    public static class Shipments
+    {
+
+        public static readonly ApplicationErrorDefinition NotFound = new(
+            ApplicationErrorKind.NotFound,
+            "SHIPMENT_NOT_FOUND",
+            "The Shipment was not found.");
+        public static readonly ApplicationErrorDefinition AlreadyExists = new(
+            ApplicationErrorKind.Conflict,
+            "SHIPMENT_ALREADY_EXISTS",
+            "The Order already has a Shipment.");
+
+        public static readonly ApplicationErrorDefinition OrderNotReadyForFulfillment = new(
+            ApplicationErrorKind.Conflict,
+            "ORDER_NOT_READY_FOR_FULFILLMENT",
+            "The Order is not ready for fulfillment.");
+
+        public static readonly ApplicationErrorDefinition InvalidStatus = new(
+            ApplicationErrorKind.Conflict,
+            "INVALID_SHIPMENT_STATUS",
+            "The Shipment status does not allow the requested action.");
+
+        public static readonly ApplicationErrorDefinition AlreadyRestocked = new(
+            ApplicationErrorKind.Conflict,
+            "SHIPMENT_ALREADY_RESTOCKED",
+            "The Shipment has already been restocked.");
+    }
+
     public static class Payments
     {
         public static readonly ApplicationErrorDefinition AlreadyExists = new(

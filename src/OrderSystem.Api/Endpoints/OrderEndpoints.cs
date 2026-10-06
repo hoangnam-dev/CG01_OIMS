@@ -8,6 +8,8 @@ using OrderSystem.Application.Common.Models;
 using OrderSystem.Application.Common.Results;
 using OrderSystem.Application.Orders;
 using OrderSystem.Application.Orders.Contracts;
+using OrderSystem.Application.Shipments;
+using OrderSystem.Application.Shipments.Contracts;
 using OrderSystem.Domain.Orders;
 
 namespace OrderSystem.Api.Endpoints;
@@ -46,6 +48,14 @@ public static class OrderEndpoints
             .ProducesProblem(StatusCodes.Status404NotFound)
             .ProducesProblem(StatusCodes.Status409Conflict)
             .ProducesProblem(StatusCodes.Status500InternalServerError);
+        orders.MapPost("/{id}/shipment", CreateShipment)
+            .RequireAuthorization(AuthorizationPolicies.Admin)
+            .Produces<ApiResponse<ShipmentDto>>(StatusCodes.Status201Created)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict);
         orders.MapGet("/{id}/status-history", ListStatusHistory)
             .RequireAuthorization(AuthorizationPolicies.Admin)
             .Produces<ApiResponse<OrderStatusHistoryDto[]>>()
@@ -160,6 +170,27 @@ public static class OrderEndpoints
 
         return result.IsSuccess
             ? Results.Ok(new ApiResponse<OrderDto>(result.Value!, null))
+            : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
+    }
+
+    private static async Task<IResult> CreateShipment(
+        string id,
+        HttpContext context,
+        ShipmentCommandService service,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!Guid.TryParse(id, out var orderId) || orderId == Guid.Empty)
+        {
+            return ApplicationResultHttpMapper.InvalidUuid(context, "id");
+        }
+
+        var result = await service.CreateAsync(orderId, cancellationToken);
+
+        return result.IsSuccess
+            ? Results.Json(
+                new ApiResponse<ShipmentDto>(result.Value!, null),
+                statusCode: StatusCodes.Status201Created)
             : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
     }
 

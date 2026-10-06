@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using OrderSystem.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using OrderSystem.Infrastructure.Persistence;
 namespace OrderSystem.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(OrderSystemDbContext))]
-    partial class OrderSystemDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261006023601_AddShipmentActivityHistory")]
+    partial class AddShipmentActivityHistory
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -227,8 +230,6 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_inventory_transactions_adjustment_reason", "type <> 'Adjustment' OR (reason IS NOT NULL AND length(btrim(reason)) > 0)");
 
                             t.HasCheckConstraint("ck_inventory_transactions_delta_shape", "(type = 'Receipt' AND on_hand_delta > 0 AND reserved_delta = 0) OR (type = 'Reserve' AND on_hand_delta = 0 AND reserved_delta > 0) OR (type = 'Release' AND on_hand_delta = 0 AND reserved_delta < 0) OR (type = 'Issue' AND on_hand_delta < 0 AND reserved_delta = on_hand_delta) OR (type = 'Return' AND on_hand_delta > 0 AND reserved_delta = 0) OR (type = 'Adjustment' AND on_hand_delta <> 0 AND reserved_delta = 0)");
-
-                            t.HasCheckConstraint("ck_inventory_transactions_issue_reference", "type <> 'Issue' OR (reference_type = 'Shipment' AND reference_id IS NOT NULL)");
 
                             t.HasCheckConstraint("ck_inventory_transactions_non_zero_delta", "on_hand_delta <> 0 OR reserved_delta <> 0");
 
@@ -895,7 +896,7 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
 
                     b.ToTable("shipment_activity_histories", null, t =>
                         {
-                            t.HasCheckConstraint("ck_shipment_activity_histories_activity_type", "activity_type IN ('Created', 'PickingStarted', 'Packed', 'Shipped', 'OutForDeliveryStarted', 'Delivered', 'DeliveryFailed', 'ReturnStarted', 'Returned', 'Restocked')");
+                            t.HasCheckConstraint("ck_shipment_activity_histories_activity_type", "activity_type IN ('Created', 'PickingStarted', 'Packed', 'Shipped', 'OutForDeliveryStarted', 'DeliveryFailed', 'ReturnStarted', 'Returned', 'Restocked')");
 
                             t.HasCheckConstraint("ck_shipment_activity_histories_actor_type", "actor_type IN ('Admin', 'System', 'Carrier')");
 

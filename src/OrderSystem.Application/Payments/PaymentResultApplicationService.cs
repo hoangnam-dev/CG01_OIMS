@@ -324,7 +324,7 @@ public sealed class PaymentResultApplicationService(
             return new PaymentResultApplicationOutcome(PaymentResultApplicationStatus.Accepted);
         }
 
-        payment.MarkRefundPending(CreateRefundIdempotencyKey(payment.Id), now);
+        payment.MarkRefundPending(PaymentRefundIdempotencyKey.Create(payment.Id), now);
 
         await compensationStore.SaveChangesAsync(cancellationToken);
 
@@ -332,6 +332,4 @@ public sealed class PaymentResultApplicationService(
 
         return new PaymentResultApplicationOutcome(PaymentResultApplicationStatus.Accepted);
     }
-
-    private static string CreateRefundIdempotencyKey(Guid paymentId) => $"fake-refund-{paymentId:D}";
 }

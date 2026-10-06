@@ -27,6 +27,7 @@ using Serilog;
 using OrderSystem.Api.Idempotency;
 using OrderSystem.Application.Payments;
 using OrderSystem.Api.Payments;
+using OrderSystem.Application.Shipments;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -162,6 +163,7 @@ builder.Services.AddScoped<PaymentCommandService>(provider =>
         idempotency.RetentionWindow);
 });
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
+builder.Services.AddScoped<ShipmentCommandService>();
 builder.Services.AddOptions<AuthenticationWebOptions>()
     .Bind(builder.Configuration.GetRequiredSection(AuthenticationWebOptions.SectionName))
     .Validate(options => options.RefreshPermitLimit > 0, "Authentication:RefreshPermitLimit must be positive.")
@@ -305,6 +307,7 @@ if (fakePaymentModuleEnabled)
     app.MapPaymentInitiationEndpoints();
 }
 app.MapOrderEndpoints();
+app.MapShipmentEndpoints();
 
 app.Run();
 
