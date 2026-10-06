@@ -71,6 +71,9 @@ public sealed class InventoryTransactionConfigurationTests
             "type NOT IN ('Reserve', 'Release') OR (reference_type = 'Order' AND reference_id IS NOT NULL)",
             constraints["ck_inventory_transactions_order_reference"]);
         Assert.Equal(
+            "type <> 'Issue' OR (reference_type = 'Shipment' AND reference_id IS NOT NULL)",
+            constraints["ck_inventory_transactions_issue_reference"]);
+        Assert.Equal(
             "type <> 'Return' OR (reference_type = 'Shipment' AND reference_id IS NOT NULL)",
             constraints["ck_inventory_transactions_return_reference"]);
     }

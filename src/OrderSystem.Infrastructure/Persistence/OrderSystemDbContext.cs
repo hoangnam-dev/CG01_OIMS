@@ -33,7 +33,9 @@ public sealed class OrderSystemDbContext(DbContextOptions<OrderSystemDbContext> 
     public DbSet<Payment> Payments => Set<Payment>();
 
     public DbSet<Shipment> Shipments => Set<Shipment>();
-    
+
+    public DbSet<ShipmentActivityHistory> ShipmentActivityHistories => Set<ShipmentActivityHistory>();
+
     public DbSet<ProviderPaymentEvent> ProviderPaymentEvents => Set<ProviderPaymentEvent>();
 
     internal DbSet<FakeProviderOperation> FakeProviderOperations => Set<FakeProviderOperation>();

@@ -23,6 +23,8 @@ using OrderSystem.Infrastructure.Idempotency;
 using OrderSystem.Infrastructure.Payments.FakeProvider;
 using OrderSystem.Application.Payments;
 using OrderSystem.Infrastructure.Payments;
+using OrderSystem.Application.Shipments;
+using OrderSystem.Infrastructure.Shipments;
 
 namespace OrderSystem.Infrastructure;
 
@@ -133,6 +135,7 @@ public static class DependencyInjection
             .Validate(options => options.BatchSize > 0, "Reservation:BatchSize must be positive.")
             .ValidateOnStart();
         services.AddScoped<IOrderCommandStore, EfOrderCommandStore>();
+        services.AddScoped<IShipmentCommandStore, EfShipmentCommandStore>();
         services.AddScoped<IOrderReadStore, EfOrderReadStore>();
         services.AddScoped<IReservationExpirationStore, EfReservationExpirationStore>();
 

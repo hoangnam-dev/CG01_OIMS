@@ -19,6 +19,19 @@ public sealed class ShipmentConfigurationTests
     }
 
     [Fact]
+    public void Model_MapsShipmentActivityHistoryToDedicatedTable()
+    {
+        using var dbContext = CreateDbContext();
+
+        var entityType = dbContext.GetService<IDesignTimeModel>().Model
+            .FindEntityType(typeof(ShipmentActivityHistory))
+            ?? throw new InvalidOperationException(
+                "ShipmentActivityHistory is missing from the EF Core model.");
+
+        Assert.Equal("shipment_activity_histories", entityType.GetTableName());
+    }
+
+    [Fact]
     public void Model_MapsShipmentIdentityAndOrderReferenceColumns()
     {
         using var dbContext = CreateDbContext();
