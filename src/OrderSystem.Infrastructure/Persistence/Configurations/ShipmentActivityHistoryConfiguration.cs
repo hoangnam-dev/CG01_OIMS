@@ -15,7 +15,7 @@ internal sealed class ShipmentActivityHistoryConfiguration
             table.HasCheckConstraint(
                 "ck_shipment_activity_histories_activity_type",
                 "activity_type IN ('Created', 'PickingStarted', 'Packed', 'Shipped', " +
-                "'OutForDeliveryStarted', 'DeliveryFailed', 'ReturnStarted', 'Returned', 'Restocked')");
+                "'OutForDeliveryStarted', 'Delivered', 'DeliveryFailed', 'ReturnStarted', 'Returned', 'Restocked')");
 
             table.HasCheckConstraint(
                 "ck_shipment_activity_histories_actor_type",

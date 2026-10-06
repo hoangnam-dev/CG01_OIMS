@@ -81,6 +81,7 @@ public sealed class InventoryTransaction
         if (type is not InventoryTransactionType.Adjustment
             and not InventoryTransactionType.Reserve
             and not InventoryTransactionType.Release
+            and not InventoryTransactionType.Issue
             and not InventoryTransactionType.Return)
         {
             throw new ArgumentException($"Inventory transaction type '{type}' is not supported yet.");
@@ -146,6 +147,18 @@ public sealed class InventoryTransaction
                 if (reservedQuantityDelta >= 0)
                 {
                     throw new ArgumentException("Reserved quantity delta must be less than zero for release transactions.", nameof(reservedQuantityDelta));
+                }
+
+                break;
+            case InventoryTransactionType.Issue:
+                if (onHandQuantityDelta >= 0)
+                {
+                    throw new ArgumentException("On-hand quantity delta must be less than zero for issue transactions.", nameof(onHandQuantityDelta));
+                }
+
+                if (reservedQuantityDelta != onHandQuantityDelta)
+                {
+                    throw new ArgumentException("Reserved quantity delta must equal the on-hand quantity delta for issue transactions.", nameof(reservedQuantityDelta));
                 }
 
                 break;
@@ -217,6 +230,18 @@ public sealed class InventoryTransaction
                 if (referenceId is null)
                 {
                     throw new ArgumentException("Reference ID is required for release transactions.", nameof(referenceId));
+                }
+
+                break;
+            case InventoryTransactionType.Issue:
+                if (referenceType != InventoryReferenceType.Shipment)
+                {
+                    throw new ArgumentException("Reference type must be 'Shipment' for issue transactions.", nameof(referenceType));
+                }
+
+                if (referenceId is null)
+                {
+                    throw new ArgumentException("Reference ID is required for issue transactions.", nameof(referenceId));
                 }
 
                 break;

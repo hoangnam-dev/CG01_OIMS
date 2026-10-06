@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Products;
 using OrderSystem.Infrastructure.Persistence;
@@ -36,6 +37,46 @@ public sealed class InventoryTransactionDatabaseTests(PostgreSqlFixture postgres
         Assert.Equal(0, persisted.ReservedQuantityDelta);
         Assert.Equal(InventoryReferenceType.Shipment, persisted.ReferenceType);
         Assert.Equal(shipmentId, persisted.ReferenceId);
+    }
+
+    [Fact]
+    [Trait("Requirement", "DB-SHIP-003")]
+    public async Task InventoryTransaction_IssueWithNonShipmentReference_IsRejectedByPostgreSql()
+    {
+        var seeded = await CreateSeededDbContextAsync();
+        await using var dbContext = seeded.DbContext;
+        var issueId = Guid.NewGuid();
+        var nonShipmentReferenceId = Guid.NewGuid();
+        var createdAt = new DateTimeOffset(2026, 10, 6, 11, 0, 0, TimeSpan.Zero);
+
+        var exception = await Assert.ThrowsAsync<PostgresException>(async () =>
+            await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO inventory_transactions (
+                id,
+                product_variant_id,
+                type,
+                on_hand_delta,
+                reserved_delta,
+                reference_type,
+                reference_id,
+                reason,
+                created_at)
+            VALUES (
+                {issueId},
+                {seeded.ProductVariantId},
+                {"Issue"},
+                {-2},
+                {-2},
+                {"Order"},
+                {nonShipmentReferenceId},
+                {null},
+                {createdAt})
+            """));
+
+        Assert.Equal(PostgresErrorCodes.CheckViolation, exception.SqlState);
+        Assert.Equal(
+            "ck_inventory_transactions_issue_reference",
+            exception.ConstraintName);
     }
 
     private async Task<SeededDbContext> CreateSeededDbContextAsync()

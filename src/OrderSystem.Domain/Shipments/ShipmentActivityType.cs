@@ -7,6 +7,7 @@ public enum ShipmentActivityType
     Packed,
     Shipped,
     OutForDeliveryStarted,
+    Delivered,
     DeliveryFailed,
     ReturnStarted,
     Returned,

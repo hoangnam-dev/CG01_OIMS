@@ -38,6 +38,9 @@ public sealed class InventoryTransactionConfiguration : IEntityTypeConfiguration
                 "ck_inventory_transactions_order_reference",
                 "type NOT IN ('Reserve', 'Release') OR (reference_type = 'Order' AND reference_id IS NOT NULL)");
             table.HasCheckConstraint(
+                "ck_inventory_transactions_issue_reference",
+                "type <> 'Issue' OR (reference_type = 'Shipment' AND reference_id IS NOT NULL)");
+            table.HasCheckConstraint(
                 "ck_inventory_transactions_return_reference",
                 "type <> 'Return' OR (reference_type = 'Shipment' AND reference_id IS NOT NULL)");
         });

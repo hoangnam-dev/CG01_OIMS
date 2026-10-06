@@ -4,7 +4,7 @@ namespace OrderSystem.Domain.Shipments;
 
 public sealed class Shipment
 {
-    private const int MaximumFailureReasonLength = 500;
+    public const int MaximumFailureReasonLength = 500;
 
     private Shipment()
     {
@@ -96,7 +96,7 @@ public sealed class Shipment
         FailureReason = normalizedFailureReason;
         UpdatedAt = failedAt;
     }
-    
+
     public void StartReturn(DateTimeOffset updatedAt)
     {
         EnsureStatus(ShipmentStatus.DeliveryFailed);
@@ -120,7 +120,7 @@ public sealed class Shipment
     public void MarkRestocked(DateTimeOffset restockedAt)
     {
         EnsureStatus(ShipmentStatus.Returned);
-        if(RestockedAt is not null)
+        if (RestockedAt is not null)
         {
             throw new InvalidOperationException("Shipment has already been restocked.");
         }

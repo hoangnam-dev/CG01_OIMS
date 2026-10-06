@@ -68,5 +68,5 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                 name: "shipment_activity_histories");
         }
     }
-    #pragma warning restore CA1861
+#pragma warning restore CA1861
 }

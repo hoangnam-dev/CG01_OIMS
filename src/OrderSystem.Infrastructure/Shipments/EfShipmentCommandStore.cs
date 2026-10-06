@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using OrderSystem.Application.Shipments;
+using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Orders;
+using OrderSystem.Domain.Payments;
 using OrderSystem.Domain.Shipments;
 using OrderSystem.Infrastructure.Persistence;
 
@@ -42,24 +44,30 @@ internal sealed class EfShipmentCommandStore(OrderSystemDbContext dbContext) : I
         }
         EnsureTransaction();
 
-        return await dbContext.Shipments
-            .AnyAsync(shipment => shipment.OrderId == orderId, cancellationToken);
+        return await dbContext.Shipments.AnyAsync(shipment => shipment.OrderId == orderId, cancellationToken);
     }
 
     public void AddShipment(Shipment shipment)
     {
         ArgumentNullException.ThrowIfNull(shipment);
+        EnsureTransaction();
+
         dbContext.Shipments.Add(shipment);
     }
 
     public void AddOrderStatusHistory(OrderStatusHistory history)
     {
         ArgumentNullException.ThrowIfNull(history);
+        EnsureTransaction();
+
         dbContext.OrderStatusHistories.Add(history);
     }
 
-    public Task SaveChangesAsync(CancellationToken cancellationToken) =>
-        dbContext.SaveChangesAsync(cancellationToken);
+    public Task SaveChangesAsync(CancellationToken cancellationToken)
+    {
+        EnsureTransaction();
+        return dbContext.SaveChangesAsync(cancellationToken);
+    }
 
     public void AddShipmentActivityHistory(ShipmentActivityHistory shipmentActivityHistory)
     {
@@ -80,6 +88,113 @@ internal sealed class EfShipmentCommandStore(OrderSystemDbContext dbContext) : I
 
         return await dbContext.Shipments
             .FromSqlInterpolated($"SELECT * FROM shipments WHERE id = {shipmentId} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<OrderItem>> ListOrderItemsAsync(Guid orderId, CancellationToken cancellationToken)
+    {
+        if (orderId == Guid.Empty)
+        {
+            throw new ArgumentException("Order ID cannot be empty.", nameof(orderId));
+        }
+
+        EnsureTransaction();
+
+        return await dbContext.OrderItems
+            .Where(item => item.OrderId == orderId)
+            .OrderBy(item => item.ProductVariantId)
+            .ThenBy(item => item.Id)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<bool> TryIssueAsync(Guid productVariantId, int quantity, DateTimeOffset updatedAt, CancellationToken cancellationToken)
+    {
+        if (productVariantId == Guid.Empty)
+        {
+            throw new ArgumentException("Product Variant ID cannot be empty.", nameof(productVariantId));
+        }
+
+        if (quantity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(quantity), "Quantity must be greater than zero.");
+        }
+
+        EnsureTransaction();
+
+        var affectedRows = await dbContext.Inventories
+            .Where(inventory =>
+                inventory.ProductVariantId == productVariantId &&
+                inventory.OnHandQuantity >= quantity &&
+                inventory.ReservedQuantity >= quantity
+            )
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(
+                        inventory => inventory.OnHandQuantity,
+                        inventory => inventory.OnHandQuantity - quantity
+                    )
+                    .SetProperty(
+                        inventory => inventory.ReservedQuantity,
+                        inventory => inventory.ReservedQuantity - quantity
+                    )
+                    .SetProperty(
+                        inventory => inventory.UpdatedAt,
+                        updatedAt
+                    ),
+                cancellationToken
+            );
+
+        return affectedRows == 1;
+    }
+
+    public async Task<bool> TryRestockAsync(Guid productVariantId, int quantity, DateTimeOffset updatedAt, CancellationToken cancellationToken)
+    {
+        if (productVariantId == Guid.Empty)
+        {
+            throw new ArgumentException("Product Variant ID cannot be empty.", nameof(productVariantId));
+        }
+
+        if (quantity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(quantity), "Quantity must be greater than zero.");
+        }
+
+        EnsureTransaction();
+
+        var affectedRows = await dbContext.Inventories
+            .Where(inventory => inventory.ProductVariantId == productVariantId)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(
+                        inventory => inventory.OnHandQuantity,
+                        inventory => inventory.OnHandQuantity + quantity)
+                    .SetProperty(
+                        inventory => inventory.UpdatedAt,
+                        updatedAt),
+                cancellationToken);
+
+        return affectedRows == 1;
+    }
+
+    public void AddInventoryTransactions(IEnumerable<InventoryTransaction> transactions)
+    {
+        ArgumentNullException.ThrowIfNull(transactions);
+        EnsureTransaction();
+
+        dbContext.InventoryTransactions.AddRange(transactions);
+    }
+
+    public async Task<Payment?> GetPaymentForUpdateByOrderIdAsync(Guid orderId, CancellationToken cancellationToken)
+    {
+        if (orderId == Guid.Empty)
+        {
+            throw new ArgumentException("Order ID cannot be empty.", nameof(orderId));
+        }
+
+        EnsureTransaction();
+
+        return await dbContext.Payments
+            .FromSqlInterpolated($"SELECT * FROM payments WHERE order_id = {orderId} FOR UPDATE")
             .SingleOrDefaultAsync(cancellationToken);
     }
 

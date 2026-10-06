@@ -2,7 +2,9 @@ using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Application.Shipments;
+using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Orders;
+using OrderSystem.Domain.Payments;
 using OrderSystem.Domain.Shipments;
 using OrderSystem.Domain.Users;
 
@@ -80,7 +82,8 @@ public sealed class ShipmentCommandServiceTests
         var result = await service.CreateAsync(orderId, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(shipmentId, result.Value);
+        Assert.Equal(shipmentId, result.Value!.Id);
+        Assert.Equal(ShipmentStatus.Pending, result.Value.Status);
         Assert.Equal(OrderStatus.Processing, order.Status);
 
         var shipment = Assert.Single(store.AddedShipments);
@@ -135,7 +138,8 @@ public sealed class ShipmentCommandServiceTests
         var result = await service.StartPickingAsync(shipmentId, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(shipmentId, result.Value);
+        Assert.Equal(shipmentId, result.Value!.Id);
+        Assert.Equal(ShipmentStatus.Picking, result.Value.Status);
         Assert.Equal(ShipmentStatus.Picking, shipment.Status);
         Assert.Equal(Now, shipment.UpdatedAt);
         Assert.Empty(store.AddedShipments);
@@ -179,7 +183,8 @@ public sealed class ShipmentCommandServiceTests
         var result = await service.PackAsync(shipmentId, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(shipmentId, result.Value);
+        Assert.Equal(shipmentId, result.Value!.Id);
+        Assert.Equal(ShipmentStatus.Packed, result.Value.Status);
         Assert.Equal(ShipmentStatus.Packed, shipment.Status);
         Assert.Equal(Now, shipment.UpdatedAt);
         Assert.Empty(store.AddedShipments);
@@ -196,6 +201,93 @@ public sealed class ShipmentCommandServiceTests
         Assert.Equal(Now, activity.OccurredAt);
         Assert.Null(activity.Reason);
 
+        Assert.Equal(1, store.SaveChangesCalls);
+        Assert.Equal(1, store.Transaction.CommitCalls);
+    }
+
+    [Fact]
+    public async Task ShipAsync_WhenAdminShipsPackedShipment_IssuesEveryOrderItemThenMarksShipmentShipped()
+    {
+        var shipmentId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var firstVariantId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var secondVariantId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        var firstIssueId = Guid.NewGuid();
+        var secondIssueId = Guid.NewGuid();
+        var activityId = Guid.NewGuid();
+
+        var shipment = new Shipment(shipmentId, orderId, Now.AddMinutes(-3));
+        shipment.StartPicking(Now.AddMinutes(-2));
+        shipment.Pack(Now.AddMinutes(-1));
+
+        var store = new FakeShipmentCommandStore
+        {
+            LockedShipment = shipment,
+            LockedOrderItems =
+            [
+                new OrderItem(Guid.NewGuid(), orderId, secondVariantId, 3, 20m),
+            new OrderItem(Guid.NewGuid(), orderId, firstVariantId, 2, 10m)
+            ]
+        };
+
+        var service = new ShipmentCommandService(
+            store,
+            new FakeCurrentUser(true, adminId, UserRole.Admin),
+            new FakeClock(Now),
+            new SequenceIdGenerator(firstIssueId, secondIssueId, activityId));
+
+        var result = await service.ShipAsync(shipmentId, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(shipmentId, result.Value!.Id);
+        Assert.Equal(ShipmentStatus.Shipped, result.Value.Status);
+        Assert.Equal(ShipmentStatus.Shipped, shipment.Status);
+        Assert.Equal(Now, shipment.ShippedAt);
+        Assert.Equal(Now, shipment.UpdatedAt);
+
+        Assert.Equal(
+            [
+                (firstVariantId, 2, Now),
+            (secondVariantId, 3, Now)
+            ],
+            store.IssueAttempts);
+
+        Assert.Collection(
+            store.AddedInventoryTransactions,
+            transaction =>
+            {
+                Assert.Equal(firstIssueId, transaction.Id);
+                Assert.Equal(firstVariantId, transaction.ProductVariantId);
+                Assert.Equal(InventoryTransactionType.Issue, transaction.Type);
+                Assert.Equal(-2, transaction.OnHandQuantityDelta);
+                Assert.Equal(-2, transaction.ReservedQuantityDelta);
+                Assert.Equal(InventoryReferenceType.Shipment, transaction.ReferenceType);
+                Assert.Equal(shipmentId, transaction.ReferenceId);
+                Assert.Equal(Now, transaction.CreatedAt);
+            },
+            transaction =>
+            {
+                Assert.Equal(secondIssueId, transaction.Id);
+                Assert.Equal(secondVariantId, transaction.ProductVariantId);
+                Assert.Equal(InventoryTransactionType.Issue, transaction.Type);
+                Assert.Equal(-3, transaction.OnHandQuantityDelta);
+                Assert.Equal(-3, transaction.ReservedQuantityDelta);
+                Assert.Equal(InventoryReferenceType.Shipment, transaction.ReferenceType);
+                Assert.Equal(shipmentId, transaction.ReferenceId);
+                Assert.Equal(Now, transaction.CreatedAt);
+            });
+
+        var activity = Assert.Single(store.AddedShipmentActivities);
+        Assert.Equal(activityId, activity.Id);
+        Assert.Equal(ShipmentActivityType.Shipped, activity.ActivityType);
+        Assert.Equal(ShipmentStatus.Packed, activity.FromStatus);
+        Assert.Equal(ShipmentStatus.Shipped, activity.ToStatus);
+        Assert.Equal(ShipmentActivityActorType.Admin, activity.ActorType);
+        Assert.Equal(adminId, activity.ActorUserId);
+        Assert.Equal(Now, activity.OccurredAt);
+
+        Assert.Empty(store.AddedOrderStatusHistories);
         Assert.Equal(1, store.SaveChangesCalls);
         Assert.Equal(1, store.Transaction.CommitCalls);
     }
@@ -237,6 +329,11 @@ public sealed class ShipmentCommandServiceTests
         public int SaveChangesCalls { get; private set; }
         public List<ShipmentActivityHistory> AddedShipmentActivities { get; } = [];
         public Shipment? LockedShipment { get; init; }
+        public IReadOnlyList<OrderItem> LockedOrderItems { get; init; } = [];
+        public List<(Guid ProductVariantId, int Quantity, DateTimeOffset UpdatedAt)> IssueAttempts { get; } = [];
+        public List<InventoryTransaction> AddedInventoryTransactions { get; } = [];
+        public Payment? LockedPayment { get; init; }
+        public List<(Guid ProductVariantId, int Quantity, DateTimeOffset UpdatedAt)> RestockAttempts { get; } = [];
 
         public Task<IShipmentCommandTransaction> BeginTransactionAsync(
             CancellationToken cancellationToken) =>
@@ -268,6 +365,32 @@ public sealed class ShipmentCommandServiceTests
 
         public Task<Shipment?> GetShipmentForUpdateAsync(Guid shipmentId, CancellationToken cancellationToken) =>
             Task.FromResult(LockedShipment);
+
+        public Task<IReadOnlyList<OrderItem>> ListOrderItemsAsync(Guid orderId, CancellationToken cancellationToken) =>
+            Task.FromResult(LockedOrderItems);
+
+        public Task<bool> TryIssueAsync(Guid productVariantId, int quantity, DateTimeOffset updatedAt, CancellationToken cancellationToken)
+        {
+            IssueAttempts.Add((productVariantId, quantity, updatedAt));
+            return Task.FromResult(true);
+        }
+
+        public Task<bool> TryRestockAsync(
+            Guid productVariantId,
+            int quantity,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken
+        )
+        {
+            RestockAttempts.Add((productVariantId, quantity, updatedAt));
+            return Task.FromResult(true);
+        }
+
+        public void AddInventoryTransactions(IEnumerable<InventoryTransaction> transactions) =>
+            AddedInventoryTransactions.AddRange(transactions);
+
+        public Task<Payment?> GetPaymentForUpdateByOrderIdAsync(Guid orderId, CancellationToken cancellationToken) =>
+            Task.FromResult(LockedPayment);
     }
 
     private sealed class FakeShipmentCommandTransaction : IShipmentCommandTransaction

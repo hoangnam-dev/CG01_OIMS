@@ -121,7 +121,6 @@ public sealed class InventoryTransactionTests
 
     [Theory]
     [InlineData(InventoryTransactionType.Receipt)]
-    [InlineData(InventoryTransactionType.Issue)]
     public void Constructor_WithDefinedButUnsupportedType_ThrowsArgumentException(
         InventoryTransactionType unsupportedType)
     {
@@ -137,6 +136,36 @@ public sealed class InventoryTransactionTests
             DateTimeOffset.UtcNow);
 
         Assert.Throws<ArgumentException>(action);
+    }
+
+    [Fact]
+    public void Constructor_IssueWithMatchingNegativeDeltasAndShipmentReference_CreatesTransaction()
+    {
+        var id = Guid.NewGuid();
+        var productVariantId = Guid.NewGuid();
+        var shipmentId = Guid.NewGuid();
+        var createdAt = new DateTimeOffset(2026, 10, 6, 10, 0, 0, TimeSpan.Zero);
+
+        var transaction = new InventoryTransaction(
+            id,
+            productVariantId,
+            InventoryTransactionType.Issue,
+            onHandQuantityDelta: -2,
+            reservedQuantityDelta: -2,
+            referenceType: InventoryReferenceType.Shipment,
+            referenceId: shipmentId,
+            reason: null,
+            createdAt);
+
+        Assert.Equal(id, transaction.Id);
+        Assert.Equal(productVariantId, transaction.ProductVariantId);
+        Assert.Equal(InventoryTransactionType.Issue, transaction.Type);
+        Assert.Equal(-2, transaction.OnHandQuantityDelta);
+        Assert.Equal(-2, transaction.ReservedQuantityDelta);
+        Assert.Equal(InventoryReferenceType.Shipment, transaction.ReferenceType);
+        Assert.Equal(shipmentId, transaction.ReferenceId);
+        Assert.Null(transaction.Reason);
+        Assert.Equal(createdAt, transaction.CreatedAt);
     }
 
     [Fact]

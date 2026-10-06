@@ -46,7 +46,8 @@ public sealed class ShipmentCreationTests(PostgreSqlFixture postgres)
             var result = await service.CreateAsync(orderId, CancellationToken.None);
 
             Assert.True(result.IsSuccess);
-            Assert.Equal(shipmentId, result.Value);
+            Assert.Equal(shipmentId, result.Value!.Id);
+            Assert.Equal(ShipmentStatus.Pending, result.Value.Status);
         }
 
         using var assertionScope = factory.Services.CreateScope();
