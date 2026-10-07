@@ -50,6 +50,31 @@ internal sealed class EfOrderReadStore(OrderSystemDbContext dbContext) : IOrderR
         return order.ToDto(itemsByOrderId.GetValueOrDefault(order.Id, []));
     }
 
+    public async Task<OrderDetailDto?> GetDetailAsync(
+        Guid orderId,
+        OrderReadScope scope,
+        Guid? currentUserId,
+        CancellationToken cancellationToken)
+    {
+        var order = await ApplyScope(dbContext.Orders.AsNoTracking(), scope, currentUserId)
+            .SingleOrDefaultAsync(candidate => candidate.Id == orderId, cancellationToken);
+
+        if (order is null)
+        {
+            return null;
+        }
+
+        var itemsByOrderId = await GetItemsByOrderIdAsync([order.Id], cancellationToken);
+
+        var shipment = await dbContext.Shipments
+            .AsNoTracking()
+            .SingleOrDefaultAsync(candidate => candidate.OrderId == order.Id, cancellationToken);
+
+        return order.ToDetailDto(
+            itemsByOrderId.GetValueOrDefault(order.Id, []),
+            shipment);
+    }
+
     public async Task<PagedResult<OrderStatusHistoryDto>?> ListStatusHistoryAsync(
         Guid orderId,
         OrderStatusHistoryListRequest request,

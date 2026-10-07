@@ -727,6 +727,12 @@ public sealed class OrderCommandServiceTests
                 Now,
                 Now));
         }
+        public Task<OrderDetailDto?> GetDetailAsync(
+            Guid orderId,
+            OrderReadScope scope,
+            Guid? currentUserId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<OrderDetailDto?>(null);
 
         public Task<PagedResult<OrderStatusHistoryDto>?> ListStatusHistoryAsync(
             Guid orderId,
