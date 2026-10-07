@@ -27,7 +27,7 @@ public static class OrderEndpoints
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status401Unauthorized);
         orders.MapGet("/{id}", GetOrder)
-            .Produces<ApiResponse<OrderDto>>()
+            .Produces<ApiResponse<OrderDetailDto>>()
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status401Unauthorized)
             .ProducesProblem(StatusCodes.Status404NotFound);
@@ -105,7 +105,7 @@ public static class OrderEndpoints
 
         var result = await service.GetAsync(orderId, cancellationToken);
         return result.IsSuccess
-            ? Results.Ok(new ApiResponse<OrderDto>(result.Value!, null))
+            ? Results.Ok(new ApiResponse<OrderDetailDto>(result.Value!, null))
             : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
     }
 

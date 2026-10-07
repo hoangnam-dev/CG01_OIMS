@@ -23,6 +23,12 @@ public interface IOrderReadStore
         Guid? currentUserId,
         CancellationToken cancellationToken);
 
+    Task<OrderDetailDto?> GetDetailAsync(
+        Guid orderId,
+        OrderReadScope scope,
+        Guid? currentUserId,
+        CancellationToken cancellationToken);
+
     Task<PagedResult<OrderStatusHistoryDto>?> ListStatusHistoryAsync(
         Guid orderId,
         OrderStatusHistoryListRequest request,

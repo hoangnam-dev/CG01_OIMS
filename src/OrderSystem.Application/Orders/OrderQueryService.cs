@@ -41,27 +41,30 @@ public sealed class OrderQueryService(IOrderReadStore store, ICurrentUser curren
         return ApplicationResult.Success(page);
     }
 
-    public async Task<ApplicationResult<OrderDto>> GetAsync(
-        Guid orderId,
-        CancellationToken cancellationToken)
+    public async Task<ApplicationResult<OrderDetailDto>> GetAsync(Guid orderId, CancellationToken cancellationToken)
     {
-        var caller = ResolveCaller<OrderDto>();
+        var caller = ResolveCaller<OrderDetailDto>();
         if (caller.Error is not null)
         {
-            return ApplicationResult.Failure<OrderDto>(caller.Error);
+            return ApplicationResult.Failure<OrderDetailDto>(caller.Error);
         }
 
         if (orderId == Guid.Empty)
         {
-            return ValidationFailure<OrderDto>(new Dictionary<string, string[]>(StringComparer.Ordinal)
+            return ValidationFailure<OrderDetailDto>(new Dictionary<string, string[]>
             {
                 ["id"] = ["Order ID is required."]
             });
         }
 
-        var order = await store.GetAsync(orderId, caller.Scope!.Value, caller.UserId, cancellationToken);
+        var order = await store.GetDetailAsync(
+            orderId,
+            caller.Scope!.Value,
+            caller.UserId,
+            cancellationToken);
+
         return order is null
-            ? OrderNotFound()
+            ? ApplicationResult.Failure<OrderDetailDto>(ApplicationErrors.Orders.NotFound.Create())
             : ApplicationResult.Success(order);
     }
 
@@ -131,9 +134,6 @@ public sealed class OrderQueryService(IOrderReadStore store, ICurrentUser curren
         ApplicationResult.Failure<T>(
             ApplicationErrors.Forbidden.Create(
                 message: "The current user role is not authorized to read Orders."));
-
-    private static ApplicationResult<OrderDto> OrderNotFound() =>
-        ApplicationResult.Failure<OrderDto>(ApplicationErrors.Orders.NotFound.Create());
 
     private sealed record CallerResolution<T>(OrderReadScope? Scope, Guid? UserId, ApplicationError? Error);
 }
