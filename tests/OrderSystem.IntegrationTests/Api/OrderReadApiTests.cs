@@ -11,6 +11,7 @@ using OrderSystem.Application.Authentication;
 using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Orders;
 using OrderSystem.Domain.Products;
+using OrderSystem.Domain.Shipments;
 using OrderSystem.Domain.Users;
 using OrderSystem.Infrastructure.Persistence;
 using OrderSystem.IntegrationTests.Infrastructure;
@@ -58,6 +59,35 @@ public sealed class OrderReadApiTests(PostgreSqlFixture postgres)
         using var detailDocument = JsonDocument.Parse(await detailResponse.Content.ReadAsStringAsync());
         Assert.Equal(order.Id, detailDocument.RootElement.GetProperty("data").GetProperty("id").GetGuid());
         Assert.Equal(owner.Id, detailDocument.RootElement.GetProperty("data").GetProperty("userId").GetGuid());
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-SHIP-009")]
+    public async Task GetOrder_CustomerOwnerWithShippedShipment_ReturnsPublicFulfillmentSummary()
+    {
+        await using var factory = CreateFactory();
+        var owner = await CreateUserAsync(factory, UserRole.Customer);
+        var order = await SeedShippedOrderAsync(factory, owner.Id);
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, owner.Email);
+
+        using var response = await client.GetAsync($"/api/orders/{order.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var data = document.RootElement.GetProperty("data");
+
+        Assert.True(data.TryGetProperty("fulfillmentStatus", out var fulfillmentStatus));
+        Assert.Equal("Shipped", fulfillmentStatus.GetString());
+        Assert.Equal(order.ShippedAt, data.GetProperty("shippedAt").GetDateTimeOffset());
+        Assert.Equal(JsonValueKind.Null, data.GetProperty("deliveredAt").ValueKind);
+
+        Assert.False(data.TryGetProperty("shipmentId", out _));
+        Assert.False(data.TryGetProperty("failureReason", out _));
+        Assert.False(data.TryGetProperty("returnedAt", out _));
+        Assert.False(data.TryGetProperty("restockedAt", out _));
+        Assert.False(data.TryGetProperty("activities", out _));
     }
 
     [Fact]
@@ -347,6 +377,66 @@ public sealed class OrderReadApiTests(PostgreSqlFixture postgres)
         return new(order.Id, variant.Id);
     }
 
+    private static async Task<SeededShippedOrder> SeedShippedOrderAsync(
+    WebApplicationFactory<Program> factory,
+    Guid ownerId)
+    {
+        await MigrateDatabaseAsync(factory);
+
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        const long ticksPerMicrosecond = TimeSpan.TicksPerMillisecond / 1000;
+        var utcNow = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var now = new DateTimeOffset(
+            utcNow.Ticks - (utcNow.Ticks % ticksPerMicrosecond),
+            TimeSpan.Zero);
+
+        var product = new Product(
+            Guid.NewGuid(),
+            $"Shipment summary product {Guid.NewGuid():N}",
+            "Shipment summary test product",
+            CatalogStatus.Active,
+            now);
+
+        var variant = new ProductVariant(
+            Guid.NewGuid(),
+            product.Id,
+            $"SUM-{Guid.NewGuid():N}"[..16],
+            "Shipment summary variant",
+            10m,
+            CatalogStatus.Active,
+            now);
+
+        var order = new Order(
+            Guid.NewGuid(),
+            ownerId,
+            20m,
+            now.AddHours(1),
+            now);
+
+        order.Confirm(now.AddMinutes(1));
+        order.StartProcessing(now.AddMinutes(2));
+
+        var shipment = new Shipment(
+            Guid.NewGuid(),
+            order.Id,
+            now.AddMinutes(2));
+
+        shipment.StartPicking(now.AddMinutes(3));
+        shipment.Pack(now.AddMinutes(3));
+
+        var shippedAt = now.AddMinutes(4);
+        shipment.Ship(shippedAt);
+
+        dbContext.AddRange(product, variant, order, shipment);
+        dbContext.OrderItems.Add(
+            new OrderItem(Guid.NewGuid(), order.Id, variant.Id, 2, 10m));
+
+        await dbContext.SaveChangesAsync();
+
+        return new SeededShippedOrder(order.Id, shippedAt);
+    }
+
     private static async Task UpdateVariantPriceAsync(WebApplicationFactory<Program> factory, Guid variantId, decimal price)
     {
         using var scope = factory.Services.CreateScope();
@@ -385,4 +475,6 @@ public sealed class OrderReadApiTests(PostgreSqlFixture postgres)
     private sealed record SeededOrder(Guid Id, Guid VariantId);
 
     private sealed record InventoryState(int OnHandQuantity, int ReservedQuantity, int TransactionCount);
+
+    private sealed record SeededShippedOrder(Guid Id, DateTimeOffset ShippedAt);
 }

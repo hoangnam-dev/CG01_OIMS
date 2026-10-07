@@ -248,6 +248,8 @@ public sealed class OrderQueryServiceTests
         public int StatusHistoryCalls { get; private set; }
         public Guid? LastStatusHistoryOrderId { get; private set; }
         public PagedResult<OrderStatusHistoryDto>? StatusHistoryResult { get; set; }
+        public OrderDetailDto? DetailResult { get; init; }
+        public Guid? LastGetCurrentUserId { get; private set; }
         public Task<PagedResult<OrderDto>> ListAsync(OrderListRequest request, OrderReadScope scope, Guid? currentUserId, CancellationToken cancellationToken)
         {
             ListCalls++;
@@ -261,6 +263,13 @@ public sealed class OrderQueryServiceTests
             GetCalls++;
             LastGetScope = scope;
             return Task.FromResult(GetResult);
+        }
+        public Task<OrderDetailDto?> GetDetailAsync(Guid orderId, OrderReadScope scope, Guid? currentUserId, CancellationToken cancellationToken)
+        {
+            GetCalls++;
+            LastGetScope = scope;
+            LastGetCurrentUserId = currentUserId;
+            return Task.FromResult(DetailResult);
         }
         public Task<PagedResult<OrderStatusHistoryDto>?> ListStatusHistoryAsync(Guid orderId, OrderStatusHistoryListRequest request, CancellationToken cancellationToken)
         {

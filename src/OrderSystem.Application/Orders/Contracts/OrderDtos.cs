@@ -31,3 +31,25 @@ public sealed record OrderStatusHistoryDto(
     OrderStatusReasonCode ReasonCode,
     string? Reason,
     DateTimeOffset OccurredAt);
+
+public enum CustomerFulfillmentStatus
+{
+    Preparing,
+    Shipped,
+    OutForDelivery,
+    Delivered,
+    DeliveryIssue
+}
+
+public sealed record OrderDetailDto(
+    Guid Id,
+    Guid UserId,
+    OrderStatus Status,
+    decimal TotalAmount,
+    DateTimeOffset ReservationExpiresAt,
+    IReadOnlyList<OrderItemDto> Items,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    CustomerFulfillmentStatus? FulfillmentStatus,
+    DateTimeOffset? ShippedAt,
+    DateTimeOffset? DeliveredAt);

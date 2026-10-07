@@ -23,6 +23,36 @@ namespace OrderSystem.IntegrationTests.Api;
 [Collection(PostgreSqlCollectionDefinition.Name)]
 public sealed class ShipmentDeliveryApiTests(PostgreSqlFixture postgres)
 {
+    [Theory]
+    [Trait("Requirement", "API-SHIP-009")]
+    [InlineData("start-picking", false)]
+    [InlineData("pack", false)]
+    [InlineData("ship", false)]
+    [InlineData("out-for-delivery", false)]
+    [InlineData("mark-delivered", false)]
+    [InlineData("delivery-failed", true)]
+    [InlineData("start-return", false)]
+    [InlineData("mark-returned", false)]
+    [InlineData("restock", false)]
+    public async Task ShipmentCommands_AuthenticatedCustomer_ReturnsForbidden(
+    string command,
+    bool requiresReason)
+    {
+        await using var factory = CreateFactory();
+        var customerEmail = await SeedCustomerEmailAsync(factory);
+
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, customerEmail);
+
+        using var response = await client.PostAsync(
+            $"/api/shipments/{Guid.NewGuid()}/{command}",
+            requiresReason
+                ? JsonContent.Create(new { reason = "Recipient unavailable" })
+                : null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     [Fact]
     [Trait("Requirement", "API-SHIP-005")]
     public async Task StartDelivery_AdminMovesShippedShipmentWithoutMutatingInventory()
@@ -1476,6 +1506,31 @@ public sealed class ShipmentDeliveryApiTests(PostgreSqlFixture postgres)
     Guid OrderId,
     Guid AdminId,
     string AdminEmail);
+
+    private static async Task<string> SeedCustomerEmailAsync(WebApplicationFactory<Program> factory)
+    {
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var passwordHasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher>();
+
+        await dbContext.Database.MigrateAsync();
+
+        var customerId = Guid.NewGuid();
+        var email = $"shipment-command-customer-{customerId:N}@example.com";
+        var createdAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+
+        dbContext.Users.Add(new User(
+            customerId,
+            email,
+            email,
+            passwordHasher.Hash(TestCredentials.ValidPassword),
+            UserRole.Customer,
+            createdAt));
+
+        await dbContext.SaveChangesAsync();
+
+        return email;
+    }
 
     private static async Task AuthenticateAsync(HttpClient client, string email)
     {
