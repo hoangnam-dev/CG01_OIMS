@@ -291,11 +291,15 @@ public sealed class ShipmentIssueTests(PostgreSqlFixture postgres)
                 secondCommand,
                 "The second Ship command did not begin within 10 seconds.");
 
+            var bothCommands = Task.WhenAll(firstCommand, secondCommand);
+
             var completedWhileLocked = await Task.WhenAny(
-                Task.WhenAll(firstCommand, secondCommand),
+                bothCommands,
                 Task.Delay(TimeSpan.FromSeconds(1)));
 
-            Assert.NotSame(Task.WhenAll(firstCommand, secondCommand), completedWhileLocked);
+            Assert.NotSame(bothCommands, completedWhileLocked);
+            Assert.False(firstCommand.IsCompleted);
+            Assert.False(secondCommand.IsCompleted);
         }
         finally
         {
@@ -356,6 +360,77 @@ public sealed class ShipmentIssueTests(PostgreSqlFixture postgres)
         Assert.Single(shippedActivities);
     }
 
+    [Fact]
+    public async Task GetShipmentForUpdateAsync_WhenShipmentIsLocked_WaitsUntilLockReleased()
+    {
+        var ownerId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var shipmentId = Guid.NewGuid();
+        var firstVariantId = Guid.NewGuid();
+        var secondVariantId = Guid.NewGuid();
+
+        await using var factory = CreateFactory();
+
+        await SeedPackedShipmentAsync(
+            factory,
+            ownerId,
+            adminId,
+            orderId,
+            shipmentId,
+            firstVariantId,
+            secondVariantId);
+
+        var lockAcquired = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseLock = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondLookupIssued = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var lockHolder = HoldShipmentLockAsync(
+            factory,
+            shipmentId,
+            lockAcquired,
+            releaseLock);
+
+        await WaitForSignalAsync(
+            lockAcquired.Task,
+            lockHolder,
+            "The lock holder did not acquire the Shipment row lock within 10 seconds.");
+
+        var secondLookup = LookupShipmentForUpdateFromIndependentScopeAsync(
+            factory,
+            shipmentId,
+            secondLookupIssued);
+
+        try
+        {
+            await WaitForSignalAsync(
+                secondLookupIssued.Task,
+                secondLookup,
+                "The second Shipment lookup was not issued within 10 seconds.");
+
+            var completedWhileLocked = await Task.WhenAny(
+                secondLookup,
+                Task.Delay(TimeSpan.FromSeconds(1)));
+
+            Assert.NotSame(secondLookup, completedWhileLocked);
+            Assert.False(secondLookup.IsCompleted);
+        }
+        finally
+        {
+            releaseLock.TrySetResult();
+        }
+
+        await lockHolder.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var shipment = await secondLookup.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.NotNull(shipment);
+        Assert.Equal(shipmentId, shipment.Id);
+    }
+
     private static async Task HoldShipmentLockAsync(
     WebApplicationFactory<Program> factory,
     Guid shipmentId,
@@ -374,6 +449,26 @@ public sealed class ShipmentIssueTests(PostgreSqlFixture postgres)
 
         await releaseLock.Task.WaitAsync(CancellationToken.None);
         await transaction.CommitAsync(CancellationToken.None);
+    }
+
+    private static async Task<Shipment?> LookupShipmentForUpdateFromIndependentScopeAsync(
+        WebApplicationFactory<Program> factory,
+        Guid shipmentId,
+        TaskCompletionSource lookupIssued)
+    {
+        using var scope = factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<IShipmentCommandStore>();
+
+        await using var transaction = await store.BeginTransactionAsync(CancellationToken.None);
+
+        var lookup = store.GetShipmentForUpdateAsync(shipmentId, CancellationToken.None);
+        lookupIssued.TrySetResult();
+
+        var shipment = await lookup;
+
+        await transaction.CommitAsync(CancellationToken.None);
+
+        return shipment;
     }
 
     private static async Task<ApplicationResult<ShipmentDto>> ShipFromIndependentScopeAsync(
