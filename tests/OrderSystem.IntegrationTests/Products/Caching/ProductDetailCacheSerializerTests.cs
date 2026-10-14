@@ -110,4 +110,25 @@ public sealed class ProductDetailCacheSerializerTests
             ],
             variantProperties);
     }
+
+    [Fact]
+    public void TryDeserialize_NullVariants_ReturnsFalse()
+    {
+        var payload = """
+        {
+          "id": "0199a5f2-8b72-7bd1-9f91-1f40c94356c2",
+          "name": "Mechanical Keyboard",
+          "description": "A cached Product with invalid variants",
+          "status": "Active",
+          "variants": null,
+          "createdAt": "2026-10-14T08:30:00+07:00",
+          "updatedAt": "2026-10-14T08:45:00+07:00"
+        }
+        """u8.ToArray();
+
+        var success = ProductDetailCacheSerializer.TryDeserialize(payload, out var product);
+
+        Assert.False(success);
+        Assert.Null(product);
+    }
 }

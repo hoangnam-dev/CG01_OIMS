@@ -25,6 +25,7 @@ using OrderSystem.Application.Payments;
 using OrderSystem.Infrastructure.Payments;
 using OrderSystem.Application.Shipments;
 using OrderSystem.Infrastructure.Shipments;
+using OrderSystem.Infrastructure.Products.Caching;
 
 namespace OrderSystem.Infrastructure;
 
@@ -103,8 +104,12 @@ public static class DependencyInjection
         services.AddOptions<RedisOptions>()
             .Bind(configuration.GetRequiredSection(RedisOptions.SectionName))
             .Validate(options => !string.IsNullOrWhiteSpace(options.Configuration), "Redis:Configuration is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.KeyPrefix), "Redis:KeyPrefix is required.")
             .Validate(options => options.ProductTtl > TimeSpan.Zero, "Redis:ProductTtl must be positive.")
+            .Validate(options => options.OperationTimeout > TimeSpan.Zero, "Redis:OperationTimeout must be positive.")
+            .Validate(options => options.ConnectTimeout > TimeSpan.Zero, "Redis:ConnectTimeout must be positive.")
             .ValidateOnStart();
+        services.AddSingleton<IProductDetailCache, UnavailableProductDetailCache>();
         services.AddScoped<IProductCatalogStore, EfProductCatalogStore>();
         services.AddScoped<ProductCatalogService>();
 

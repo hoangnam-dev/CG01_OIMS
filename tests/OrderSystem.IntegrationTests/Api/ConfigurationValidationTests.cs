@@ -57,7 +57,10 @@ public sealed class ConfigurationValidationTests
 
     [Theory]
     [InlineData("Jwt:AccessTokenLifetime", "00:00:00", "AccessTokenLifetime")]
+    [InlineData("Redis:KeyPrefix", " ", "KeyPrefix")]
     [InlineData("Redis:ProductTtl", "00:00:00", "ProductTtl")]
+    [InlineData("Redis:OperationTimeout", "00:00:00", "OperationTimeout")]
+    [InlineData("Redis:ConnectTimeout", "00:00:00", "ConnectTimeout")]
     [InlineData("RabbitMq:Port", "0", "Port")]
     [InlineData("Reservation:Duration", "00:00:00", "Duration")]
     [InlineData("Retry:MaxAttempts", "0", "MaxAttempts")]
