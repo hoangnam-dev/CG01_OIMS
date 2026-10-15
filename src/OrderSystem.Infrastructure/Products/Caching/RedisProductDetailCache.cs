@@ -31,6 +31,12 @@ internal sealed class RedisProductDetailCache(IConnectionMultiplexer connectionM
             new EventId(4, nameof(CacheWriteFailed)),
             "Redis Product cache write failed for Product {ProductId}");
 
+    private static readonly Action<ILogger, Guid, Exception?> CacheInvalidationFailed =
+        LoggerMessage.Define<Guid>(
+            LogLevel.Warning,
+            new EventId(5, nameof(CacheInvalidationFailed)),
+            "Redis Product cache invalidation failed for Product {ProductId}");
+
     public async Task<ProductCacheReadResult> ReadAsync(Guid productId, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -44,30 +50,32 @@ internal sealed class RedisProductDetailCache(IConnectionMultiplexer connectionM
         }
         catch (RedisException exception)
         {
+            ProductCacheMetrics.RecordReadUnavailable();
             CacheReadFailed(logger, productId, exception);
             return ProductCacheReadResult.Unavailable;
         }
         catch (TimeoutException exception)
         {
+            ProductCacheMetrics.RecordReadUnavailable();
             CacheReadFailed(logger, productId, exception);
             return ProductCacheReadResult.Unavailable;
         }
 
         if (cachedValue.IsNull)
         {
+            ProductCacheMetrics.RecordReadMiss();
             return ProductCacheReadResult.Miss;
         }
 
         byte[]? payload = cachedValue;
 
-        if (payload is not null &&
-            ProductDetailCacheSerializer.TryDeserialize(payload, out var product) &&
-            product is not null
-        )
+        if (payload is not null && ProductDetailCacheSerializer.TryDeserialize(payload, out var product) && product is not null)
         {
+            ProductCacheMetrics.RecordReadHit();
             return ProductCacheReadResult.Hit(product);
         }
 
+        ProductCacheMetrics.RecordReadCorrupt();
         CorruptPayloadDetected(logger, productId, null);
 
         try
@@ -98,14 +106,39 @@ internal sealed class RedisProductDetailCache(IConnectionMultiplexer connectionM
         try
         {
             await database.StringSetAsync(key, payload, productTtl).WaitAsync(cancellationToken);
+            ProductCacheMetrics.RecordWriteSuccess();
         }
         catch (RedisException exception)
         {
+            ProductCacheMetrics.RecordWriteFailure();
             CacheWriteFailed(logger, product.Id, exception);
         }
         catch (TimeoutException exception)
         {
+            ProductCacheMetrics.RecordWriteFailure();
             CacheWriteFailed(logger, product.Id, exception);
+        }
+    }
+
+    public async Task RemoveAsync(Guid productId)
+    {
+        var database = connectionMultiplexer.GetDatabase();
+        var key = keyBuilder.BuildProductDetailKey(productId);
+
+        try
+        {
+            await database.KeyDeleteAsync(key);
+            ProductCacheMetrics.RecordInvalidationSuccess();
+        }
+        catch (RedisException exception)
+        {
+            ProductCacheMetrics.RecordInvalidationFailure();
+            CacheInvalidationFailed(logger, productId, exception);
+        }
+        catch (TimeoutException exception)
+        {
+            ProductCacheMetrics.RecordInvalidationFailure();
+            CacheInvalidationFailed(logger, productId, exception);
         }
     }
 }

@@ -249,6 +249,10 @@ public sealed class ProductCatalogCacheTests
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException(
                 "Writing a cache hit was not expected");
+
+        public Task RemoveAsync(Guid productId) =>
+            throw new InvalidOperationException(
+                "Removing a Product detail cache entry was not expected");
     }
 
     private sealed class RecordingMissProductDetailCache : IProductDetailCache
@@ -285,6 +289,10 @@ public sealed class ProductCatalogCacheTests
 
             return Task.CompletedTask;
         }
+
+        public Task RemoveAsync(Guid productId) =>
+            throw new InvalidOperationException(
+                "Removing a Product detail cache entry was not expected");
     }
 
     private sealed class RecordingUnavailableProductDetailCache : IProductDetailCache
@@ -314,6 +322,10 @@ public sealed class ProductCatalogCacheTests
 
             return Task.CompletedTask;
         }
+
+        public Task RemoveAsync(Guid productId) =>
+            throw new InvalidOperationException(
+                "Removing a Product detail cache entry was not expected");
     }
 
     private sealed class UnexpectedProductDetailCache : IProductDetailCache
@@ -329,6 +341,10 @@ public sealed class ProductCatalogCacheTests
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException(
                 "Writing the Product detail cache was not expected");
+
+        public Task RemoveAsync(Guid productId) =>
+            throw new InvalidOperationException(
+                "Removing a Product detail cache entry was not expected");
     }
 
     private sealed class RecordingProductCatalogStore(ProductDetailDto? product = null) : IProductCatalogStore

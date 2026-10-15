@@ -123,6 +123,7 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IProductDe
         var validRequest = validation.Value!;
         product.Update(validRequest.Name!, validRequest.Description!, clock.UtcNow);
         await store.SaveChangesAsync(cancellationToken);
+        await cache.RemoveAsync(product.Id);
         return ApplicationResult.Success(product.ToDto());
     }
 
@@ -139,6 +140,7 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IProductDe
 
         product.ChangeStatus(status, clock.UtcNow);
         await store.SaveChangesAsync(cancellationToken);
+        await cache.RemoveAsync(product.Id);
         return ApplicationResult.Success(product.ToDto());
     }
 
@@ -174,10 +176,14 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IProductDe
             clock.UtcNow);
         store.Add(variant, inventory);
         var outcome = await store.SaveChangesAsync(cancellationToken);
-        return outcome == CatalogSaveOutcome.DuplicateSku
-            ? ApplicationResult.Failure<ProductVariantDto>(
-                ApplicationErrors.Products.SkuAlreadyExists.Create())
-            : ApplicationResult.Success(variant.ToDto());
+        if (outcome == CatalogSaveOutcome.DuplicateSku)
+        {
+            return ApplicationResult.Failure<ProductVariantDto>(
+                ApplicationErrors.Products.SkuAlreadyExists.Create());
+        }
+
+        await cache.RemoveAsync(productId);
+        return ApplicationResult.Success(variant.ToDto());
     }
 
     public async Task<ApplicationResult<ProductVariantDto>> UpdateVariantAsync(
@@ -200,6 +206,7 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IProductDe
         var validRequest = validation.Value!;
         variant.Update(validRequest.Name!, validRequest.CurrentPrice, clock.UtcNow);
         await store.SaveChangesAsync(cancellationToken);
+        await cache.RemoveAsync(variant.ProductId);
         return ApplicationResult.Success(variant.ToDto());
     }
 
@@ -216,6 +223,7 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IProductDe
 
         variant.ChangeStatus(status, clock.UtcNow);
         await store.SaveChangesAsync(cancellationToken);
+        await cache.RemoveAsync(variant.ProductId);
         return ApplicationResult.Success(variant.ToDto());
     }
 
