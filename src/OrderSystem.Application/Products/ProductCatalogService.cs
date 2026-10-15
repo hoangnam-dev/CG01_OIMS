@@ -9,7 +9,7 @@ using OrderSystem.Domain.Products;
 
 namespace OrderSystem.Application.Products;
 
-public sealed class ProductCatalogService(IProductCatalogStore store, IClock clock, IIdGenerator idGenerator)
+public sealed class ProductCatalogService(IProductCatalogStore store, IProductDetailCache cache, IClock clock, IIdGenerator idGenerator)
 {
     public async Task<ApplicationResult<PagedResult<ProductDto>>> ListProductsAsync(
         ProductListRequest request,
@@ -47,7 +47,35 @@ public sealed class ProductCatalogService(IProductCatalogStore store, IClock clo
             });
         }
 
+        var shouldPopulateCache = false;
+
+        if (visibility == CatalogVisibility.ActiveOnly)
+        {
+            var cacheResult = await cache.ReadAsync(id, cancellationToken);
+
+            if (cacheResult is
+                {
+                    Status: ProductCacheReadStatus.Hit,
+                    Product: { } cachedProduct
+                })
+            {
+                return ApplicationResult.Success(cachedProduct);
+            }
+            shouldPopulateCache = cacheResult.Status == ProductCacheReadStatus.Miss;
+        }
+
         var product = await store.GetProductDetailAsync(id, visibility, cancellationToken);
+
+        if (product is null)
+        {
+            return ProductNotFound<ProductDetailDto>();
+        }
+
+        if (shouldPopulateCache)
+        {
+            await cache.WriteAsync(product, cancellationToken);
+        }
+
         return product is null
             ? ProductNotFound<ProductDetailDto>()
             : ApplicationResult.Success(product);
