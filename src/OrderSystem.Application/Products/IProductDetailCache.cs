@@ -6,4 +6,5 @@ public interface IProductDetailCache
 {
     Task<ProductCacheReadResult> ReadAsync(Guid productId, CancellationToken cancellationToken);
     Task WriteAsync(ProductDetailDto product, CancellationToken cancellationToken);
+    Task RemoveAsync(Guid productId);
 }
