@@ -26,6 +26,7 @@ using OrderSystem.Infrastructure.Payments;
 using OrderSystem.Application.Shipments;
 using OrderSystem.Infrastructure.Shipments;
 using OrderSystem.Infrastructure.Products.Caching;
+using StackExchange.Redis;
 
 namespace OrderSystem.Infrastructure;
 
@@ -104,12 +105,37 @@ public static class DependencyInjection
         services.AddOptions<RedisOptions>()
             .Bind(configuration.GetRequiredSection(RedisOptions.SectionName))
             .Validate(options => !string.IsNullOrWhiteSpace(options.Configuration), "Redis:Configuration is required.")
+            .Validate(options => string.IsNullOrWhiteSpace(options.Configuration) || IsRedisConnectionString(options.Configuration), "Redis:Configuration must be a valid Redis connection string.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.KeyPrefix), "Redis:KeyPrefix is required.")
             .Validate(options => options.ProductTtl > TimeSpan.Zero, "Redis:ProductTtl must be positive.")
             .Validate(options => options.OperationTimeout > TimeSpan.Zero, "Redis:OperationTimeout must be positive.")
             .Validate(options => options.ConnectTimeout > TimeSpan.Zero, "Redis:ConnectTimeout must be positive.")
             .ValidateOnStart();
-        services.AddSingleton<IProductDetailCache, UnavailableProductDetailCache>();
+
+        services.AddSingleton<IConnectionMultiplexer>(provider =>
+        {
+            var redis = provider.GetRequiredService<IOptions<RedisOptions>>().Value;
+            var connectionOptions = RedisConnectionOptionsFactory.Create(redis);
+
+            return ConnectionMultiplexer.Connect(connectionOptions);
+        });
+        services.AddSingleton<ProductCacheKeyBuilder>(provider =>
+        {
+            var redis = provider.GetRequiredService<IOptions<RedisOptions>>().Value;
+
+            return new ProductCacheKeyBuilder(redis.KeyPrefix);
+        });
+        services.AddSingleton<IProductDetailCache>(provider =>
+        {
+            var redis = provider.GetRequiredService<IOptions<RedisOptions>>().Value;
+
+            return new RedisProductDetailCache(
+                provider.GetRequiredService<IConnectionMultiplexer>(),
+                provider.GetRequiredService<ProductCacheKeyBuilder>(),
+                redis.ProductTtl,
+                provider.GetRequiredService<ILogger<RedisProductDetailCache>>());
+        });
+
         services.AddScoped<IProductCatalogStore, EfProductCatalogStore>();
         services.AddScoped<ProductCatalogService>();
 
@@ -242,6 +268,27 @@ public static class DependencyInjection
         });
 
         return services;
+    }
+
+    private static bool IsRedisConnectionString(string connectionString)
+    {
+        try
+        {
+            var options = ConfigurationOptions.Parse(connectionString);
+            return options.EndPoints.Count > 0;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
     }
 
     private static bool IsPostgreSqlConnectionString(string connectionString)

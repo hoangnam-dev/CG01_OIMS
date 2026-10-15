@@ -26,7 +26,7 @@ internal static class ProductDetailCacheSerializer
     {
         try
         {
-            var deserialized  = JsonSerializer.Deserialize<ProductDetailDto>(payload, SerializerOptions);
+            var deserialized = JsonSerializer.Deserialize<ProductDetailDto>(payload, SerializerOptions);
             if (deserialized is null || deserialized.Variants is null)
             {
                 product = null;
