@@ -55,9 +55,38 @@ public sealed class ConfigurationValidationTests
         Assert.Contains("ConnectionString", exception.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    [Trait("Requirement", "NFR-009")]
+    public async Task Startup_MalformedRedisConfiguration_FailsClearly()
+    {
+        await using var factory = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration(
+                (_, configuration) =>
+                    configuration.AddOimsTestConfiguration(
+                        new KeyValuePair<string, string?>(
+                            "Redis:Configuration",
+                            "localhost:6379,connectTimeout=not-an-integer"))));
+
+        var exception = await Assert.ThrowsAnyAsync<Exception>(async () =>
+            await factory.CreateClient().GetAsync("/health/live"));
+
+        Assert.Contains(
+            "Redis:Configuration",
+            exception.ToString(),
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            "valid",
+            exception.ToString(),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("Jwt:AccessTokenLifetime", "00:00:00", "AccessTokenLifetime")]
+    [InlineData("Redis:KeyPrefix", " ", "KeyPrefix")]
     [InlineData("Redis:ProductTtl", "00:00:00", "ProductTtl")]
+    [InlineData("Redis:OperationTimeout", "00:00:00", "OperationTimeout")]
+    [InlineData("Redis:ConnectTimeout", "00:00:00", "ConnectTimeout")]
     [InlineData("RabbitMq:Port", "0", "Port")]
     [InlineData("Reservation:Duration", "00:00:00", "Duration")]
     [InlineData("Retry:MaxAttempts", "0", "MaxAttempts")]
