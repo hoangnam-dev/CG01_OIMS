@@ -17,6 +17,8 @@ using OrderSystem.Domain.Products;
 using OrderSystem.Domain.Users;
 using OrderSystem.Infrastructure.Persistence;
 using OrderSystem.IntegrationTests.Infrastructure;
+using Testcontainers.Redis;
+using RedisConnectionMultiplexer = StackExchange.Redis.IConnectionMultiplexer;
 
 namespace OrderSystem.IntegrationTests.Api;
 
@@ -365,6 +367,51 @@ public sealed class OrderCommandApiTests(PostgreSqlFixture postgres)
         Assert.Equal(3, inventory.OnHandQuantity);
         Assert.Equal(2, inventory.ReservedQuantity);
         Assert.Equal(1, inventory.AvailableQuantity);
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-INV-002")]
+    public async Task CreateOrder_WithRedisUnavailable_UsesPostgreSqlInventory()
+    {
+        await using var unavailableRedis = new RedisBuilder("redis:8-alpine").Build();
+        await unavailableRedis.StartAsync();
+        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddOimsTestConfiguration(
+                new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString),
+                new KeyValuePair<string, string?>("Redis:Configuration", unavailableRedis.GetConnectionString()),
+                new KeyValuePair<string, string?>("Redis:OperationTimeout", "00:00:00.200"),
+                new KeyValuePair<string, string?>("Redis:ConnectTimeout", "00:00:01"))));
+        var customer = await CreateUserAsync(factory, UserRole.Customer);
+        var variant = await SeedVariantWithInventoryAsync(factory, onHandQuantity: 2, currentPrice: 15m);
+        using var client = factory.CreateClient();
+        await AuthenticateAsync(client, customer.Email);
+        var redisConnection = factory.Services.GetRequiredService<RedisConnectionMultiplexer>();
+        await redisConnection.GetDatabase().PingAsync();
+        await unavailableRedis.StopAsync();
+        using var request = CreateRequest(variant.Id, quantity: 1);
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var orderId = document.RootElement.GetProperty("data").GetProperty("id").GetGuid();
+
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var order = await dbContext.Orders.AsNoTracking().SingleAsync(candidate => candidate.Id == orderId);
+        var inventory = await dbContext.Inventories.AsNoTracking().SingleAsync(candidate => candidate.ProductVariantId == variant.Id);
+        var reserveTransaction = await dbContext.InventoryTransactions.AsNoTracking().SingleAsync(transaction =>
+            transaction.ReferenceType == InventoryReferenceType.Order &&
+            transaction.ReferenceId == orderId &&
+            transaction.Type == InventoryTransactionType.Reserve);
+
+        Assert.Equal(customer.Id, order.UserId);
+        Assert.Equal(OrderStatus.PendingPayment, order.Status);
+        Assert.Equal(2, inventory.OnHandQuantity);
+        Assert.Equal(1, inventory.ReservedQuantity);
+        Assert.Equal(1, inventory.AvailableQuantity);
+        Assert.Equal(0, reserveTransaction.OnHandQuantityDelta);
+        Assert.Equal(1, reserveTransaction.ReservedQuantityDelta);
     }
 
     [Fact]
