@@ -18,6 +18,110 @@ namespace OrderSystem.IntegrationTests.Products.Caching;
 public sealed class ProductCatalogCacheFlowTests(PostgreSqlFixture postgres, RedisFixture redis) : IClassFixture<RedisFixture>
 {
     [Fact]
+    [Trait("Requirement", "CACHE-002")]
+    public async Task CatalogUpdates_CommitThenInvalidateAffectedProductCacheEntry()
+    {
+        var keyPrefix = $"test-{Guid.NewGuid():N}";
+        await using var factory = CreateFactory(redis.ConnectionString, keyPrefix, TimeSpan.FromMinutes(5));
+        using var scope = factory.Services.CreateScope();
+        var provider = scope.ServiceProvider;
+        var dbContext = provider.GetRequiredService<OrderSystemDbContext>();
+        await dbContext.Database.MigrateAsync();
+
+        var now = new DateTimeOffset(2026, 10, 16, 9, 0, 0, TimeSpan.Zero);
+        var product = new Product(Guid.NewGuid(), "Invalidation Product", "Original description", CatalogStatus.Active, now);
+        var variant = new OrderSystem.Domain.Products.ProductVariant(
+            Guid.NewGuid(),
+            product.Id,
+            $"INV-{Guid.NewGuid():N}"[..16].ToUpperInvariant(),
+            "Original Variant",
+            25m,
+            CatalogStatus.Active,
+            now);
+        dbContext.AddRange(product, variant);
+        await dbContext.SaveChangesAsync();
+
+        var service = provider.GetRequiredService<ProductCatalogService>();
+        var keyBuilder = provider.GetRequiredService<ProductCacheKeyBuilder>();
+        var redisDatabase = provider.GetRequiredService<IConnectionMultiplexer>().GetDatabase();
+        var key = keyBuilder.BuildProductDetailKey(product.Id);
+
+        var initialRead = await service.GetProductDetailAsync(product.Id, CatalogVisibility.ActiveOnly, CancellationToken.None);
+        Assert.True(initialRead.IsSuccess);
+        Assert.True(await redisDatabase.KeyExistsAsync(key));
+
+        var productUpdate = await service.UpdateProductAsync(
+            product.Id,
+            new UpdateProductRequest("Updated Product", "Updated description"),
+            CancellationToken.None);
+
+        Assert.True(productUpdate.IsSuccess);
+        Assert.Equal("Updated Product", productUpdate.Value!.Name);
+        Assert.False(await redisDatabase.KeyExistsAsync(key));
+
+        var repopulatedRead = await service.GetProductDetailAsync(product.Id, CatalogVisibility.ActiveOnly, CancellationToken.None);
+        Assert.True(repopulatedRead.IsSuccess);
+        Assert.Equal("Updated Product", repopulatedRead.Value!.Name);
+        Assert.True(await redisDatabase.KeyExistsAsync(key));
+
+        var variantUpdate = await service.UpdateVariantAsync(
+            variant.Id,
+            new UpdateProductVariantRequest("Updated Variant", 30m),
+            CancellationToken.None);
+
+        Assert.True(variantUpdate.IsSuccess);
+        Assert.Equal("Updated Variant", variantUpdate.Value!.Name);
+        Assert.False(await redisDatabase.KeyExistsAsync(key));
+    }
+
+    [Fact]
+    [Trait("Requirement", "CACHE-004")]
+    public async Task CreateVariant_DuplicateSkuDatabaseSaveFails_RetainsExistingProductCacheEntry()
+    {
+        var keyPrefix = $"test-{Guid.NewGuid():N}";
+        await using var factory = CreateFactory(redis.ConnectionString, keyPrefix, TimeSpan.FromMinutes(5));
+        using var scope = factory.Services.CreateScope();
+        var provider = scope.ServiceProvider;
+        var dbContext = provider.GetRequiredService<OrderSystemDbContext>();
+        await dbContext.Database.MigrateAsync();
+
+        var now = new DateTimeOffset(2026, 10, 16, 10, 0, 0, TimeSpan.Zero);
+        var product = new Product(Guid.NewGuid(), "Failed Save Product", "Cache must survive a rejected save", CatalogStatus.Active, now);
+        var duplicateSku = $"DUP-{Guid.NewGuid():N}"[..16].ToUpperInvariant();
+        var existingVariant = new OrderSystem.Domain.Products.ProductVariant(
+            Guid.NewGuid(),
+            product.Id,
+            duplicateSku,
+            "Existing Variant",
+            40m,
+            CatalogStatus.Active,
+            now);
+        dbContext.AddRange(product, existingVariant);
+        await dbContext.SaveChangesAsync();
+
+        var service = provider.GetRequiredService<ProductCatalogService>();
+        var keyBuilder = provider.GetRequiredService<ProductCacheKeyBuilder>();
+        var redisDatabase = provider.GetRequiredService<IConnectionMultiplexer>().GetDatabase();
+        var key = keyBuilder.BuildProductDetailKey(product.Id);
+
+        var initialRead = await service.GetProductDetailAsync(product.Id, CatalogVisibility.ActiveOnly, CancellationToken.None);
+        Assert.True(initialRead.IsSuccess);
+        var cachedValueBeforeFailure = await redisDatabase.StringGetAsync(key);
+        Assert.False(cachedValueBeforeFailure.IsNull);
+
+        var result = await service.CreateVariantAsync(
+            product.Id,
+            new CreateProductVariantRequest(duplicateSku, "Rejected Variant", 45m),
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("SKU_ALREADY_EXISTS", result.Error!.Code);
+        var cachedValueAfterFailure = await redisDatabase.StringGetAsync(key);
+        Assert.False(cachedValueAfterFailure.IsNull);
+        Assert.Equal(cachedValueBeforeFailure, cachedValueAfterFailure);
+    }
+
+    [Fact]
     [Trait("Requirement", "CACHE-001")]
     public async Task GetProductDetail_CacheMiss_ReadsPostgreSqlAndPopulatesNamespacedRedisEntryWithTtl()
     {
