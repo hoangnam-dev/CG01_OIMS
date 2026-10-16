@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderSystem.Application.Products.Contracts;
 using OrderSystem.Infrastructure.Products.Caching;
@@ -11,6 +12,87 @@ namespace OrderSystem.IntegrationTests.Products.Caching;
 [Collection(RedisCollectionDefinition.Name)]
 public sealed class RedisProductDetailCacheTests(RedisFixture redisFixture)
 {
+    [Fact]
+    [Trait("Requirement", "CACHE-005")]
+    public async Task WriteAsync_Product_StoresOnlyApprovedProductPayload()
+    {
+        using var connection = await ConnectionMultiplexer.ConnectAsync(redisFixture.ConnectionString);
+
+        var keyPrefix = $"test-{Guid.NewGuid():N}";
+        var keyBuilder = new ProductCacheKeyBuilder(keyPrefix);
+        var productId = Guid.Parse("0199a5f2-8b72-7bd1-9f91-1f40c94356c2");
+        var createdAt = new DateTimeOffset(2026, 10, 16, 8, 30, 0, TimeSpan.FromHours(7));
+        var variant = new ProductVariantDto(
+            Guid.Parse("0299a5f2-8b72-7bd1-9f91-1f40c94356c3"),
+            productId,
+            "CACHE-005-SKU",
+            "Cached Variant",
+            1_299_000m,
+            "Active",
+            createdAt,
+            createdAt.AddMinutes(15));
+        var product = new ProductDetailDto(
+            productId,
+            "Cached Product",
+            "Product-only Redis payload",
+            "Active",
+            [variant],
+            createdAt,
+            createdAt.AddMinutes(15));
+        var cache = new RedisProductDetailCache(
+            connection,
+            keyBuilder,
+            TimeSpan.FromMinutes(5),
+            NullLogger<RedisProductDetailCache>.Instance);
+
+        await cache.WriteAsync(product, CancellationToken.None);
+
+        var cachedValue = await connection.GetDatabase().StringGetAsync(keyBuilder.BuildProductDetailKey(productId));
+        Assert.False(cachedValue.IsNull);
+
+        byte[]? payload = cachedValue;
+        Assert.NotNull(payload);
+
+        using var document = JsonDocument.Parse(payload);
+        var productProperties = document.RootElement
+            .EnumerateObject()
+            .Select(property => property.Name)
+            .Order()
+            .ToArray();
+
+        Assert.Equal(
+            [
+                "createdAt",
+                "description",
+                "id",
+                "name",
+                "status",
+                "updatedAt",
+                "variants"
+            ],
+            productProperties);
+
+        var serializedVariant = Assert.Single(document.RootElement.GetProperty("variants").EnumerateArray());
+        var variantProperties = serializedVariant
+            .EnumerateObject()
+            .Select(property => property.Name)
+            .Order()
+            .ToArray();
+
+        Assert.Equal(
+            [
+                "createdAt",
+                "currentPrice",
+                "id",
+                "name",
+                "productId",
+                "sku",
+                "status",
+                "updatedAt"
+            ],
+            variantProperties);
+    }
+
     [Fact]
     public async Task RemoveAsync_ExistingKey_DeletesKeyAndRecordsBoundedSuccessMetric()
     {
