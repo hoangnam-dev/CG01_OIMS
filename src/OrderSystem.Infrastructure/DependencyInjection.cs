@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using OrderSystem.Application.Common.Clock;
@@ -20,12 +21,14 @@ using OrderSystem.Infrastructure.Products;
 using OrderSystem.Infrastructure.Orders;
 using OrderSystem.Application.Idempotency;
 using OrderSystem.Infrastructure.Idempotency;
+using OrderSystem.Infrastructure.Messaging;
 using OrderSystem.Infrastructure.Payments.FakeProvider;
 using OrderSystem.Application.Payments;
 using OrderSystem.Infrastructure.Payments;
 using OrderSystem.Application.Shipments;
 using OrderSystem.Infrastructure.Shipments;
 using OrderSystem.Infrastructure.Products.Caching;
+using RabbitMQ.Client;
 using StackExchange.Redis;
 
 namespace OrderSystem.Infrastructure;
@@ -208,12 +211,36 @@ public static class DependencyInjection
             .Validate(options => options.Port is > 0 and <= 65535, "RabbitMq:Port must be valid.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.VirtualHost), "RabbitMq:VirtualHost is required.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.Username), "RabbitMq:Username is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.ExchangeName), "RabbitMq:ExchangeName is required.")
+            .Validate(options => string.Equals(options.ExchangeType, "topic", StringComparison.Ordinal), "RabbitMq:ExchangeType must be topic.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedRoutingKey), "RabbitMq:OrderCreatedRoutingKey is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedQueueName), "RabbitMq:OrderCreatedQueueName is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedConsumerName), "RabbitMq:OrderCreatedConsumerName is required.")
             .ValidateOnStart();
-        services.AddOptions<RetryOptions>()
-            .Bind(configuration.GetRequiredSection(RetryOptions.SectionName))
-            .Validate(options => options.MaxAttempts > 0, "Retry:MaxAttempts must be positive.")
-            .Validate(options => options.Delay >= TimeSpan.Zero, "Retry:Delay cannot be negative.")
-            .ValidateOnStart();
+        services.AddSingleton<IConnectionFactory>(provider =>
+        {
+            var rabbitMq = provider.GetRequiredService<IOptions<RabbitMqOptions>>().Value;
+
+            return new ConnectionFactory
+            {
+                HostName = rabbitMq.Host,
+                Port = rabbitMq.Port,
+                VirtualHost = rabbitMq.VirtualHost,
+                UserName = rabbitMq.Username,
+                Password = rabbitMq.Password ?? string.Empty,
+                AutomaticRecoveryEnabled = true,
+                TopologyRecoveryEnabled = true
+            };
+        });
+        services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
+        services.AddSingleton<IRabbitMqChannelFactory, RabbitMqChannelFactory>();
+        services.AddSingleton<IRabbitMqTopologyInitializer, RabbitMqTopologyInitializer>();
+        services.AddHealthChecks()
+            .AddCheck<RabbitMqHealthCheck>(
+                "rabbitmq",
+                failureStatus: HealthStatus.Unhealthy,
+                tags: [],
+                timeout: TimeSpan.FromSeconds(5));
 
         return services;
     }

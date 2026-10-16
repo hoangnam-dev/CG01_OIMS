@@ -11,6 +11,7 @@ builder.Services
     .AddOrderSystemPersistence(builder.Configuration)
     .AddOrderSystemCommonInfrastructure()
     .AddOrderSystemOrderInfrastructure(builder.Configuration)
+    .AddOrderSystemMessagingInfrastructure(builder.Configuration)
     .AddOrderSystemPaymentInfrastructure(builder.Configuration);
 
 builder.Services.AddMetrics();

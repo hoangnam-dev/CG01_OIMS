@@ -1,0 +1,106 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using OrderSystem.Infrastructure;
+using OrderSystem.Infrastructure.Messaging;
+using OrderSystem.IntegrationTests.Infrastructure;
+using RabbitMQ.Client;
+using System.Globalization;
+
+namespace OrderSystem.IntegrationTests.Messaging;
+
+[Collection(RabbitMqCollectionDefinition.Name)]
+public sealed class MessagingTopologyTests(RabbitMqFixture rabbitMq)
+{
+    [Fact]
+    [Trait("Requirement", "S9-T02")]
+    [Trait("TestId", "MSG-TOPOLOGY-001")]
+    public async Task InitializeAsync_DeclaresDurableTopicQueueAndExactBinding_Idempotently()
+    {
+        var settings = new Dictionary<string, string?>
+        {
+            ["RabbitMq:Host"] = rabbitMq.Host,
+            ["RabbitMq:Port"] = rabbitMq.Port.ToString(CultureInfo.InvariantCulture),
+            ["RabbitMq:VirtualHost"] = "/",
+            ["RabbitMq:Username"] = rabbitMq.Username,
+            ["RabbitMq:Password"] = rabbitMq.Password
+        };
+
+        var host = new HostBuilder()
+            .ConfigureAppConfiguration(configuration =>
+            {
+                configuration.Sources.Clear();
+                configuration.AddInMemoryCollection(settings);
+            })
+            .ConfigureServices((context, services) =>
+            {
+                services.AddLogging();
+                services.AddOrderSystemMessagingInfrastructure(context.Configuration);
+            })
+            .Build();
+
+        try
+        {
+            await host.StartAsync();
+            var initializer = host.Services.GetService<IRabbitMqTopologyInitializer>();
+            var channelFactory = host.Services.GetRequiredService<IRabbitMqChannelFactory>();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+            Assert.NotNull(initializer);
+            await initializer.InitializeAsync(timeout.Token);
+            await initializer.InitializeAsync(timeout.Token);
+
+            await using var channel = await channelFactory.CreateChannelAsync(timeout.Token);
+            await channel.ExchangeDeclareAsync(
+                "oims.events",
+                ExchangeType.Topic,
+                durable: true,
+                autoDelete: false,
+                arguments: null,
+                cancellationToken: timeout.Token);
+            await channel.QueueDeclareAsync(
+                "oims.notification.order-created.v1",
+                durable: true,
+                exclusive: false,
+                autoDelete: false,
+                arguments: null,
+                cancellationToken: timeout.Token);
+            await channel.QueuePurgeAsync("oims.notification.order-created.v1", timeout.Token);
+
+            ReadOnlyMemory<byte> body = "topology-probe"u8.ToArray();
+            await channel.BasicPublishAsync(
+                "oims.events",
+                "order.created.v1",
+                mandatory: true,
+                body,
+                timeout.Token);
+
+            var routed = await channel.BasicGetAsync(
+                "oims.notification.order-created.v1",
+                autoAck: true,
+                timeout.Token);
+
+            Assert.NotNull(routed);
+            Assert.Equal(body.ToArray(), routed.Body.ToArray());
+
+            await channel.BasicPublishAsync(
+                "oims.events",
+                "order.created.v2",
+                mandatory: false,
+                body,
+                timeout.Token);
+
+            var incorrectlyRouted = await channel.BasicGetAsync(
+                "oims.notification.order-created.v1",
+                autoAck: true,
+                timeout.Token);
+
+            Assert.Null(incorrectlyRouted);
+        }
+        finally
+        {
+            await host.StopAsync();
+            host.Dispose();
+        }
+    }
+}
