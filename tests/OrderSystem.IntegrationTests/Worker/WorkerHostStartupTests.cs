@@ -9,6 +9,78 @@ namespace OrderSystem.IntegrationTests.Worker;
 public sealed class WorkerHostStartupTests
 {
     [Fact]
+    [Trait("Requirement", "S9-T02")]
+    public async Task Executable_WithInvalidRabbitMqConfiguration_FailsClearly()
+    {
+        var workerAssemblyPath = typeof(worker::OrderSystem.Worker.ReservationExpirationWorker).Assembly.Location;
+        var output = new StringBuilder();
+        var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo("dotnet")
+            {
+                WorkingDirectory = Path.GetDirectoryName(workerAssemblyPath)!,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            },
+            EnableRaisingEvents = true
+        };
+        process.StartInfo.ArgumentList.Add(workerAssemblyPath);
+        process.StartInfo.Environment["DOTNET_ENVIRONMENT"] = "Production";
+        process.StartInfo.Environment["RabbitMq__Port"] = "0";
+        process.StartInfo.Environment.Remove("Jwt__SigningKey");
+        process.StartInfo.Environment.Remove("Payment__FakeWebhookSecret");
+
+        void CaptureOutput(string? line)
+        {
+            if (line is null)
+            {
+                return;
+            }
+
+            lock (output)
+            {
+                output.AppendLine(line);
+            }
+        }
+
+        process.OutputDataReceived += (_, eventArgs) => CaptureOutput(eventArgs.Data);
+        process.ErrorDataReceived += (_, eventArgs) => CaptureOutput(eventArgs.Data);
+        process.Exited += (_, _) => exited.TrySetResult(process.ExitCode);
+
+        try
+        {
+            Assert.True(process.Start(), "The Worker process could not be started.");
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            var timeout = Task.Delay(TimeSpan.FromSeconds(10));
+            var completed = await Task.WhenAny(exited.Task, timeout);
+
+            Assert.True(
+                completed == exited.Task,
+                $"Worker did not reject invalid RabbitMQ configuration{Environment.NewLine}{output}");
+
+            await process.WaitForExitAsync();
+            Assert.NotEqual(0, await exited.Task);
+            Assert.Contains("RabbitMq", output.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Port", output.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+
+            await process.WaitForExitAsync();
+        }
+    }
+
+    [Fact]
     public async Task Executable_WithoutApiOnlyConfiguration_StartsHostedWorkersSuccessfully()
     {
         var workerAssemblyPath = typeof(worker::OrderSystem.Worker.ReservationExpirationWorker).Assembly.Location;

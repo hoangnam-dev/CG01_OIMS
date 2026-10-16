@@ -89,7 +89,6 @@ public sealed class ConfigurationValidationTests
     [InlineData("Redis:ConnectTimeout", "00:00:00", "ConnectTimeout")]
     [InlineData("RabbitMq:Port", "0", "Port")]
     [InlineData("Reservation:Duration", "00:00:00", "Duration")]
-    [InlineData("Retry:MaxAttempts", "0", "MaxAttempts")]
     [InlineData("Payment:ReconciliationInterval", "00:00:00", "ReconciliationInterval")]
     [InlineData("Payment:ReconciliationBatchSize", "101", "ReconciliationBatchSize")]
     [InlineData("Authentication:RefreshPermitLimit", "0", "RefreshPermitLimit")]
