@@ -3,6 +3,8 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.IntegrationTests.Infrastructure;
 
 namespace OrderSystem.IntegrationTests.Api;
@@ -20,6 +22,17 @@ public sealed class DiagnosticsTests : IClassFixture<WebApplicationFactory<Progr
                 configuration.AddOimsTestConfiguration(
                     new KeyValuePair<string, string?>("Database:ConnectionString", postgres.ConnectionString))));
         _client = _factory.CreateClient();
+    }
+
+    [Fact]
+    [Trait("Requirement", "S9-T03")]
+    public void CorrelationContext_ApiScope_CanResolveApplicationContract()
+    {
+        using var scope = _factory.Services.CreateScope();
+
+        var correlationContext = scope.ServiceProvider.GetService<ICorrelationContext>();
+
+        Assert.NotNull(correlationContext);
     }
 
     [Fact]
@@ -57,6 +70,25 @@ public sealed class DiagnosticsTests : IClassFixture<WebApplicationFactory<Progr
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    [Trait("Requirement", "API-CONTRACT-003")]
+    public async Task CorrelationId_WhenEmptyUuid_ReturnsValidationProblem()
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "/api/foundation/success");
+        request.Headers.Add(
+            "X-Correlation-ID",
+            Guid.Empty.ToString("D"));
+
+        using var response = await _client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            "application/problem+json",
+            response.Content.Headers.ContentType?.MediaType);
     }
 
     [Fact]

@@ -120,6 +120,7 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy(AuthorizationPolicies.Admin, policy => policy.RequireRole("Admin"))
     .AddPolicy(AuthorizationPolicies.Customer, policy => policy.RequireRole("Customer"));
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<ICorrelationContext, HttpCorrelationContext>();
 builder.Services.AddMetrics();
 builder.Services.AddSingleton<PaymentInitiationMetrics>();
 builder.Services.ConfigureHttpJsonOptions(options =>

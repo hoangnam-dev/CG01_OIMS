@@ -12,7 +12,9 @@ public sealed class CorrelationIdMiddleware(RequestDelegate next)
         ArgumentNullException.ThrowIfNull(context);
 
         var suppliedValue = context.Request.Headers[HeaderName].FirstOrDefault();
-        if (suppliedValue is not null && !Guid.TryParse(suppliedValue, out _))
+        if (suppliedValue is not null &&
+            (!Guid.TryParse(suppliedValue, out var suppliedCorrelationId) || suppliedCorrelationId == Guid.Empty)
+        )
         {
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             await problemDetailsService.WriteAsync(new ProblemDetailsContext
@@ -22,7 +24,7 @@ public sealed class CorrelationIdMiddleware(RequestDelegate next)
                 {
                     Status = StatusCodes.Status400BadRequest,
                     Title = "Validation failed",
-                    Detail = $"{HeaderName} must be a UUID.",
+                    Detail = $"{HeaderName} must be a non-empty UUID",
                     Type = "https://oims.example/problems/validation-failed"
                 }
             });
