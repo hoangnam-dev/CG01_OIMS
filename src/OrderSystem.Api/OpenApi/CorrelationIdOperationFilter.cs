@@ -17,7 +17,7 @@ public sealed class CorrelationIdOperationFilter : IOperationFilter
             Name = CorrelationIdMiddleware.HeaderName,
             In = ParameterLocation.Header,
             Required = false,
-            Description = "Optional UUID correlation identifier. The API generates one when absent.",
+            Description = "Optional non-empty UUID correlation identifier. The API generates one when absent.",
             Schema = new OpenApiSchema
             {
                 Type = JsonSchemaType.String,
