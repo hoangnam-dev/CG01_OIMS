@@ -244,6 +244,58 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("OrderSystem.Domain.Notifications.Notification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<Guid>("MessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("message_id");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasDefaultValue("OrderCreated")
+                        .HasColumnName("type");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_notifications");
+
+                    b.HasIndex("OrderId")
+                        .HasDatabaseName("ix_notifications_order_id");
+
+                    b.HasIndex("MessageId", "Type")
+                        .IsUnique()
+                        .HasDatabaseName("uq_notifications_message_type");
+
+                    b.HasIndex("UserId", "CreatedAt", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_notifications_user_created_id");
+
+                    b.ToTable("notifications", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_notifications_type_not_blank", "length(btrim(type)) > 0");
+                        });
+                });
+
             modelBuilder.Entity("OrderSystem.Domain.Orders.Order", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1153,6 +1205,23 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_inventory_transactions_product_variants_product_variant_id");
+                });
+
+            modelBuilder.Entity("OrderSystem.Domain.Notifications.Notification", b =>
+                {
+                    b.HasOne("OrderSystem.Domain.Orders.Order", null)
+                        .WithMany()
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_notifications_orders_order_id");
+
+                    b.HasOne("OrderSystem.Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_notifications_users_user_id");
                 });
 
             modelBuilder.Entity("OrderSystem.Domain.Orders.Order", b =>
