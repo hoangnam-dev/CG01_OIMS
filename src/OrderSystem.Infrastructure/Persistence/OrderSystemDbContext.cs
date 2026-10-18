@@ -7,6 +7,7 @@ using OrderSystem.Domain.Idempotency;
 using OrderSystem.Domain.Payments;
 using OrderSystem.Infrastructure.Payments.FakeProvider;
 using OrderSystem.Domain.Shipments;
+using OrderSystem.Domain.Notifications;
 
 namespace OrderSystem.Infrastructure.Persistence;
 
@@ -41,6 +42,8 @@ public sealed class OrderSystemDbContext(DbContextOptions<OrderSystemDbContext> 
     internal DbSet<FakeProviderOperation> FakeProviderOperations => Set<FakeProviderOperation>();
 
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+
+    public DbSet<Notification> Notifications => Set<Notification>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
