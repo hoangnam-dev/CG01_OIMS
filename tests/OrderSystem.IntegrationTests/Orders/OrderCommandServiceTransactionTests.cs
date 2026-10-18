@@ -7,6 +7,8 @@ using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Common.Identifiers;
+using OrderSystem.Application.Messaging;
+using OrderSystem.Application.Messaging.Contracts;
 using OrderSystem.Application.Orders;
 using OrderSystem.Application.Orders.Contracts;
 using OrderSystem.Domain.Inventories;
@@ -234,6 +236,8 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
             scope.ServiceProvider.GetRequiredService<IOrderReadStore>(),
             scope.ServiceProvider.GetRequiredService<ICreateOrderResponseSnapshotSerializer>(),
             operationHook,
+            new TestCorrelationContext(),
+            new NoOpOrderCreatedPublisher(),
             ReservationDuration,
             IdempotencyReplayWindow,
             IdempotencyRetentionWindow);
@@ -354,6 +358,16 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
     }
 
     private sealed record FixedClock(DateTimeOffset UtcNow) : IClock;
+
+    private sealed record TestCorrelationContext : ICorrelationContext
+    {
+        public Guid CorrelationId { get; } = Guid.NewGuid();
+    }
+
+    private sealed class NoOpOrderCreatedPublisher : IOrderCreatedPublisher
+    {
+        public Task PublishAsync(OrderCreatedV1 message) => Task.CompletedTask;
+    }
 
     private sealed class SequenceIdGenerator(IReadOnlyCollection<Guid> generatedIds) : IIdGenerator
     {
