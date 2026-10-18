@@ -12,7 +12,8 @@ builder.Services
     .AddOrderSystemCommonInfrastructure()
     .AddOrderSystemOrderInfrastructure(builder.Configuration)
     .AddOrderSystemMessagingInfrastructure(builder.Configuration)
-    .AddOrderSystemPaymentInfrastructure(builder.Configuration);
+    .AddOrderSystemPaymentInfrastructure(builder.Configuration)
+    .AddOrderSystemNotificationConsumer();
 
 builder.Services.AddMetrics();
 builder.Services.AddSingleton<ReservationExpirationMetrics>();

@@ -31,6 +31,8 @@ using OrderSystem.Infrastructure.Products.Caching;
 using RabbitMQ.Client;
 using StackExchange.Redis;
 using OrderSystem.Application.Messaging;
+using OrderSystem.Application.Notifications;
+using OrderSystem.Infrastructure.Notifications;
 
 namespace OrderSystem.Infrastructure;
 
@@ -296,6 +298,17 @@ public static class DependencyInjection
                 provider.GetRequiredService<ILogger<PaymentRefundProcessor>>()
             );
         });
+
+        return services;
+    }
+
+    public static IServiceCollection AddOrderSystemNotificationConsumer(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddScoped<IOrderCreatedNotificationStore, EfOrderCreatedNotificationStore>();
+        services.AddScoped<OrderCreatedNotificationProcessor>();
+        services.AddHostedService<RabbitMqOrderCreatedNotificationConsumer>();
 
         return services;
     }
