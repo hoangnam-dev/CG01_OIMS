@@ -23,4 +23,6 @@ public sealed class RabbitMqOptions
     public string OrderCreatedQueueName { get; init; } = "oims.notification.order-created.v1";
 
     public string OrderCreatedConsumerName { get; init; } = "OrderCreatedNotificationConsumer";
+
+    public TimeSpan PublisherConfirmTimeout { get; init; } = TimeSpan.FromSeconds(5);
 }

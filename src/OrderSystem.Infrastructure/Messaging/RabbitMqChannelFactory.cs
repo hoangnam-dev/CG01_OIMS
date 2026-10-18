@@ -17,4 +17,14 @@ internal sealed class RabbitMqChannelFactory : IRabbitMqChannelFactory
         var connection = await _connectionProvider.GetConnectionAsync(cancellationToken);
         return await connection.CreateChannelAsync(cancellationToken: cancellationToken);
     }
+
+    public async Task<IChannel> CreatePublisherChannelAsync(CancellationToken cancellationToken = default)
+    {
+        var connection = await _connectionProvider.GetConnectionAsync(cancellationToken);
+        var options = new CreateChannelOptions(
+            publisherConfirmationsEnabled: true,
+            publisherConfirmationTrackingEnabled: true);
+
+        return await connection.CreateChannelAsync(options, cancellationToken);
+    }
 }

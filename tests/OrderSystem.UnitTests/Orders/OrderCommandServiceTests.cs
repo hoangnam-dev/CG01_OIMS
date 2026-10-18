@@ -3,6 +3,8 @@ using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Application.Common.Models;
+using OrderSystem.Application.Messaging;
+using OrderSystem.Application.Messaging.Contracts;
 using OrderSystem.Application.Orders;
 using OrderSystem.Application.Orders.Contracts;
 using OrderSystem.Domain.Inventories;
@@ -633,6 +635,8 @@ public sealed class OrderCommandServiceTests
             readStore ?? new FakeOrderReadStore(),
             new FakeCreateOrderResponseSnapshotSerializer(),
             hook ?? new FakeOperationHook(),
+            new FakeCorrelationContext(),
+            new FakeOrderCreatedPublisher(),
             ReservationDuration,
             IdempotencyReplayWindow,
             IdempotencyRetentionWindow);
@@ -681,6 +685,16 @@ public sealed class OrderCommandServiceTests
     }
 
     private sealed record FakeClock(DateTimeOffset UtcNow) : IClock;
+
+    private sealed record FakeCorrelationContext : ICorrelationContext
+    {
+        public Guid CorrelationId { get; } = Guid.NewGuid();
+    }
+
+    private sealed class FakeOrderCreatedPublisher : IOrderCreatedPublisher
+    {
+        public Task PublishAsync(OrderCreatedV1 message) => Task.CompletedTask;
+    }
 
     private sealed class FakeIdGenerator : IIdGenerator
     {

@@ -30,6 +30,7 @@ using OrderSystem.Infrastructure.Shipments;
 using OrderSystem.Infrastructure.Products.Caching;
 using RabbitMQ.Client;
 using StackExchange.Redis;
+using OrderSystem.Application.Messaging;
 
 namespace OrderSystem.Infrastructure;
 
@@ -216,6 +217,7 @@ public static class DependencyInjection
             .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedRoutingKey), "RabbitMq:OrderCreatedRoutingKey is required.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedQueueName), "RabbitMq:OrderCreatedQueueName is required.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedConsumerName), "RabbitMq:OrderCreatedConsumerName is required.")
+            .Validate(options => options.PublisherConfirmTimeout > TimeSpan.Zero, "RabbitMq:PublisherConfirmTimeout must be positive.")
             .ValidateOnStart();
         services.AddSingleton<IConnectionFactory>(provider =>
         {
@@ -234,6 +236,7 @@ public static class DependencyInjection
         });
         services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
         services.AddSingleton<IRabbitMqChannelFactory, RabbitMqChannelFactory>();
+        services.AddSingleton<IOrderCreatedPublisher, RabbitMqOrderCreatedPublisher>();
         services.AddSingleton<IRabbitMqTopologyInitializer, RabbitMqTopologyInitializer>();
         services.AddHealthChecks()
             .AddCheck<RabbitMqHealthCheck>(
