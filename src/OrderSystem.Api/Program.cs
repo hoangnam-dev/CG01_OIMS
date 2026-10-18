@@ -28,6 +28,7 @@ using OrderSystem.Api.Idempotency;
 using OrderSystem.Application.Payments;
 using OrderSystem.Api.Payments;
 using OrderSystem.Application.Shipments;
+using OrderSystem.Application.Messaging;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -141,6 +142,8 @@ builder.Services.AddScoped<OrderCommandService>(provider =>
         provider.GetRequiredService<IOrderReadStore>(),
         provider.GetRequiredService<ICreateOrderResponseSnapshotSerializer>(),
         provider.GetRequiredService<IOperationHook>(),
+        provider.GetRequiredService<ICorrelationContext>(),
+        provider.GetRequiredService<IOrderCreatedPublisher>(),
         reservation.Duration,
         idempotency.ReplayWindow,
         idempotency.RetentionWindow);

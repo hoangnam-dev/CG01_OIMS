@@ -3,6 +3,8 @@ using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Application.Common.Results;
+using OrderSystem.Application.Messaging;
+using OrderSystem.Application.Messaging.Contracts;
 using OrderSystem.Application.Orders.Contracts;
 using OrderSystem.Application.Orders.Validation;
 using OrderSystem.Domain.Inventories;
@@ -19,6 +21,8 @@ public sealed class OrderCommandService(
     IOrderReadStore readStore,
     ICreateOrderResponseSnapshotSerializer responseSnapshotSerializer,
     IOperationHook operationHook,
+    ICorrelationContext correlationContext,
+    IOrderCreatedPublisher orderCreatedPublisher,
     TimeSpan reservationDuration,
     TimeSpan idempotencyReplayWindow,
     TimeSpan idempotencyRetentionWindow)
@@ -218,6 +222,15 @@ public sealed class OrderCommandService(
         await operationHook.ReachAsync(
             OrderOperationCheckpoints.AfterCreateCommit,
             cancellationToken);
+
+        await orderCreatedPublisher.PublishAsync(new OrderCreatedV1(
+            EventVersion: 1,
+            MessageId: idGenerator.NewId(),
+            OrderId: order.Id,
+            UserId: order.UserId,
+            CorrelationId: correlationContext.CorrelationId,
+            OccurredAt: order.CreatedAt
+        ));
 
         return ApplicationResult.Success(new CreateOrderOutcome(
             orderId,
