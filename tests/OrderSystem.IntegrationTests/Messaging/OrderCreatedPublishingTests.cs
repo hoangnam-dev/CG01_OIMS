@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -9,6 +10,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
@@ -34,12 +36,15 @@ public sealed class OrderCreatedPublishingTests(
 
     [Fact]
     [Trait("Requirement", "S9-T04")]
+    [Trait("Requirement", "S9-T06")]
     [Trait("TestId", "MSG-PUBLISH-001")]
-    public async Task CreateAsync_NewlyCommittedOrder_PublishesOrderCreatedV1()
+    [Trait("TestId", "MSG-TRACE-001")]
+    public async Task CreateAsync_NewlyCommittedOrder_PublishesAndLogsOrderCreatedV1()
     {
         var userId = Guid.NewGuid();
         var correlationId = Guid.NewGuid();
-        await using var factory = CreateFactory(userId, correlationId);
+        using var loggerProvider = new RecordingLoggerProvider();
+        await using var factory = CreateFactory(userId, correlationId, loggerProvider);
         using var scope = factory.Services.CreateScope();
         var provider = scope.ServiceProvider;
         var dbContext = provider.GetRequiredService<OrderSystemDbContext>();
@@ -86,6 +91,25 @@ public sealed class OrderCreatedPublishingTests(
         Assert.Equal("application/json", delivery.BasicProperties.ContentType);
         Assert.Equal("OrderCreated", delivery.BasicProperties.Type);
         Assert.True(delivery.BasicProperties.Persistent);
+
+        var publishLog = Assert.Single(
+            loggerProvider.Entries,
+            entry =>
+                entry.CategoryName == typeof(RabbitMqOrderCreatedPublisher).FullName &&
+                entry.EventId.Name == "PublishSucceeded");
+
+        Assert.Equal(LogLevel.Information, publishLog.Level);
+        Assert.Null(publishLog.Exception);
+        Assert.Contains(publishLog.Properties, property => property.Key == "MessageId" && Equals(property.Value, message.MessageId));
+        Assert.Contains(publishLog.Properties, property => property.Key == "CorrelationId" && Equals(property.Value, correlationId));
+        Assert.Contains(publishLog.Properties, property => property.Key == "OrderId" && Equals(property.Value, committedOrder.Id));
+        Assert.Contains(publishLog.Properties, property => property.Key == "UserId" && Equals(property.Value, userId));
+        Assert.Contains(publishLog.Properties, property => property.Key == "EventVersion" && Equals(property.Value, 1));
+        Assert.Contains(publishLog.Properties, property => property.Key == "Exchange" && Equals(property.Value, "oims.events"));
+        Assert.Contains(publishLog.Properties, property => property.Key == "RoutingKey" && Equals(property.Value, "order.created.v1"));
+        Assert.DoesNotContain(
+            publishLog.Properties,
+            property => property.Key is "Payload" or "Body" or "Password" or "Token" or "IdempotencyKey");
     }
 
     [Fact]
@@ -207,7 +231,10 @@ public sealed class OrderCreatedPublishingTests(
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }
 
-    private WebApplicationFactory<Program> CreateFactory(Guid userId, Guid correlationId) =>
+    private WebApplicationFactory<Program> CreateFactory(
+        Guid userId,
+        Guid correlationId,
+        ILoggerProvider? loggerProvider = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration((_, configuration) =>
@@ -226,6 +253,13 @@ public sealed class OrderCreatedPublishingTests(
                 services.AddSingleton<IClock>(new FixedClock(FixedNow));
                 services.RemoveAll<ICorrelationContext>();
                 services.AddScoped<ICorrelationContext>(_ => new TestCorrelationContext(correlationId));
+
+                if (loggerProvider is not null)
+                {
+                    services.Replace(
+                        ServiceDescriptor.Singleton<ILoggerFactory>(
+                            _ => new LoggerFactory([loggerProvider])));
+                }
             });
         });
 
@@ -412,4 +446,65 @@ public sealed class OrderCreatedPublishingTests(
     Guid UserId,
     string Email,
     Guid ProductVariantId);
+
+    private sealed class RecordingLoggerProvider : ILoggerProvider
+    {
+        private readonly ConcurrentQueue<LogEntry> entries = [];
+
+        public IReadOnlyCollection<LogEntry> Entries => entries.ToArray();
+
+        public ILogger CreateLogger(string categoryName) =>
+            new RecordingLogger(categoryName, entries);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class RecordingLogger(
+            string categoryName,
+            ConcurrentQueue<LogEntry> entries) : ILogger
+        {
+            public IDisposable BeginScope<TState>(TState state)
+                where TState : notnull =>
+                EmptyScope.Instance;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                var properties = state is IEnumerable<KeyValuePair<string, object?>> values
+                    ? values.ToArray()
+                    : [];
+
+                entries.Enqueue(
+                    new LogEntry(
+                        categoryName,
+                        logLevel,
+                        eventId,
+                        properties,
+                        exception));
+            }
+        }
+    }
+
+    private sealed record LogEntry(
+        string CategoryName,
+        LogLevel Level,
+        EventId EventId,
+        IReadOnlyList<KeyValuePair<string, object?>> Properties,
+        Exception? Exception);
+
+    private sealed class EmptyScope : IDisposable
+    {
+        public static EmptyScope Instance { get; } = new();
+
+        public void Dispose()
+        {
+        }
+    }
 }

@@ -8,7 +8,7 @@ using RabbitMQ.Client.Exceptions;
 
 namespace OrderSystem.Infrastructure.Messaging;
 
-internal sealed class RabbitMqOrderCreatedPublisher(
+internal sealed partial class RabbitMqOrderCreatedPublisher(
     IRabbitMqChannelFactory channelFactory,
     IOptions<RabbitMqOptions> options,
     IHostApplicationLifetime applicationLifetime,
@@ -21,6 +21,22 @@ internal sealed class RabbitMqOrderCreatedPublisher(
             LogLevel.Warning,
             new EventId(1, nameof(PublishFailed)),
             "OrderCreated publication failed after Order commit for MessageId {MessageId}, CorrelationId {CorrelationId}, OrderId {OrderId}, UserId {UserId}, EventVersion {EventVersion}");
+
+    [LoggerMessage(
+        EventId = 2,
+        Level = LogLevel.Information,
+        Message = "OrderCreated published for MessageId {MessageId}, CorrelationId {CorrelationId}, OrderId {OrderId}, UserId {UserId}, EventVersion {EventVersion}, Exchange {Exchange}, RoutingKey {RoutingKey}"
+    )]
+    private static partial void PublishSucceeded(
+        ILogger logger,
+        Guid messageId,
+        Guid correlationId,
+        Guid orderId,
+        Guid userId,
+        int eventVersion,
+        string exchange,
+        string routingKey
+    );
 
     public async Task PublishAsync(OrderCreatedV1 message)
     {
@@ -44,6 +60,17 @@ internal sealed class RabbitMqOrderCreatedPublisher(
                 properties,
                 body,
                 timeout.Token
+            );
+
+            PublishSucceeded(
+                logger,
+                message.MessageId,
+                message.CorrelationId,
+                message.OrderId,
+                message.UserId,
+                message.EventVersion,
+                rabbitMqOptions.ExchangeName,
+                rabbitMqOptions.OrderCreatedRoutingKey
             );
         }
         catch (BrokerUnreachableException exception)
