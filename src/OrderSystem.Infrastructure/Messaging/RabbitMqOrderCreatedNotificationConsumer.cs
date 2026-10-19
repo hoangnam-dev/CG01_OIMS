@@ -20,10 +20,20 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
     private const string ContentType = "application/json";
     private const string MessageType = "OrderCreated";
 
-    private static readonly Action<ILogger, Exception?> ConsumerStoppedAfterFailure = LoggerMessage.Define(
+    private static readonly Action<ILogger, string?, string?, string, string, string, string, Exception?> ContractValidationFailed = LoggerMessage.Define<string?, string?, string, string, string, string>(
         LogLevel.Error,
-        new EventId(2101, nameof(ConsumerStoppedAfterFailure)),
-        "OrderCreated notification consumer stopped after message processing failure");
+        new EventId(2101, nameof(ContractValidationFailed)),
+        "OrderCreated contract validation failed for MessageId {MessageId}, CorrelationId {CorrelationId}, ConsumerName {ConsumerName}, Exchange {Exchange}, RoutingKey {RoutingKey}, Queue {Queue}");
+
+    private static readonly Action<ILogger, Guid, Guid, Guid, Guid, string, int, Exception?> MessageProcessedAndAcknowledged = LoggerMessage.Define<Guid, Guid, Guid, Guid, string, int>(
+        LogLevel.Information,
+        new EventId(2100, nameof(MessageProcessedAndAcknowledged)),
+        "OrderCreated notification processed and acknowledged for MessageId {MessageId}, CorrelationId {CorrelationId}, OrderId {OrderId}, UserId {UserId}, ConsumerName {ConsumerName}, EventVersion {EventVersion}");
+
+    private static readonly Action<ILogger, Guid, Guid, Guid, Guid, string, int, Exception?> MessageProcessingFailed = LoggerMessage.Define<Guid, Guid, Guid, Guid, string, int>(
+        LogLevel.Error,
+        new EventId(2102, nameof(MessageProcessingFailed)),
+        "OrderCreated notification processing failed for MessageId {MessageId}, CorrelationId {CorrelationId}, OrderId {OrderId}, UserId {UserId}, ConsumerName {ConsumerName}, EventVersion {EventVersion}");
 
     private readonly RabbitMqOptions _rabbitMqOptions = options.Value;
 
@@ -42,14 +52,26 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
                 return;
             }
 
+            OrderCreatedV1? message = null;
             try
             {
-                var message = ReadMessage(delivery);
+                message = ReadMessage(delivery);
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var processor = scope.ServiceProvider.GetRequiredService<OrderCreatedNotificationProcessor>();
 
                 await processor.ProcessAsync(message, stoppingToken);
                 await channel.BasicAckAsync(delivery.DeliveryTag, false, stoppingToken);
+
+                MessageProcessedAndAcknowledged(
+                    logger,
+                    message.MessageId,
+                    message.CorrelationId,
+                    message.OrderId,
+                    message.UserId,
+                    _rabbitMqOptions.OrderCreatedConsumerName,
+                    message.EventVersion,
+                    null
+                );
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -57,7 +79,31 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
             }
             catch (Exception exception)
             {
-                ConsumerStoppedAfterFailure(logger, exception);
+                if (message is null)
+                {
+                    ContractValidationFailed(
+                        logger,
+                        delivery.BasicProperties.MessageId,
+                        delivery.BasicProperties.CorrelationId,
+                        _rabbitMqOptions.OrderCreatedConsumerName,
+                        delivery.Exchange,
+                        delivery.RoutingKey,
+                        _rabbitMqOptions.OrderCreatedQueueName,
+                        exception);
+                }
+                else
+                {
+                    MessageProcessingFailed(
+                        logger,
+                        message.MessageId,
+                        message.CorrelationId,
+                        message.OrderId,
+                        message.UserId,
+                        _rabbitMqOptions.OrderCreatedConsumerName,
+                        message.EventVersion,
+                        exception);
+                }
+
                 processingStopped.TrySetResult();
             }
         };

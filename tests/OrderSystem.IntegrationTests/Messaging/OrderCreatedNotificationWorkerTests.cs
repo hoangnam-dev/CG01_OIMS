@@ -22,7 +22,9 @@ public sealed class OrderCreatedNotificationWorkerTests(
 {
     [Fact]
     [Trait("Requirement", "S9-T05")]
+    [Trait("Requirement", "S9-T06")]
     [Trait("TestId", "MSG-CONSUME-001")]
+    [Trait("TestId", "MSG-TRACE-001")]
     public async Task Worker_ValidOrderCreated_PersistsExpectedNotification()
     {
         var now = new DateTimeOffset(2026, 10, 18, 8, 0, 0, TimeSpan.Zero);
@@ -94,6 +96,22 @@ public sealed class OrderCreatedNotificationWorkerTests(
             Assert.Equal(messageId, notification.MessageId);
             Assert.Equal(NotificationType.OrderCreated, notification.Type);
             Assert.NotEqual(default, notification.CreatedAt);
+            var traceLine = await WaitForOutputLineAsync(
+                process,
+                output,
+                $"MessageId {messageId:D}",
+                TimeSpan.FromSeconds(5)
+            );
+
+            Assert.NotNull(traceLine);
+            Assert.Contains($"CorrelationId {correlationId:D}", traceLine, StringComparison.Ordinal);
+            Assert.Contains($"OrderId {orderId:D}", traceLine, StringComparison.Ordinal);
+            Assert.Contains($"UserId {userId:D}", traceLine, StringComparison.Ordinal);
+            Assert.Contains("ConsumerName OrderCreatedNotificationConsumer", traceLine, StringComparison.Ordinal);
+            Assert.Contains("EventVersion 1", traceLine, StringComparison.Ordinal);
+            Assert.DoesNotContain("Payload", traceLine, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Body", traceLine, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(rabbitMq.Password, traceLine, StringComparison.Ordinal);
         }
         finally
         {
@@ -108,11 +126,15 @@ public sealed class OrderCreatedNotificationWorkerTests(
 
     [Fact]
     [Trait("Requirement", "S9-T05")]
+    [Trait("Requirement", "S9-T06")]
     [Trait("TestId", "MSG-CONSUME-002")]
     public async Task Worker_DatabaseProcessingFails_StopsConsumerAndReturnsUnacknowledgedDelivery()
     {
         var now = new DateTimeOffset(2026, 10, 18, 8, 30, 0, TimeSpan.Zero);
         var messageId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid();
         var exchangeName = $"oims.events.test.{Guid.NewGuid():N}";
         var routingKey = $"order.created.v1.test.{Guid.NewGuid():N}";
         var queueName = $"oims.notification.order-created.v1.test.{Guid.NewGuid():N}";
@@ -129,9 +151,9 @@ public sealed class OrderCreatedNotificationWorkerTests(
         var message = new OrderCreatedV1(
             EventVersion: 1,
             MessageId: messageId,
-            OrderId: Guid.NewGuid(),
-            UserId: Guid.NewGuid(),
-            CorrelationId: Guid.NewGuid(),
+            OrderId: orderId,
+            UserId: userId,
+            CorrelationId: correlationId,
             OccurredAt: now);
 
         await PublishAsync(message, exchangeName, routingKey, queueName);
@@ -162,6 +184,110 @@ public sealed class OrderCreatedNotificationWorkerTests(
             Assert.False(await assertionContext.Notifications
                 .AsNoTracking()
                 .AnyAsync(candidate => candidate.MessageId == messageId));
+
+            var traceLine = await WaitForOutputLineAsync(
+                process,
+                output,
+                $"MessageId {messageId:D}",
+                TimeSpan.FromSeconds(5));
+
+            Assert.NotNull(traceLine);
+            Assert.Contains($"CorrelationId {correlationId:D}", traceLine, StringComparison.Ordinal);
+            Assert.Contains($"OrderId {orderId:D}", traceLine, StringComparison.Ordinal);
+            Assert.Contains($"UserId {userId:D}", traceLine, StringComparison.Ordinal);
+            Assert.Contains("ConsumerName OrderCreatedNotificationConsumer", traceLine, StringComparison.Ordinal);
+            Assert.Contains("EventVersion 1", traceLine, StringComparison.Ordinal);
+
+            string capturedOutput;
+            lock (output)
+            {
+                capturedOutput = output.ToString();
+            }
+
+            var rawPayload = Encoding.UTF8.GetString(
+                OrderCreatedV1Serializer.Serialize(message));
+
+            Assert.DoesNotContain(rawPayload, capturedOutput, StringComparison.Ordinal);
+            Assert.DoesNotContain(rabbitMq.Password, capturedOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+
+            await process.WaitForExitAsync();
+        }
+    }
+
+    [Fact]
+    [Trait("Requirement", "S9-T06")]
+    [Trait("TestId", "MSG-CONTRACT-002")]
+    public async Task Worker_InvalidOrderCreated_LogsSafeBrokerMetadataAndReturnsUnacknowledgedDelivery()
+    {
+        var messageId = Guid.NewGuid().ToString("D");
+        var correlationId = Guid.NewGuid().ToString("D");
+        var exchangeName = $"oims.events.test.{Guid.NewGuid():N}";
+        var routingKey = $"order.created.v1.test.{Guid.NewGuid():N}";
+        var queueName = $"oims.notification.order-created.v1.test.{Guid.NewGuid():N}";
+        const string sensitiveMarker = "must-not-appear-in-worker-logs";
+        var payload = Encoding.UTF8.GetBytes($$"""
+            {"eventVersion":1,"secretMarker":"{{sensitiveMarker}}"}
+            """);
+        var properties = new BasicProperties
+        {
+            ContentType = "application/json",
+            Type = "OrderCreated",
+            Persistent = true,
+            MessageId = messageId,
+            CorrelationId = correlationId
+        };
+
+        await PublishAsync(payload, properties, exchangeName, routingKey, queueName);
+
+        using var process = StartWorker(exchangeName, routingKey, queueName);
+        var output = new StringBuilder();
+        process.OutputDataReceived += (_, eventArgs) => CaptureOutput(output, eventArgs.Data);
+        process.ErrorDataReceived += (_, eventArgs) => CaptureOutput(output, eventArgs.Data);
+
+        try
+        {
+            Assert.True(process.Start(), "The Worker process could not be started.");
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            var queueState = await WaitForStoppedConsumerWithReturnedMessageAsync(
+                queueName,
+                process,
+                output,
+                TimeSpan.FromSeconds(10));
+
+            Assert.Equal(1u, queueState.MessageCount);
+            Assert.Equal(0u, queueState.ConsumerCount);
+
+            var traceLine = await WaitForOutputLineAsync(
+                process,
+                output,
+                $"MessageId {messageId}",
+                TimeSpan.FromSeconds(5));
+
+            Assert.NotNull(traceLine);
+            Assert.Contains($"CorrelationId {correlationId}", traceLine, StringComparison.Ordinal);
+            Assert.Contains("ConsumerName OrderCreatedNotificationConsumer", traceLine, StringComparison.Ordinal);
+            Assert.Contains($"Exchange {exchangeName}", traceLine, StringComparison.Ordinal);
+            Assert.Contains($"RoutingKey {routingKey}", traceLine, StringComparison.Ordinal);
+            Assert.Contains($"Queue {queueName}", traceLine, StringComparison.Ordinal);
+
+            string capturedOutput;
+            lock (output)
+            {
+                capturedOutput = output.ToString();
+            }
+
+            Assert.DoesNotContain(sensitiveMarker, capturedOutput, StringComparison.Ordinal);
+            Assert.DoesNotContain(Encoding.UTF8.GetString(payload), capturedOutput, StringComparison.Ordinal);
+            Assert.DoesNotContain(rabbitMq.Password, capturedOutput, StringComparison.Ordinal);
         }
         finally
         {
@@ -176,6 +302,21 @@ public sealed class OrderCreatedNotificationWorkerTests(
 
     private async Task PublishAsync(
         OrderCreatedV1 message,
+        string exchangeName,
+        string routingKey,
+        string queueName)
+    {
+        await PublishAsync(
+            OrderCreatedV1Serializer.Serialize(message),
+            OrderCreatedV1BasicPropertiesFactory.Create(message),
+            exchangeName,
+            routingKey,
+            queueName);
+    }
+
+    private async Task PublishAsync(
+        ReadOnlyMemory<byte> payload,
+        BasicProperties properties,
         string exchangeName,
         string routingKey,
         string queueName)
@@ -212,8 +353,8 @@ public sealed class OrderCreatedNotificationWorkerTests(
             exchangeName,
             routingKey,
             mandatory: true,
-            OrderCreatedV1BasicPropertiesFactory.Create(message),
-            OrderCreatedV1Serializer.Serialize(message));
+            properties,
+            payload);
     }
 
     private Process StartWorker(
@@ -290,6 +431,44 @@ public sealed class OrderCreatedNotificationWorkerTests(
             if (notification is not null)
             {
                 return notification;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+        }
+
+        return null;
+    }
+
+    private static async Task<string?> WaitForOutputLineAsync(
+        Process process,
+        StringBuilder output,
+        string expectedToken,
+        TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow.Add(timeout);
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (process.HasExited)
+            {
+                throw new InvalidOperationException(
+                    $"Worker exited before writing the expected trace log" +
+                    $"{Environment.NewLine}{output}");
+            }
+
+            string? matchingLine;
+            lock (output)
+            {
+                matchingLine = output
+                    .ToString()
+                    .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
+                    .FirstOrDefault(line =>
+                        line.Contains(expectedToken, StringComparison.Ordinal));
+            }
+
+            if (matchingLine is not null)
+            {
+                return matchingLine;
             }
 
             await Task.Delay(TimeSpan.FromMilliseconds(100));
