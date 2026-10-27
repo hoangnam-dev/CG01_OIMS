@@ -45,6 +45,12 @@ public sealed class OrderSystemDbContext(DbContextOptions<OrderSystemDbContext> 
 
     public DbSet<Notification> Notifications => Set<Notification>();
 
+    public DbSet<ProcessedMessage> ProcessedMessages => Set<ProcessedMessage>();
+
+    public DbSet<FailedMessage> FailedMessages => Set<FailedMessage>();
+
+    public DbSet<FailedMessagePayloadAccess> FailedMessagePayloadAccesses => Set<FailedMessagePayloadAccess>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
