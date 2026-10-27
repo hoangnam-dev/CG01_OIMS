@@ -9,6 +9,7 @@ namespace OrderSystem.IntegrationTests.Persistence;
 public sealed class NotificationMigrationTests(MigrationPostgreSqlFixture postgres)
 {
     private const string PreviousMigration = "20261006091439_AddDeliveredShipmentActivityType";
+    private const string MigrationUnderTest = "20261018071156_AddNotificationPersistence";
 
     [Fact]
     [Trait("Requirement", "S9-T05")]
@@ -26,7 +27,7 @@ public sealed class NotificationMigrationTests(MigrationPostgreSqlFixture postgr
 
         Assert.False(await RelationExistsAsync(connection, "public.notifications"));
 
-        await dbContext.Database.MigrateAsync();
+        await dbContext.Database.MigrateAsync(MigrationUnderTest);
 
         Assert.True(await RelationExistsAsync(connection, "public.notifications"));
         Assert.Equal(
@@ -97,7 +98,7 @@ public sealed class NotificationMigrationTests(MigrationPostgreSqlFixture postgr
         await dbContext.Database.MigrateAsync(PreviousMigration);
         Assert.False(await RelationExistsAsync(connection, "public.notifications"));
 
-        await dbContext.Database.MigrateAsync();
+        await dbContext.Database.MigrateAsync(MigrationUnderTest);
         Assert.True(await RelationExistsAsync(connection, "public.notifications"));
     }
 
