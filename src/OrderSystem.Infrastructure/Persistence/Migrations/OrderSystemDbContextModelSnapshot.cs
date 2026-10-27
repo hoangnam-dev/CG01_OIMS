@@ -244,6 +244,230 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("OrderSystem.Domain.Notifications.FailedMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<byte[]>("Body")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("body");
+
+                    b.Property<string>("BodySha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character(64)")
+                        .HasColumnName("body_sha256")
+                        .IsFixedLength();
+
+                    b.Property<DateTimeOffset>("CapturedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("captured_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("CloseReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("close_reason");
+
+                    b.Property<DateTimeOffset?>("ClosedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("closed_at");
+
+                    b.Property<Guid?>("ClosedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("closed_by_user_id");
+
+                    b.Property<string>("ConsumerName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("consumer_name");
+
+                    b.Property<Guid?>("CorrelationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<string>("EventType")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("event_type");
+
+                    b.Property<int?>("EventVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("event_version");
+
+                    b.Property<string>("FailureCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("failure_kind");
+
+                    b.Property<Guid?>("MessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("message_id");
+
+                    b.Property<DateTimeOffset?>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<string>("OriginalExchange")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("original_exchange");
+
+                    b.Property<string>("OriginalRoutingKey")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("original_routing_key");
+
+                    b.Property<string>("RawMessageId")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("raw_message_id");
+
+                    b.Property<string>("RedriveReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("redrive_reason");
+
+                    b.Property<DateTimeOffset?>("RedriveRequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("redrive_requested_at");
+
+                    b.Property<Guid?>("RedriveRequestedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("redrive_requested_by_user_id");
+
+                    b.Property<DateTimeOffset?>("RedrivenAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("redriven_at");
+
+                    b.Property<string>("SafeHeaders")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("safe_headers")
+                        .HasDefaultValueSql("'{}'::jsonb");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Pending")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset?>("TerminalAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("terminal_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_failed_messages");
+
+                    b.HasIndex("BodySha256")
+                        .HasDatabaseName("ix_failed_messages_body_sha256");
+
+                    b.HasIndex("ClosedByUserId");
+
+                    b.HasIndex("RedriveRequestedByUserId");
+
+                    b.HasIndex("MessageId", "ConsumerName")
+                        .HasDatabaseName("ix_failed_messages_message_consumer");
+
+                    b.HasIndex("TerminalAt", "Id")
+                        .HasDatabaseName("ix_failed_messages_terminal_id")
+                        .HasFilter("terminal_at IS NOT NULL");
+
+                    b.HasIndex("Status", "CapturedAt", "Id")
+                        .HasDatabaseName("ix_failed_messages_status_captured_id");
+
+                    b.ToTable("failed_messages", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_failed_messages_attempt_count", "attempt_count BETWEEN 1 AND 3");
+
+                            t.HasCheckConstraint("ck_failed_messages_body_sha256_format", "body_sha256 ~ '^[0-9a-f]{64}$'");
+
+                            t.HasCheckConstraint("ck_failed_messages_close_reason_format", "close_reason IS NULL OR (close_reason = btrim(close_reason) AND length(close_reason) BETWEEN 1 AND 500)");
+
+                            t.HasCheckConstraint("ck_failed_messages_consumer_name_not_blank", "length(btrim(consumer_name)) BETWEEN 1 AND 100");
+
+                            t.HasCheckConstraint("ck_failed_messages_event_type_not_blank", "event_type IS NULL OR length(btrim(event_type)) BETWEEN 1 AND 100");
+
+                            t.HasCheckConstraint("ck_failed_messages_failure_code_not_blank", "length(btrim(failure_code)) BETWEEN 1 AND 100");
+
+                            t.HasCheckConstraint("ck_failed_messages_failure_kind", "failure_kind IN ('Malformed', 'UnsupportedVersion', 'Permanent', 'RetryExhausted', 'Expired')");
+
+                            t.HasCheckConstraint("ck_failed_messages_lifecycle", "(status = 'Pending' AND redrive_requested_at IS NULL AND redrive_requested_by_user_id IS NULL AND redrive_reason IS NULL AND redriven_at IS NULL AND closed_at IS NULL AND closed_by_user_id IS NULL AND close_reason IS NULL AND terminal_at IS NULL) OR (status = 'RedriveRequested' AND redrive_requested_at IS NOT NULL AND redrive_requested_by_user_id IS NOT NULL AND redrive_reason IS NOT NULL AND redriven_at IS NULL AND closed_at IS NULL AND closed_by_user_id IS NULL AND close_reason IS NULL AND terminal_at IS NULL) OR (status = 'Redriven' AND redrive_requested_at IS NOT NULL AND redrive_requested_by_user_id IS NOT NULL AND redrive_reason IS NOT NULL AND redriven_at IS NOT NULL AND closed_at IS NULL AND closed_by_user_id IS NULL AND close_reason IS NULL AND terminal_at IS NOT NULL) OR (status = 'Closed' AND redrive_requested_at IS NULL AND redrive_requested_by_user_id IS NULL AND redrive_reason IS NULL AND redriven_at IS NULL AND closed_at IS NOT NULL AND closed_by_user_id IS NOT NULL AND close_reason IS NOT NULL AND terminal_at IS NOT NULL) OR (status = 'Expired' AND ((redrive_requested_at IS NULL AND redrive_requested_by_user_id IS NULL AND redrive_reason IS NULL) OR (redrive_requested_at IS NOT NULL AND redrive_requested_by_user_id IS NOT NULL AND redrive_reason IS NOT NULL)) AND redriven_at IS NULL AND closed_at IS NULL AND closed_by_user_id IS NULL AND close_reason IS NULL AND terminal_at IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_failed_messages_original_exchange_not_blank", "length(btrim(original_exchange)) BETWEEN 1 AND 255");
+
+                            t.HasCheckConstraint("ck_failed_messages_original_routing_key_not_blank", "length(btrim(original_routing_key)) BETWEEN 1 AND 255");
+
+                            t.HasCheckConstraint("ck_failed_messages_raw_message_id_not_blank", "raw_message_id IS NULL OR length(btrim(raw_message_id)) BETWEEN 1 AND 255");
+
+                            t.HasCheckConstraint("ck_failed_messages_redrive_reason_format", "redrive_reason IS NULL OR (redrive_reason = btrim(redrive_reason) AND length(redrive_reason) BETWEEN 1 AND 500)");
+
+                            t.HasCheckConstraint("ck_failed_messages_status", "status IN ('Pending', 'RedriveRequested', 'Redriven', 'Closed', 'Expired')");
+                        });
+                });
+
+            modelBuilder.Entity("OrderSystem.Domain.Notifications.FailedMessagePayloadAccess", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("AccessedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("accessed_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<Guid>("AccessedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("accessed_by_user_id");
+
+                    b.Property<Guid>("FailedMessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("failed_message_id");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("reason");
+
+                    b.HasKey("Id")
+                        .HasName("pk_failed_message_payload_accesses");
+
+                    b.HasIndex("AccessedByUserId");
+
+                    b.HasIndex("FailedMessageId", "AccessedAt", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_failed_message_payload_accesses_failure_time");
+
+                    b.ToTable("failed_message_payload_accesses", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_failed_message_payload_accesses_reason", "length(btrim(reason)) BETWEEN 1 AND 500");
+                        });
+                });
+
             modelBuilder.Entity("OrderSystem.Domain.Notifications.Notification", b =>
                 {
                     b.Property<Guid>("Id")
@@ -293,6 +517,35 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                     b.ToTable("notifications", null, t =>
                         {
                             t.HasCheckConstraint("ck_notifications_type_not_blank", "length(btrim(type)) > 0");
+                        });
+                });
+
+            modelBuilder.Entity("OrderSystem.Domain.Notifications.ProcessedMessage", b =>
+                {
+                    b.Property<Guid>("MessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("message_id");
+
+                    b.Property<string>("ConsumerName")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("consumer_name");
+
+                    b.Property<DateTimeOffset>("ProcessedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("processed_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.HasKey("MessageId", "ConsumerName")
+                        .HasName("pk_processed_messages");
+
+                    b.HasIndex("ProcessedAt", "MessageId", "ConsumerName")
+                        .HasDatabaseName("ix_processed_messages_processed_at");
+
+                    b.ToTable("processed_messages", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_processed_messages_consumer_name_not_blank", "length(btrim(consumer_name)) > 0");
                         });
                 });
 
@@ -1205,6 +1458,38 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_inventory_transactions_product_variants_product_variant_id");
+                });
+
+            modelBuilder.Entity("OrderSystem.Domain.Notifications.FailedMessage", b =>
+                {
+                    b.HasOne("OrderSystem.Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("ClosedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_failed_messages_users_closed_by_user_id");
+
+                    b.HasOne("OrderSystem.Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("RedriveRequestedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_failed_messages_users_redrive_requested_by_user_id");
+                });
+
+            modelBuilder.Entity("OrderSystem.Domain.Notifications.FailedMessagePayloadAccess", b =>
+                {
+                    b.HasOne("OrderSystem.Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("AccessedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_failed_message_payload_accesses_user");
+
+                    b.HasOne("OrderSystem.Domain.Notifications.FailedMessage", null)
+                        .WithMany()
+                        .HasForeignKey("FailedMessageId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_failed_message_payload_accesses_failed_message");
                 });
 
             modelBuilder.Entity("OrderSystem.Domain.Notifications.Notification", b =>

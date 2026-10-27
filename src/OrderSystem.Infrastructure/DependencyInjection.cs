@@ -57,6 +57,7 @@ public static class DependencyInjection
                 npgsql.MigrationsAssembly(typeof(OrderSystemDbContext).Assembly.FullName));
         });
         services.AddScoped<DbContext>(provider => provider.GetRequiredService<OrderSystemDbContext>());
+        services.AddScoped<IFailedMessageStore, EfFailedMessageStore>();
         services.AddHealthChecks()
             .AddDbContextCheck<OrderSystemDbContext>("postgresql", tags: ["ready"]);
 
