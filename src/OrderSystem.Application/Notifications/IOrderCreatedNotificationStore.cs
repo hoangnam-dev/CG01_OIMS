@@ -4,5 +4,5 @@ namespace OrderSystem.Application.Notifications;
 
 public interface IOrderCreatedNotificationStore
 {
-    Task CreateAsync(Notification notification, CancellationToken cancellationToken);
+    Task CreateAsync(Notification notification, ProcessedMessage processedMessage, CancellationToken cancellationToken);
 }
