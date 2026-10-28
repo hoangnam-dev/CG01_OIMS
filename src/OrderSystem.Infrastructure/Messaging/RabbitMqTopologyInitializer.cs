@@ -29,19 +29,87 @@ internal sealed class RabbitMqTopologyInitializer : IRabbitMqTopologyInitializer
             durable: true,
             autoDelete: false,
             arguments: null,
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken
+        );
+        await channel.ExchangeDeclareAsync(
+            _options.ConsumerIngressExchangeName,
+            ExchangeType.Direct,
+            durable: true,
+            autoDelete: false,
+            arguments: null,
+            cancellationToken: cancellationToken
+        );
+        await channel.ExchangeDeclareAsync(
+            _options.RetryExchangeName,
+            ExchangeType.Direct,
+            durable: true,
+            autoDelete: false,
+            arguments: null,
+            cancellationToken: cancellationToken
+        );
+        await channel.ExchangeDeclareAsync(
+            _options.DeadLetterExchangeName,
+            ExchangeType.Direct,
+            durable: true,
+            autoDelete: false,
+            arguments: null,
+            cancellationToken: cancellationToken
+        );
         await channel.QueueDeclareAsync(
             _options.OrderCreatedQueueName,
             durable: true,
             exclusive: false,
             autoDelete: false,
             arguments: null,
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken
+        );
         await channel.QueueBindAsync(
             _options.OrderCreatedQueueName,
             _options.ExchangeName,
             _options.OrderCreatedRoutingKey,
             arguments: null,
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken
+        );
+        var quorumQueueArguments = new Dictionary<string, object?>
+        {
+            ["x-queue-type"] = "quorum"
+        };
+        await channel.QueueDeclareAsync(
+            _options.OrderCreatedRetryQueueName,
+            durable: true,
+            exclusive: false,
+            autoDelete: false,
+            arguments: quorumQueueArguments,
+            cancellationToken: cancellationToken
+        );
+        await channel.QueueDeclareAsync(
+            _options.OrderCreatedDeadLetterQueueName,
+            durable: true,
+            exclusive: false,
+            autoDelete: false,
+            arguments: quorumQueueArguments,
+            cancellationToken: cancellationToken
+        );
+        await channel.QueueBindAsync(
+            _options.OrderCreatedQueueName,
+            _options.ConsumerIngressExchangeName,
+            _options.OrderCreatedConsumerRoutingKey,
+            arguments: null,
+            cancellationToken: cancellationToken
+        );
+        await channel.QueueBindAsync(
+            _options.OrderCreatedRetryQueueName,
+            _options.RetryExchangeName,
+            _options.OrderCreatedConsumerRoutingKey,
+            arguments: null,
+            cancellationToken: cancellationToken
+        );
+        await channel.QueueBindAsync(
+            _options.OrderCreatedDeadLetterQueueName,
+            _options.DeadLetterExchangeName,
+            _options.OrderCreatedConsumerRoutingKey,
+            arguments: null,
+            cancellationToken: cancellationToken
+        );
     }
 }

@@ -24,5 +24,17 @@ public sealed class RabbitMqOptions
 
     public string OrderCreatedConsumerName { get; init; } = "OrderCreatedNotificationConsumer";
 
+    public string ConsumerIngressExchangeName { get; init; } = "oims.notification.ingress";
+
+    public string RetryExchangeName { get; init; } = "oims.notification.retry";
+
+    public string DeadLetterExchangeName { get; init; } = "oims.notification.dead-letter";
+
+    public string OrderCreatedConsumerRoutingKey { get; init; } = "order-created.v1";
+
+    public string OrderCreatedRetryQueueName { get; init; } = "oims.notification.order-created.v1.retry";
+
+    public string OrderCreatedDeadLetterQueueName { get; init; } = "oims.notification.order-created.v1.dlq";
+
     public TimeSpan PublisherConfirmTimeout { get; init; } = TimeSpan.FromSeconds(5);
 }

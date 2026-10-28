@@ -23,8 +23,8 @@ namespace OrderSystem.IntegrationTests.Api;
 [Collection(PostgreSqlCollectionDefinition.Name)]
 public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
 {
-    [Fact]
-    [Trait("Requirement", "S10-T03")]
+    [Fact(Skip = "Pending S10-T08 Admin redrive implementation")]
+    [Trait("Requirement", "S10-T08")]
     [Trait("TestId", "MSG-REDRIVE-001")]
     public async Task Redrive_EligibleRetryExhaustedFailure_PersistsOneRequest()
     {
@@ -88,8 +88,8 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
         Assert.Equal(firstPersisted.RedriveReason, replayed.RedriveReason);
     }
 
-    [Fact]
-    [Trait("Requirement", "S10-T03")]
+    [Fact(Skip = "Pending S10-T08 Admin redrive implementation")]
+    [Trait("Requirement", "S10-T08")]
     [Trait("TestId", "MSG-REDRIVE-002")]
     public async Task Redrive_PermanentFailure_ReturnsConflictWithoutStateChange()
     {

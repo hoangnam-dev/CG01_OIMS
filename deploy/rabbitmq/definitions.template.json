@@ -1,0 +1,41 @@
+{
+  "policies": [
+    {
+      "vhost": "/",
+      "name": "oims-notification-order-created-main-capacity",
+      "pattern": "^oims[.]notification[.]order-created[.]v1$",
+      "apply-to": "queues",
+      "definition": {
+        "max-length-bytes": __OIMS_MAIN_QUEUE_MAX_LENGTH_BYTES__,
+        "overflow": "reject-publish"
+      },
+      "priority": 0
+    },
+    {
+      "vhost": "/",
+      "name": "oims-notification-order-created-retry",
+      "pattern": "^oims[.]notification[.]order-created[.]v1[.]retry$",
+      "apply-to": "queues",
+      "definition": {
+        "message-ttl": 30000,
+        "dead-letter-exchange": "oims.notification.ingress",
+        "dead-letter-routing-key": "order-created.v1",
+        "dead-letter-strategy": "at-least-once",
+        "max-length-bytes": __OIMS_RETRY_QUEUE_MAX_LENGTH_BYTES__,
+        "overflow": "reject-publish"
+      },
+      "priority": 0
+    },
+    {
+      "vhost": "/",
+      "name": "oims-notification-order-created-dlq-capacity",
+      "pattern": "^oims[.]notification[.]order-created[.]v1[.]dlq$",
+      "apply-to": "queues",
+      "definition": {
+        "max-length-bytes": __OIMS_DEAD_LETTER_QUEUE_MAX_LENGTH_BYTES__,
+        "overflow": "reject-publish"
+      },
+      "priority": 0
+    }
+  ]
+}
