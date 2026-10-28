@@ -180,6 +180,77 @@ public sealed class OrderCreatedNotificationWorkerTests(
     }
 
     [Fact]
+    [Trait("Requirement", "S10-T07")]
+    [Trait("TestId", "MSG-AGE-001")]
+    public async Task ConsumeOrderCreated_SevenDayWindow_IsInclusiveAndExpiresAfterBoundary()
+    {
+        var now = new DateTimeOffset(2026, 10, 28, 8, 0, 0, TimeSpan.Zero);
+        var clock = new FakeClock(now);
+        var boundaryUserId = Guid.NewGuid();
+        var boundaryOrderId = Guid.NewGuid();
+        var expiredUserId = Guid.NewGuid();
+        var expiredOrderId = Guid.NewGuid();
+        var boundaryMessage = new OrderCreatedV1(
+            1, Guid.NewGuid(), boundaryOrderId, boundaryUserId, Guid.NewGuid(), now.AddDays(-7));
+        var expiredMessage = new OrderCreatedV1(
+            1, Guid.NewGuid(), expiredOrderId, expiredUserId, Guid.NewGuid(), now.AddDays(-7).AddSeconds(-1));
+        var suffix = Guid.NewGuid().ToString("N");
+        var exchangeName = $"oims.events.test.{suffix}";
+        var routingKey = $"order.created.v1.test.{suffix}";
+        var queueName = $"oims.notification.order-created.v1.test.{suffix}";
+        var deadLetterQueueName = $"{queueName}.dlq";
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+            arrangeContext.AddRange(
+                new User(boundaryUserId, $"boundary-{boundaryUserId:N}@example.com",
+                    $"boundary-{boundaryUserId:N}@example.com", TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Customer, boundaryMessage.OccurredAt),
+                new Order(boundaryOrderId, boundaryUserId, 0m, boundaryMessage.OccurredAt.AddMinutes(15),
+                    boundaryMessage.OccurredAt),
+                new User(expiredUserId, $"expired-{expiredUserId:N}@example.com",
+                    $"expired-{expiredUserId:N}@example.com", TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Customer, expiredMessage.OccurredAt),
+                new Order(expiredOrderId, expiredUserId, 0m, expiredMessage.OccurredAt.AddMinutes(15),
+                    expiredMessage.OccurredAt));
+            await arrangeContext.SaveChangesAsync();
+        }
+
+        using var host = CreateNotificationConsumerHost(
+            exchangeName, routingKey, queueName, new PassThroughOperationHook(),
+            deadLetterQueueName: deadLetterQueueName, consumerRoutingKey: routingKey, clock: clock);
+        await host.Services.GetRequiredService<IRabbitMqTopologyInitializer>().InitializeAsync();
+        await PublishAsync(boundaryMessage, exchangeName, routingKey, queueName);
+        await PublishAsync(expiredMessage, exchangeName, routingKey, queueName);
+        await host.StartAsync();
+        try
+        {
+            var deadLetterState = await WaitForQueueStateAsync(deadLetterQueueName, 1, 0, TimeSpan.FromSeconds(5));
+            Assert.Equal(1u, deadLetterState.MessageCount);
+            var sourceState = await WaitForQueueStateAsync(queueName, 0, 1, TimeSpan.FromSeconds(5));
+            Assert.Equal(0u, sourceState.MessageCount);
+            Assert.Equal(1u, sourceState.ConsumerCount);
+
+            await using var assertionContext = new OrderSystemDbContext(dbOptions);
+            Assert.True(await assertionContext.Notifications.AnyAsync(
+                item => item.MessageId == boundaryMessage.MessageId));
+            Assert.True(await assertionContext.ProcessedMessages.AnyAsync(
+                item => item.MessageId == boundaryMessage.MessageId));
+            Assert.False(await assertionContext.Notifications.AnyAsync(
+                item => item.MessageId == expiredMessage.MessageId));
+            Assert.False(await assertionContext.ProcessedMessages.AnyAsync(
+                item => item.MessageId == expiredMessage.MessageId));
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    [Fact]
     [Trait("Requirement", "S10-T03")]
     [Trait("TestId", "MSG-IDEM-001")]
     public async Task ConsumeOrderCreated_DuplicateMessageId_CreatesOneNotification()

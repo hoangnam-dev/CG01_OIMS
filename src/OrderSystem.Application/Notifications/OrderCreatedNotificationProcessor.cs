@@ -22,6 +22,11 @@ public sealed class OrderCreatedNotificationProcessor(
             return OrderCreatedNotificationProcessingResult.FutureOccurredAt;
         }
 
+        if (processedAt - message.OccurredAt > TimeSpan.FromDays(7))
+        {
+            return OrderCreatedNotificationProcessingResult.Expired;
+        }
+
         var notification = new Notification(
             idGenerator.NewId(),
             message.UserId,
