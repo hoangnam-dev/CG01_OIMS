@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using OrderSystem.Application.Messaging.Contracts;
@@ -16,6 +17,7 @@ using OrderSystem.Domain.Notifications;
 using OrderSystem.Domain.Orders;
 using OrderSystem.Domain.Users;
 using OrderSystem.Infrastructure;
+using OrderSystem.Infrastructure.Configuration;
 using OrderSystem.Infrastructure.Messaging;
 using OrderSystem.Infrastructure.Notifications;
 using OrderSystem.Infrastructure.Persistence;
@@ -29,6 +31,154 @@ public sealed class OrderCreatedNotificationWorkerTests(
     PostgreSqlFixture postgres,
     RabbitMqFixture rabbitMq) : IClassFixture<RabbitMqFixture>
 {
+    [Fact]
+    [Trait("Requirement", "S10-T07")]
+    [Trait("TestId", "MSG-DLQ-001")]
+    public async Task ConsumeOrderCreated_EmptyBody_TransfersToDeadLetterQueue()
+    {
+        var messageId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid();
+        var suffix = Guid.NewGuid().ToString("N");
+        var exchangeName = $"oims.events.test.{suffix}";
+        var routingKey = $"order.created.v1.test.{suffix}";
+        var queueName = $"oims.notification.order-created.v1.test.{suffix}";
+        var deadLetterQueueName = $"oims.notification.order-created.v1.dlq.test.{suffix}";
+        var consumerRoutingKey = $"order-created.v1.test.{suffix}";
+        var properties = new BasicProperties
+        {
+            ContentType = "application/json",
+            Type = "OrderCreated",
+            Persistent = true,
+            MessageId = messageId.ToString("D"),
+            CorrelationId = correlationId.ToString("D")
+        };
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+        }
+
+        await PublishAsync(ReadOnlyMemory<byte>.Empty, properties, exchangeName, routingKey, queueName);
+
+        var connectionFactory = new ConnectionFactory
+        {
+            HostName = rabbitMq.Host,
+            Port = rabbitMq.Port,
+            VirtualHost = "/",
+            UserName = rabbitMq.Username,
+            Password = rabbitMq.Password
+        };
+        await using (var connection = await connectionFactory.CreateConnectionAsync())
+        await using (var channel = await connection.CreateChannelAsync())
+        {
+            await channel.ExchangeDeclareAsync(new RabbitMqOptions().DeadLetterExchangeName, ExchangeType.Direct, durable: true);
+            await channel.QueueDeclareAsync(
+                deadLetterQueueName,
+                durable: true,
+                exclusive: false,
+                autoDelete: false,
+                arguments: new Dictionary<string, object?> { ["x-queue-type"] = "quorum" });
+            await channel.QueueBindAsync(deadLetterQueueName, new RabbitMqOptions().DeadLetterExchangeName, consumerRoutingKey);
+        }
+
+        using var host = CreateNotificationConsumerHost(
+            exchangeName,
+            routingKey,
+            queueName,
+            new PassThroughOperationHook(),
+            deadLetterQueueName: deadLetterQueueName,
+            consumerRoutingKey: consumerRoutingKey);
+        await host.StartAsync();
+        try
+        {
+            var deadLetterState = await WaitForQueueStateAsync(
+                deadLetterQueueName,
+                expectedMessageCount: 1,
+                expectedConsumerCount: 0,
+                TimeSpan.FromSeconds(5));
+            Assert.Equal(1u, deadLetterState.MessageCount);
+
+            var sourceState = await WaitForQueueStateAsync(
+                queueName,
+                expectedMessageCount: 0,
+                expectedConsumerCount: 1,
+                TimeSpan.FromSeconds(5));
+            Assert.Equal(0u, sourceState.MessageCount);
+
+            await using (var connection = await connectionFactory.CreateConnectionAsync())
+            await using (var channel = await connection.CreateChannelAsync())
+            {
+                var deadLetter = await channel.BasicGetAsync(deadLetterQueueName, autoAck: false);
+                Assert.NotNull(deadLetter);
+                Assert.Empty(deadLetter.Body.ToArray());
+                Assert.Equal(messageId.ToString("D"), deadLetter.BasicProperties.MessageId);
+                Assert.Equal(correlationId.ToString("D"), deadLetter.BasicProperties.CorrelationId);
+                await channel.BasicNackAsync(deadLetter.DeliveryTag, multiple: false, requeue: true);
+            }
+
+            await using var assertionContext = new OrderSystemDbContext(dbOptions);
+            Assert.False(await assertionContext.Notifications.AnyAsync(item => item.MessageId == messageId));
+            Assert.False(await assertionContext.ProcessedMessages.AnyAsync(item => item.MessageId == messageId));
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T07")]
+    [Trait("TestId", "MSG-AGE-001")]
+    public async Task ConsumeOrderCreated_FutureOccurredAt_TransfersToDeadLetterWithoutBusinessEffect()
+    {
+        var now = new DateTimeOffset(2026, 10, 28, 8, 0, 0, TimeSpan.Zero);
+        var clock = new FakeClock(now);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var message = new OrderCreatedV1(1, Guid.NewGuid(), orderId, userId, Guid.NewGuid(), now.AddSeconds(1));
+        var suffix = Guid.NewGuid().ToString("N");
+        var exchangeName = $"oims.events.test.{suffix}";
+        var routingKey = $"order.created.v1.test.{suffix}";
+        var queueName = $"oims.notification.order-created.v1.test.{suffix}";
+        var deadLetterQueueName = $"{queueName}.dlq";
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+            arrangeContext.AddRange(
+                new User(userId, $"future-{userId:N}@example.com", $"future-{userId:N}@example.com",
+                    TestCredentials.CreateHashPlaceholder(), UserRole.Customer, now),
+                new Order(orderId, userId, totalAmount: 0m, reservationExpiresAt: now.AddMinutes(15), createdAt: now));
+            await arrangeContext.SaveChangesAsync();
+        }
+
+        using var host = CreateNotificationConsumerHost(
+            exchangeName, routingKey, queueName, new PassThroughOperationHook(),
+            deadLetterQueueName: deadLetterQueueName, consumerRoutingKey: routingKey, clock: clock);
+        await host.Services.GetRequiredService<IRabbitMqTopologyInitializer>().InitializeAsync();
+        await PublishAsync(message, exchangeName, routingKey, queueName);
+        await host.StartAsync();
+        try
+        {
+            var deadLetterState = await WaitForQueueStateAsync(deadLetterQueueName, 1, 0, TimeSpan.FromSeconds(5));
+            Assert.Equal(1u, deadLetterState.MessageCount);
+            var sourceState = await WaitForQueueStateAsync(queueName, 0, 1, TimeSpan.FromSeconds(5));
+            Assert.Equal(0u, sourceState.MessageCount);
+            Assert.Equal(1u, sourceState.ConsumerCount);
+            await using var assertionContext = new OrderSystemDbContext(dbOptions);
+            Assert.False(await assertionContext.Notifications.AnyAsync(item => item.MessageId == message.MessageId));
+            Assert.False(await assertionContext.ProcessedMessages.AnyAsync(item => item.MessageId == message.MessageId));
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
     [Fact]
     [Trait("Requirement", "S10-T03")]
     [Trait("TestId", "MSG-IDEM-001")]
@@ -611,7 +761,7 @@ public sealed class OrderCreatedNotificationWorkerTests(
     [Fact]
     [Trait("Requirement", "S9-T06")]
     [Trait("TestId", "MSG-CONTRACT-002")]
-    public async Task Worker_InvalidOrderCreated_LogsSafeBrokerMetadataAndReturnsUnacknowledgedDelivery()
+    public async Task Worker_InvalidOrderCreated_LogsSafeBrokerMetadataAndTransfersToDeadLetterQueue()
     {
         var messageId = Guid.NewGuid().ToString("D");
         var correlationId = Guid.NewGuid().ToString("D");
@@ -619,6 +769,7 @@ public sealed class OrderCreatedNotificationWorkerTests(
         var routingKey = $"order.created.v1.test.{Guid.NewGuid():N}";
         var queueName = $"oims.notification.order-created.v1.test.{Guid.NewGuid():N}";
         const string sensitiveMarker = "must-not-appear-in-worker-logs";
+        var deadLetterQueueName = $"{queueName}.dlq";
         var payload = Encoding.UTF8.GetBytes($$"""
             {"eventVersion":1,"secretMarker":"{{sensitiveMarker}}"}
             """);
@@ -637,21 +788,14 @@ public sealed class OrderCreatedNotificationWorkerTests(
         var output = new StringBuilder();
         process.OutputDataReceived += (_, eventArgs) => CaptureOutput(output, eventArgs.Data);
         process.ErrorDataReceived += (_, eventArgs) => CaptureOutput(output, eventArgs.Data);
+        process.StartInfo.Environment["RabbitMq__OrderCreatedDeadLetterQueueName"] = deadLetterQueueName;
+        process.StartInfo.Environment["RabbitMq__OrderCreatedConsumerRoutingKey"] = routingKey;
 
         try
         {
             Assert.True(process.Start(), "The Worker process could not be started.");
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-
-            var queueState = await WaitForStoppedConsumerWithReturnedMessageAsync(
-                queueName,
-                process,
-                output,
-                TimeSpan.FromSeconds(10));
-
-            Assert.Equal(1u, queueState.MessageCount);
-            Assert.Equal(0u, queueState.ConsumerCount);
 
             var traceLine = await WaitForOutputLineAsync(
                 process,
@@ -665,6 +809,32 @@ public sealed class OrderCreatedNotificationWorkerTests(
             Assert.Contains($"Exchange {exchangeName}", traceLine, StringComparison.Ordinal);
             Assert.Contains($"RoutingKey {routingKey}", traceLine, StringComparison.Ordinal);
             Assert.Contains($"Queue {queueName}", traceLine, StringComparison.Ordinal);
+
+            var deadLetterState = await WaitForQueueStateAsync(
+                deadLetterQueueName, 1, 0, TimeSpan.FromSeconds(5));
+            Assert.Equal(1u, deadLetterState.MessageCount);
+            var queueState = await WaitForQueueStateAsync(
+                queueName, 0, 1, TimeSpan.FromSeconds(5));
+            Assert.Equal(0u, queueState.MessageCount);
+            Assert.Equal(1u, queueState.ConsumerCount);
+
+            var connectionFactory = new ConnectionFactory
+            {
+                HostName = rabbitMq.Host,
+                Port = rabbitMq.Port,
+                VirtualHost = "/",
+                UserName = rabbitMq.Username,
+                Password = rabbitMq.Password
+            };
+            await using (var connection = await connectionFactory.CreateConnectionAsync())
+            await using (var channel = await connection.CreateChannelAsync())
+            {
+                var deadLetter = await channel.BasicGetAsync(deadLetterQueueName, autoAck: false);
+                Assert.NotNull(deadLetter);
+                Assert.Equal(payload, deadLetter.Body.ToArray());
+                Assert.Equal(messageId, deadLetter.BasicProperties.MessageId);
+                Assert.Equal(correlationId, deadLetter.BasicProperties.CorrelationId);
+            }
 
             string capturedOutput;
             lock (output)
@@ -881,7 +1051,10 @@ public sealed class OrderCreatedNotificationWorkerTests(
         string routingKey,
         string queueName,
         IOperationHook operationHook,
-        ILoggerProvider? loggerProvider = null)
+        ILoggerProvider? loggerProvider = null,
+        string? deadLetterQueueName = null,
+        string? consumerRoutingKey = null,
+        IClock? clock = null)
     {
         var settings = new Dictionary<string, string?>
         {
@@ -893,7 +1066,9 @@ public sealed class OrderCreatedNotificationWorkerTests(
             ["RabbitMq:Password"] = rabbitMq.Password,
             ["RabbitMq:ExchangeName"] = exchangeName,
             ["RabbitMq:OrderCreatedRoutingKey"] = routingKey,
-            ["RabbitMq:OrderCreatedQueueName"] = queueName
+            ["RabbitMq:OrderCreatedQueueName"] = queueName,
+            ["RabbitMq:OrderCreatedDeadLetterQueueName"] = deadLetterQueueName ?? new RabbitMqOptions().OrderCreatedDeadLetterQueueName,
+            ["RabbitMq:OrderCreatedConsumerRoutingKey"] = consumerRoutingKey ?? "order-created.v1"
         };
 
         return new HostBuilder()
@@ -918,6 +1093,11 @@ public sealed class OrderCreatedNotificationWorkerTests(
                     .AddOrderSystemNotificationConsumer();
                 services.RemoveAll<IOperationHook>();
                 services.AddSingleton(operationHook);
+                if (clock is not null)
+                {
+                    services.RemoveAll<IClock>();
+                    services.AddSingleton(clock);
+                }
             })
             .Build();
     }
