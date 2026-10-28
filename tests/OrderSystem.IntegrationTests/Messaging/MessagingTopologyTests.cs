@@ -6,12 +6,31 @@ using OrderSystem.Infrastructure.Messaging;
 using OrderSystem.IntegrationTests.Infrastructure;
 using RabbitMQ.Client;
 using System.Globalization;
+using System.Text.Json;
 
 namespace OrderSystem.IntegrationTests.Messaging;
 
 [Collection(RabbitMqCollectionDefinition.Name)]
 public sealed class MessagingTopologyTests(RabbitMqFixture rabbitMq)
 {
+    [Fact]
+    [Trait("Requirement", "S10-T06")]
+    public async Task Broker_RetryPolicyUsesApprovedDelayedAtLeastOnceDeadLettering()
+    {
+        var policiesJson = await rabbitMq.ListPoliciesAsync();
+        using var document = JsonDocument.Parse(policiesJson);
+        var retryPolicy = Assert.Single(
+            document.RootElement.EnumerateArray(),
+            policy => policy.GetProperty("pattern").GetString() == "^oims[.]notification[.]order-created[.]v1[.]retry$");
+        var definition = retryPolicy.GetProperty("definition");
+
+        Assert.Equal(30_000, definition.GetProperty("message-ttl").GetInt32());
+        Assert.Equal("oims.notification.ingress", definition.GetProperty("dead-letter-exchange").GetString());
+        Assert.Equal("order-created.v1", definition.GetProperty("dead-letter-routing-key").GetString());
+        Assert.Equal("at-least-once", definition.GetProperty("dead-letter-strategy").GetString());
+        Assert.Equal("reject-publish", definition.GetProperty("overflow").GetString());
+    }
+
     [Fact]
     [Trait("Requirement", "S10-T06")]
     public async Task InitializeAsync_DeclaresConsumerSpecificExchanges_Idempotently()

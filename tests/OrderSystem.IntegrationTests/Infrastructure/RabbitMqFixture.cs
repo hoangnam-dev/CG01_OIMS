@@ -32,6 +32,17 @@ public sealed class RabbitMqFixture : IAsyncLifetime
 
     public Task DisposeAsync() => _container.DisposeAsync().AsTask();
 
+    public async Task<string> ListPoliciesAsync()
+    {
+        var result = await _container.ExecAsync(["rabbitmqctl", "list_policies", "--formatter=json"]);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"rabbitmqctl list_policies failed with exit code {result.ExitCode}: {result.Stderr}");
+        }
+
+        return result.Stdout;
+    }
+
     private async Task ExecuteRabbitMqControlAsync(string command)
     {
         var result = await _container.ExecAsync(["rabbitmqctl", command]);
