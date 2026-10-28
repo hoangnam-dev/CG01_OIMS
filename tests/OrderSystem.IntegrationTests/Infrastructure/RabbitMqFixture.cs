@@ -66,17 +66,6 @@ public sealed class RabbitMqFixture : IAsyncLifetime
         return result.Stdout;
     }
 
-    private async Task ExecuteRabbitMqControlAsync(string command)
-    {
-        var result = await _container.ExecAsync(["rabbitmqctl", "list_policies", "--formatter=json"]);
-        if (result.ExitCode != 0)
-        {
-            throw new InvalidOperationException($"rabbitmqctl list_policies failed with exit code {result.ExitCode}: {result.Stderr}");
-        }
-
-        return result.Stdout;
-    }
-
     public async Task<string> GetEnvironmentAsync()
     {
         var result = await _container.ExecAsync(["rabbitmq-diagnostics", "environment"]);

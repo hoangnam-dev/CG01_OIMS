@@ -7,6 +7,7 @@ using OrderSystem.IntegrationTests.Infrastructure;
 using RabbitMQ.Client;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace OrderSystem.IntegrationTests.Messaging;
 
@@ -22,13 +23,60 @@ public sealed class MessagingTopologyTests(RabbitMqFixture rabbitMq)
         var retryPolicy = Assert.Single(
             document.RootElement.EnumerateArray(),
             policy => policy.GetProperty("pattern").GetString() == "^oims[.]notification[.]order-created[.]v1[.]retry$");
-        var definition = retryPolicy.GetProperty("definition");
+        var definitionJson = retryPolicy.GetProperty("definition").GetString();
+
+        Assert.NotNull(definitionJson);
+        using var definitionDocument = JsonDocument.Parse(definitionJson);
+        var definition = definitionDocument.RootElement;
 
         Assert.Equal(30_000, definition.GetProperty("message-ttl").GetInt32());
         Assert.Equal("oims.notification.ingress", definition.GetProperty("dead-letter-exchange").GetString());
         Assert.Equal("order-created.v1", definition.GetProperty("dead-letter-routing-key").GetString());
         Assert.Equal("at-least-once", definition.GetProperty("dead-letter-strategy").GetString());
         Assert.Equal("reject-publish", definition.GetProperty("overflow").GetString());
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T06")]
+    public async Task Broker_RequiredQueuesUseFiniteRejectPublishCapacityPolicies()
+    {
+        var requiredQueuePatterns = new[]
+        {
+            "^oims[.]notification[.]order-created[.]v1$",
+            "^oims[.]notification[.]order-created[.]v1[.]retry$",
+            "^oims[.]notification[.]order-created[.]v1[.]dlq$"
+        };
+        var policiesJson = await rabbitMq.ListPoliciesAsync();
+        using var document = JsonDocument.Parse(policiesJson);
+        var policies = document.RootElement.EnumerateArray().ToArray();
+
+        foreach (var requiredPattern in requiredQueuePatterns)
+        {
+            var policy = Assert.Single(
+                policies,
+                candidate => candidate.GetProperty("pattern").GetString() == requiredPattern);
+            var definitionJson = policy.GetProperty("definition").GetString();
+
+            Assert.NotNull(definitionJson);
+            using var definitionDocument = JsonDocument.Parse(definitionJson);
+            var definition = definitionDocument.RootElement;
+            Assert.True(definition.GetProperty("max-length-bytes").GetInt64() > 0);
+            Assert.Equal("reject-publish", definition.GetProperty("overflow").GetString());
+        }
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T06")]
+    public async Task Broker_UsesConfiguredFiniteMessageSizeLimit()
+    {
+        const int expectedMessageSizeLimitBytes = 1_048_576;
+        var environment = await rabbitMq.GetEnvironmentAsync();
+        var match = Regex.Match(environment, @"\{max_message_size,\s*(?<bytes>\d+)\}", RegexOptions.CultureInvariant);
+
+        Assert.True(match.Success, "RabbitMQ effective configuration did not report max_message_size");
+        Assert.Equal(
+            expectedMessageSizeLimitBytes,
+            int.Parse(match.Groups["bytes"].Value, CultureInfo.InvariantCulture));
     }
 
     [Fact]
