@@ -10,11 +10,12 @@ public sealed class OrderCreatedNotificationProcessor(
     IIdGenerator idGenerator,
     IOrderCreatedNotificationStore store)
 {
-    public Task ProcessAsync(OrderCreatedV1 message, CancellationToken cancellationToken)
+    public Task ProcessAsync(OrderCreatedV1 message, string consumerName, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(message);
         cancellationToken.ThrowIfCancellationRequested();
 
+        var processedAt = clock.UtcNow;
         var notification = new Notification(
             idGenerator.NewId(),
             message.UserId,
@@ -22,7 +23,12 @@ public sealed class OrderCreatedNotificationProcessor(
             message.MessageId,
             clock.UtcNow
         );
+        var processedMessage = new ProcessedMessage(
+            message.MessageId,
+            consumerName,
+            processedAt
+        );
 
-        return store.CreateAsync(notification, cancellationToken);
+        return store.CreateAsync(notification, processedMessage, cancellationToken);
     }
 }
