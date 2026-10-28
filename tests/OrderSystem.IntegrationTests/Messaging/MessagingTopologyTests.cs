@@ -7,6 +7,7 @@ using OrderSystem.IntegrationTests.Infrastructure;
 using RabbitMQ.Client;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace OrderSystem.IntegrationTests.Messaging;
 
@@ -62,6 +63,20 @@ public sealed class MessagingTopologyTests(RabbitMqFixture rabbitMq)
             Assert.True(definition.GetProperty("max-length-bytes").GetInt64() > 0);
             Assert.Equal("reject-publish", definition.GetProperty("overflow").GetString());
         }
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T06")]
+    public async Task Broker_UsesConfiguredFiniteMessageSizeLimit()
+    {
+        const int expectedMessageSizeLimitBytes = 1_048_576;
+        var environment = await rabbitMq.GetEnvironmentAsync();
+        var match = Regex.Match(environment, @"\{max_message_size,\s*(?<bytes>\d+)\}", RegexOptions.CultureInvariant);
+
+        Assert.True(match.Success, "RabbitMQ effective configuration did not report max_message_size");
+        Assert.Equal(
+            expectedMessageSizeLimitBytes,
+            int.Parse(match.Groups["bytes"].Value, CultureInfo.InvariantCulture));
     }
 
     [Fact]

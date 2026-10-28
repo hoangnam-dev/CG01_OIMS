@@ -45,11 +45,13 @@ services:
       OIMS_RABBITMQ_MAIN_QUEUE_MAX_LENGTH_BYTES: ${OIMS_RABBITMQ_MAIN_QUEUE_MAX_LENGTH_BYTES:-1048576}
       OIMS_RABBITMQ_RETRY_QUEUE_MAX_LENGTH_BYTES: ${OIMS_RABBITMQ_RETRY_QUEUE_MAX_LENGTH_BYTES:-1048576}
       OIMS_RABBITMQ_DEAD_LETTER_QUEUE_MAX_LENGTH_BYTES: ${OIMS_RABBITMQ_DEAD_LETTER_QUEUE_MAX_LENGTH_BYTES:-1048576}
+      OIMS_RABBITMQ_MAX_MESSAGE_SIZE_BYTES: ${OIMS_RABBITMQ_MAX_MESSAGE_SIZE_BYTES:-1048576}
     ports:
       - "${OIMS_INFRA_BIND_ADDRESS:-127.0.0.1}:${OIMS_RABBITMQ_PORT:-5672}:5672"
       - "${OIMS_INFRA_BIND_ADDRESS:-127.0.0.1}:${OIMS_RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      - ./deploy/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
       - ./deploy/rabbitmq/definitions.template.json:/etc/rabbitmq/definitions.template.json:ro
     post_start:
       - command:

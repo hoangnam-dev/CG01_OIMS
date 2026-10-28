@@ -8,6 +8,7 @@ public sealed class RabbitMqFixture : IAsyncLifetime
 {
     private const int AmqpPort = 5672;
     private const long QueueCapacityTestDefaultBytes = 1_048_576;
+    private const long MessageSizeTestDefaultBytes = 1_048_576;
     private readonly RabbitMqContainer _container;
 
     public RabbitMqFixture()
@@ -19,9 +20,18 @@ public sealed class RabbitMqFixture : IAsyncLifetime
         _container = new RabbitMqBuilder("rabbitmq:4-management-alpine")
             .WithUsername(Username)
             .WithPassword(Password)
+            .WithEnvironment(
+                "OIMS_RABBITMQ_MAX_MESSAGE_SIZE_BYTES",
+                MessageSizeTestDefaultBytes.ToString(CultureInfo.InvariantCulture)
+            )
+            .WithResourceMapping(
+                new FileInfo(Path.Combine(rabbitMqConfigurationDirectory, "rabbitmq.conf")),
+                new FileInfo("/etc/rabbitmq/rabbitmq.conf")
+            )
             .WithResourceMapping(
                 definitions,
-                "/etc/rabbitmq/definitions.json")
+                "/etc/rabbitmq/definitions.json"
+            )
             .Build();
     }
 
@@ -51,6 +61,17 @@ public sealed class RabbitMqFixture : IAsyncLifetime
         if (result.ExitCode != 0)
         {
             throw new InvalidOperationException($"rabbitmqctl list_policies failed with exit code {result.ExitCode}: {result.Stderr}");
+        }
+
+        return result.Stdout;
+    }
+
+    public async Task<string> GetEnvironmentAsync()
+    {
+        var result = await _container.ExecAsync(["rabbitmq-diagnostics", "environment"]);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"rabbitmq-diagnostics environment failed with exit code {result.ExitCode}: {result.Stderr}");
         }
 
         return result.Stdout;
