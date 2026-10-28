@@ -1,14 +1,23 @@
 extern alias worker;
 
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using OrderSystem.Application.Common.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using OrderSystem.Application.Messaging.Contracts;
 using OrderSystem.Domain.Notifications;
 using OrderSystem.Domain.Orders;
 using OrderSystem.Domain.Users;
+using OrderSystem.Infrastructure;
 using OrderSystem.Infrastructure.Messaging;
+using OrderSystem.Infrastructure.Notifications;
 using OrderSystem.Infrastructure.Persistence;
 using OrderSystem.IntegrationTests.Infrastructure;
 using RabbitMQ.Client;
@@ -20,6 +29,384 @@ public sealed class OrderCreatedNotificationWorkerTests(
     PostgreSqlFixture postgres,
     RabbitMqFixture rabbitMq) : IClassFixture<RabbitMqFixture>
 {
+    [Fact]
+    [Trait("Requirement", "S10-T03")]
+    [Trait("TestId", "MSG-IDEM-001")]
+    public async Task ConsumeOrderCreated_DuplicateMessageId_CreatesOneNotification()
+    {
+        const string consumerName = "OrderCreatedNotificationConsumer";
+        var now = new DateTimeOffset(2026, 10, 27, 8, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var messageId = Guid.NewGuid();
+        var exchangeName = $"oims.events.test.{Guid.NewGuid():N}";
+        var routingKey = $"order.created.v1.test.{Guid.NewGuid():N}";
+        var queueName = $"oims.notification.order-created.v1.test.{Guid.NewGuid():N}";
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+            arrangeContext.AddRange(
+                new User(
+                    userId,
+                    $"notification-duplicate-{userId:N}@example.com",
+                    $"notification-duplicate-{userId:N}@example.com",
+                    TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Customer,
+                    now),
+                new Order(
+                    orderId,
+                    userId,
+                    totalAmount: 0m,
+                    reservationExpiresAt: now.AddMinutes(15),
+                    createdAt: now));
+            await arrangeContext.SaveChangesAsync();
+        }
+
+        var message = new OrderCreatedV1(
+            EventVersion: 1,
+            MessageId: messageId,
+            OrderId: orderId,
+            UserId: userId,
+            CorrelationId: Guid.NewGuid(),
+            OccurredAt: now);
+
+        await PublishAsync(message, exchangeName, routingKey, queueName);
+        await PublishAsync(message, exchangeName, routingKey, queueName);
+
+        using var process = StartWorker(exchangeName, routingKey, queueName);
+        var output = new StringBuilder();
+        process.OutputDataReceived += (_, eventArgs) =>
+            CaptureOutput(output, eventArgs.Data);
+        process.ErrorDataReceived += (_, eventArgs) =>
+            CaptureOutput(output, eventArgs.Data);
+
+        try
+        {
+            Assert.True(
+                process.Start(),
+                "The Worker process could not be started.");
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            var processedMessage = await WaitForProcessedMessageAsync(
+                dbOptions,
+                messageId,
+                consumerName,
+                process,
+                output,
+                TimeSpan.FromSeconds(10));
+
+            Assert.NotNull(processedMessage);
+
+            await using (var assertionContext =
+                new OrderSystemDbContext(dbOptions))
+            {
+                var notifications = await assertionContext.Notifications
+                    .AsNoTracking()
+                    .Where(candidate => candidate.MessageId == messageId)
+                    .ToListAsync();
+                var processedMessages =
+                    await assertionContext.ProcessedMessages
+                        .AsNoTracking()
+                        .Where(candidate =>
+                            candidate.MessageId == messageId &&
+                            candidate.ConsumerName == consumerName)
+                        .ToListAsync();
+
+                var notification = Assert.Single(notifications);
+                Assert.Equal(userId, notification.UserId);
+                Assert.Equal(orderId, notification.OrderId);
+                Assert.Equal(messageId, notification.MessageId);
+                Assert.Single(processedMessages);
+            }
+
+            var acknowledgementCount = await WaitForOutputCountAsync(
+                process,
+                output,
+                $"processed and acknowledged for MessageId {messageId:D}",
+                expectedCount: 2,
+                TimeSpan.FromSeconds(10));
+
+            Assert.Equal(2, acknowledgementCount);
+
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+
+            var queueState = await WaitForQueueStateAsync(
+                queueName,
+                expectedMessageCount: 0,
+                expectedConsumerCount: 0,
+                TimeSpan.FromSeconds(5));
+
+            Assert.Equal(0u, queueState.MessageCount);
+            Assert.Equal(0u, queueState.ConsumerCount);
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+
+            await process.WaitForExitAsync();
+        }
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T03")]
+    [Trait("TestId", "MSG-IDEM-002")]
+    public async Task ConsumeOrderCreated_CommitSucceedsButAckIsLost_RedeliveryDoesNotRepeatEffect()
+    {
+        const string consumerName = "OrderCreatedNotificationConsumer";
+        var now = new DateTimeOffset(2026, 10, 27, 8, 30, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var messageId = Guid.NewGuid();
+        var exchangeName = $"oims.events.test.{Guid.NewGuid():N}";
+        var routingKey = $"order.created.v1.test.{Guid.NewGuid():N}";
+        var queueName = $"oims.notification.order-created.v1.test.{Guid.NewGuid():N}";
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+            arrangeContext.AddRange(
+                new User(
+                    userId,
+                    $"notification-ack-loss-{userId:N}@example.com",
+                    $"notification-ack-loss-{userId:N}@example.com",
+                    TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Customer,
+                    now),
+                new Order(
+                    orderId,
+                    userId,
+                    totalAmount: 0m,
+                    reservationExpiresAt: now.AddMinutes(15),
+                    createdAt: now));
+            await arrangeContext.SaveChangesAsync();
+        }
+
+        var message = new OrderCreatedV1(
+            EventVersion: 1,
+            MessageId: messageId,
+            OrderId: orderId,
+            UserId: userId,
+            CorrelationId: Guid.NewGuid(),
+            OccurredAt: now);
+
+        await PublishAsync(message, exchangeName, routingKey, queueName);
+
+        var beforeAckHook = new BlockingCheckpointHook(
+            RabbitMqOrderCreatedNotificationConsumer.AfterCommitBeforeAcknowledgementCheckpoint);
+        using (var firstHost = CreateNotificationConsumerHost(
+            exchangeName,
+            routingKey,
+            queueName,
+            beforeAckHook))
+        {
+            await firstHost.StartAsync();
+            try
+            {
+                Assert.True(
+                    await beforeAckHook.WaitUntilReachedAsync(TimeSpan.FromSeconds(10)),
+                    "The consumer did not reach the post-commit, pre-ACK checkpoint");
+
+                await using var committedContext = new OrderSystemDbContext(dbOptions);
+                Assert.Single(await committedContext.Notifications
+                    .AsNoTracking()
+                    .Where(candidate => candidate.MessageId == messageId)
+                    .ToListAsync());
+            }
+            finally
+            {
+                await firstHost.StopAsync();
+            }
+        }
+
+        var returnedState = await WaitForQueueStateAsync(
+            queueName,
+            expectedMessageCount: 1,
+            expectedConsumerCount: 0,
+            TimeSpan.FromSeconds(5));
+        Assert.Equal(1u, returnedState.MessageCount);
+
+        var loggerProvider = new RecordingLoggerProvider();
+        using (var secondHost = CreateNotificationConsumerHost(
+            exchangeName,
+            routingKey,
+            queueName,
+            new PassThroughOperationHook(),
+            loggerProvider))
+        {
+            await secondHost.StartAsync();
+            try
+            {
+                Assert.True(
+                    await loggerProvider.WaitForMessageAsync(
+                        $"processed and acknowledged for MessageId {messageId:D}",
+                        TimeSpan.FromSeconds(10)),
+                    "The redelivered message was not acknowledged");
+            }
+            finally
+            {
+                await secondHost.StopAsync();
+            }
+        }
+
+        var drainedState = await WaitForQueueStateAsync(
+            queueName,
+            expectedMessageCount: 0,
+            expectedConsumerCount: 0,
+            TimeSpan.FromSeconds(5));
+        Assert.Equal(0u, drainedState.MessageCount);
+
+        await using var assertionContext = new OrderSystemDbContext(dbOptions);
+        Assert.Single(await assertionContext.Notifications
+            .AsNoTracking()
+            .Where(candidate => candidate.MessageId == messageId)
+            .ToListAsync());
+        Assert.Single(await assertionContext.ProcessedMessages
+            .AsNoTracking()
+            .Where(candidate =>
+                candidate.MessageId == messageId &&
+                candidate.ConsumerName == consumerName)
+            .ToListAsync());
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T03")]
+    [Trait("TestId", "MSG-DLQ-004")]
+    public async Task DeadLetterIntake_CommitSucceedsButAckIsLost_RedeliveryKeepsCorrelatedEvidence()
+    {
+        const string consumerName = "OrderCreatedNotificationConsumer";
+        const string deadLetterExchange = "oims.notification.dead-letter";
+        const string deadLetterRoutingKey = "order-created.v1";
+        const string deadLetterQueue = "oims.notification.order-created.v1.dlq";
+        const string beforeAckCheckpoint = "messaging.order-created-dlq.after-commit-before-ack";
+        const string afterAckCheckpoint = "messaging.order-created-dlq.after-ack";
+        var messageId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid();
+        var sourceExchange = $"oims.events.test.{Guid.NewGuid():N}";
+        var sourceRoutingKey = $"order.created.v1.test.{Guid.NewGuid():N}";
+        var sourceQueue = $"oims.notification.source.test.{Guid.NewGuid():N}";
+        byte[] body = [];
+        var bodySha256 = FailedMessageBodyFingerprint.Compute(body);
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+        }
+
+        await DeadLetterMalformedMessageAsync(
+            messageId,
+            correlationId,
+            body,
+            sourceExchange,
+            sourceRoutingKey,
+            sourceQueue,
+            deadLetterExchange,
+            deadLetterRoutingKey,
+            deadLetterQueue);
+
+        var beforeAckHook = new BlockingCheckpointHook(beforeAckCheckpoint);
+        using (var firstHost = CreateNotificationConsumerHost(
+            sourceExchange,
+            sourceRoutingKey,
+            sourceQueue,
+            beforeAckHook))
+        {
+            await firstHost.StartAsync();
+            try
+            {
+                Assert.True(
+                    await beforeAckHook.WaitUntilReachedAsync(TimeSpan.FromSeconds(10)),
+                    "The DLQ intake did not commit before its acknowledgement checkpoint");
+
+                await using var committedContext = new OrderSystemDbContext(dbOptions);
+                var firstEvidence = await committedContext.FailedMessages
+                    .AsNoTracking()
+                    .Where(candidate =>
+                        candidate.MessageId == messageId &&
+                        candidate.BodySha256 == bodySha256)
+                    .ToListAsync();
+
+                Assert.Single(firstEvidence);
+            }
+            finally
+            {
+                await firstHost.StopAsync();
+            }
+        }
+
+        var returnedState = await WaitForQueueStateAsync(
+            deadLetterQueue,
+            expectedMessageCount: 1,
+            expectedConsumerCount: 0,
+            TimeSpan.FromSeconds(5));
+        Assert.Equal(1u, returnedState.MessageCount);
+
+        var afterAckHook = new SignalingCheckpointHook(afterAckCheckpoint);
+        using (var secondHost = CreateNotificationConsumerHost(
+            sourceExchange,
+            sourceRoutingKey,
+            sourceQueue,
+            afterAckHook))
+        {
+            await secondHost.StartAsync();
+            try
+            {
+                Assert.True(
+                    await afterAckHook.WaitUntilReachedAsync(TimeSpan.FromSeconds(10)),
+                    "The redelivered DLQ message was not acknowledged");
+            }
+            finally
+            {
+                await secondHost.StopAsync();
+            }
+        }
+
+        var drainedState = await WaitForQueueStateAsync(
+            deadLetterQueue,
+            expectedMessageCount: 0,
+            expectedConsumerCount: 0,
+            TimeSpan.FromSeconds(5));
+        Assert.Equal(0u, drainedState.MessageCount);
+
+        await using var assertionContext = new OrderSystemDbContext(dbOptions);
+        var evidence = await assertionContext.FailedMessages
+            .AsNoTracking()
+            .Where(candidate =>
+                candidate.MessageId == messageId &&
+                candidate.BodySha256 == bodySha256)
+            .OrderBy(candidate => candidate.CapturedAt)
+            .ThenBy(candidate => candidate.Id)
+            .ToListAsync();
+
+        Assert.Equal(2, evidence.Count);
+        Assert.Equal(2, evidence.Select(candidate => candidate.Id).Distinct().Count());
+        Assert.All(evidence, failedMessage =>
+        {
+            Assert.Equal(consumerName, failedMessage.ConsumerName);
+            Assert.Equal(correlationId, failedMessage.CorrelationId);
+            Assert.Empty(failedMessage.Body);
+            Assert.Equal(FailedMessageFailureKind.Malformed, failedMessage.FailureKind);
+            Assert.Equal(1, failedMessage.AttemptCount);
+            Assert.Equal(FailedMessageStatus.Pending, failedMessage.Status);
+            Assert.Equal(sourceExchange, failedMessage.OriginalExchange);
+            Assert.Equal(sourceRoutingKey, failedMessage.OriginalRoutingKey);
+        });
+    }
+
     [Fact]
     [Trait("Requirement", "S9-T05")]
     [Trait("Requirement", "S9-T06")]
@@ -357,6 +744,93 @@ public sealed class OrderCreatedNotificationWorkerTests(
             payload);
     }
 
+    private async Task DeadLetterMalformedMessageAsync(
+        Guid messageId,
+        Guid correlationId,
+        ReadOnlyMemory<byte> body,
+        string sourceExchange,
+        string sourceRoutingKey,
+        string sourceQueue,
+        string deadLetterExchange,
+        string deadLetterRoutingKey,
+        string deadLetterQueue)
+    {
+        var connectionFactory = new ConnectionFactory
+        {
+            HostName = rabbitMq.Host,
+            Port = rabbitMq.Port,
+            VirtualHost = "/",
+            UserName = rabbitMq.Username,
+            Password = rabbitMq.Password
+        };
+
+        await using var connection = await connectionFactory.CreateConnectionAsync();
+        await using var channel = await connection.CreateChannelAsync();
+
+        await channel.ExchangeDeclareAsync(
+            deadLetterExchange,
+            ExchangeType.Direct,
+            durable: true,
+            autoDelete: false);
+        await channel.QueueDeclareAsync(
+            deadLetterQueue,
+            durable: true,
+            exclusive: false,
+            autoDelete: false,
+            arguments: new Dictionary<string, object?>
+            {
+                ["x-queue-type"] = "quorum"
+            });
+        await channel.QueueBindAsync(
+            deadLetterQueue,
+            deadLetterExchange,
+            deadLetterRoutingKey);
+        await channel.QueuePurgeAsync(deadLetterQueue);
+
+        await channel.ExchangeDeclareAsync(
+            sourceExchange,
+            ExchangeType.Topic,
+            durable: true,
+            autoDelete: false);
+        await channel.QueueDeclareAsync(
+            sourceQueue,
+            durable: true,
+            exclusive: false,
+            autoDelete: false,
+            arguments: new Dictionary<string, object?>
+            {
+                ["x-dead-letter-exchange"] = deadLetterExchange,
+                ["x-dead-letter-routing-key"] = deadLetterRoutingKey
+            });
+        await channel.QueueBindAsync(sourceQueue, sourceExchange, sourceRoutingKey);
+
+        var properties = new BasicProperties
+        {
+            ContentType = "application/json",
+            Type = "OrderCreated",
+            Persistent = true,
+            MessageId = messageId.ToString("D"),
+            CorrelationId = correlationId.ToString("D")
+        };
+        await channel.BasicPublishAsync(
+            sourceExchange,
+            sourceRoutingKey,
+            mandatory: true,
+            properties,
+            body);
+
+        var delivery = await channel.BasicGetAsync(sourceQueue, autoAck: false)
+            ?? throw new InvalidOperationException("The source delivery was not observed");
+        await channel.BasicRejectAsync(delivery.DeliveryTag, requeue: false);
+
+        var deadLetterState = await WaitForQueueStateAsync(
+            deadLetterQueue,
+            expectedMessageCount: 1,
+            expectedConsumerCount: 0,
+            TimeSpan.FromSeconds(5));
+        Assert.Equal(1u, deadLetterState.MessageCount);
+    }
+
     private Process StartWorker(
         string exchangeName,
         string routingKey,
@@ -402,6 +876,52 @@ public sealed class OrderCreatedNotificationWorkerTests(
         return process;
     }
 
+    private IHost CreateNotificationConsumerHost(
+        string exchangeName,
+        string routingKey,
+        string queueName,
+        IOperationHook operationHook,
+        ILoggerProvider? loggerProvider = null)
+    {
+        var settings = new Dictionary<string, string?>
+        {
+            ["Database:ConnectionString"] = postgres.ConnectionString,
+            ["RabbitMq:Host"] = rabbitMq.Host,
+            ["RabbitMq:Port"] = rabbitMq.Port.ToString(CultureInfo.InvariantCulture),
+            ["RabbitMq:VirtualHost"] = "/",
+            ["RabbitMq:Username"] = rabbitMq.Username,
+            ["RabbitMq:Password"] = rabbitMq.Password,
+            ["RabbitMq:ExchangeName"] = exchangeName,
+            ["RabbitMq:OrderCreatedRoutingKey"] = routingKey,
+            ["RabbitMq:OrderCreatedQueueName"] = queueName
+        };
+
+        return new HostBuilder()
+            .ConfigureAppConfiguration(configuration =>
+            {
+                configuration.Sources.Clear();
+                configuration.AddInMemoryCollection(settings);
+            })
+            .ConfigureServices((context, services) =>
+            {
+                services.AddLogging(builder =>
+                {
+                    if (loggerProvider is not null)
+                    {
+                        builder.AddProvider(loggerProvider);
+                    }
+                });
+                services
+                    .AddOrderSystemPersistence(context.Configuration)
+                    .AddOrderSystemCommonInfrastructure()
+                    .AddOrderSystemMessagingInfrastructure(context.Configuration)
+                    .AddOrderSystemNotificationConsumer();
+                services.RemoveAll<IOperationHook>();
+                services.AddSingleton(operationHook);
+            })
+            .Build();
+    }
+
     private static async Task<Notification?> WaitForNotificationAsync(
         DbContextOptions<OrderSystemDbContext> options,
         Guid messageId,
@@ -437,6 +957,128 @@ public sealed class OrderCreatedNotificationWorkerTests(
         }
 
         return null;
+    }
+
+    private static async Task<ProcessedMessage?>
+WaitForProcessedMessageAsync(
+    DbContextOptions<OrderSystemDbContext> options,
+    Guid messageId,
+    string consumerName,
+    Process process,
+    StringBuilder output,
+    TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow.Add(timeout);
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (process.HasExited)
+            {
+                throw new InvalidOperationException(
+                    $"Worker exited before persisting the ProcessedMessage" +
+                    $"{Environment.NewLine}{output}");
+            }
+
+            await using var assertionContext =
+                new OrderSystemDbContext(options);
+            var processedMessage = await assertionContext.ProcessedMessages
+                .AsNoTracking()
+                .SingleOrDefaultAsync(candidate =>
+                    candidate.MessageId == messageId &&
+                    candidate.ConsumerName == consumerName);
+
+            if (processedMessage is not null)
+            {
+                return processedMessage;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+        }
+
+        return null;
+    }
+
+    private static async Task<int> WaitForOutputCountAsync(
+        Process process,
+        StringBuilder output,
+        string expectedToken,
+        int expectedCount,
+        TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow.Add(timeout);
+        var matchingCount = 0;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (process.HasExited)
+            {
+                throw new InvalidOperationException(
+                    $"Worker exited before writing the expected trace logs" +
+                    $"{Environment.NewLine}{output}");
+            }
+
+            lock (output)
+            {
+                matchingCount = output
+                    .ToString()
+                    .Split(
+                        Environment.NewLine,
+                        StringSplitOptions.RemoveEmptyEntries)
+                    .Count(line =>
+                        line.Contains(
+                            expectedToken,
+                            StringComparison.Ordinal));
+            }
+
+            if (matchingCount >= expectedCount)
+            {
+                return matchingCount;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+        }
+
+        return matchingCount;
+    }
+
+    private async Task<QueueDeclareOk> WaitForQueueStateAsync(
+        string queueName,
+        uint expectedMessageCount,
+        uint expectedConsumerCount,
+        TimeSpan timeout)
+    {
+        var connectionFactory = new ConnectionFactory
+        {
+            HostName = rabbitMq.Host,
+            Port = rabbitMq.Port,
+            VirtualHost = "/",
+            UserName = rabbitMq.Username,
+            Password = rabbitMq.Password
+        };
+
+        await using var connection =
+            await connectionFactory.CreateConnectionAsync();
+        await using var channel =
+            await connection.CreateChannelAsync();
+        var deadline = DateTimeOffset.UtcNow.Add(timeout);
+        QueueDeclareOk? queueState = null;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            queueState =
+                await channel.QueueDeclarePassiveAsync(queueName);
+
+            if (queueState.MessageCount == expectedMessageCount &&
+                queueState.ConsumerCount == expectedConsumerCount)
+            {
+                return queueState;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+        }
+
+        return queueState ?? throw new InvalidOperationException(
+            "RabbitMQ queue state was not observed");
     }
 
     private static async Task<string?> WaitForOutputLineAsync(
@@ -531,6 +1173,120 @@ public sealed class OrderCreatedNotificationWorkerTests(
         lock (output)
         {
             output.AppendLine(line);
+        }
+    }
+
+    private sealed class BlockingCheckpointHook(string targetCheckpoint) : IOperationHook
+    {
+        private readonly TaskCompletionSource reached =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task ReachAsync(string checkpoint, CancellationToken cancellationToken)
+        {
+            if (!string.Equals(checkpoint, targetCheckpoint, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            reached.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+
+        public async Task<bool> WaitUntilReachedAsync(TimeSpan timeout)
+        {
+            try
+            {
+                await reached.Task.WaitAsync(timeout);
+                return true;
+            }
+            catch (TimeoutException)
+            {
+                return false;
+            }
+        }
+    }
+
+    private sealed class PassThroughOperationHook : IOperationHook
+    {
+        public Task ReachAsync(string checkpoint, CancellationToken cancellationToken)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(checkpoint);
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class SignalingCheckpointHook(string targetCheckpoint) : IOperationHook
+    {
+        private readonly TaskCompletionSource reached =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task ReachAsync(string checkpoint, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.Equals(checkpoint, targetCheckpoint, StringComparison.Ordinal))
+            {
+                reached.TrySetResult();
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public async Task<bool> WaitUntilReachedAsync(TimeSpan timeout)
+        {
+            try
+            {
+                await reached.Task.WaitAsync(timeout);
+                return true;
+            }
+            catch (TimeoutException)
+            {
+                return false;
+            }
+        }
+    }
+
+    private sealed class RecordingLoggerProvider : ILoggerProvider
+    {
+        private readonly ConcurrentQueue<string> messages = [];
+
+        public ILogger CreateLogger(string categoryName) => new RecordingLogger(messages);
+
+        public void Dispose()
+        {
+        }
+
+        public async Task<bool> WaitForMessageAsync(string expectedToken, TimeSpan timeout)
+        {
+            var deadline = DateTimeOffset.UtcNow.Add(timeout);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                if (messages.Any(message =>
+                    message.Contains(expectedToken, StringComparison.Ordinal)))
+                {
+                    return true;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(100));
+            }
+
+            return false;
+        }
+
+        private sealed class RecordingLogger(ConcurrentQueue<string> messages) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state)
+                where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter) =>
+                messages.Enqueue(formatter(state, exception));
         }
     }
 }
