@@ -62,7 +62,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var processor = scope.ServiceProvider.GetRequiredService<OrderCreatedNotificationProcessor>();
 
-                await processor.ProcessAsync(message, stoppingToken);
+                await processor.ProcessAsync(message, _rabbitMqOptions.OrderCreatedConsumerName, stoppingToken);
                 await operationHook.ReachAsync(AfterCommitBeforeAcknowledgementCheckpoint, stoppingToken);
                 await channel.BasicAckAsync(delivery.DeliveryTag, false, stoppingToken);
 
