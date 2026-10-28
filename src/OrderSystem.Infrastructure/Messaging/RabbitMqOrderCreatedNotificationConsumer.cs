@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Messaging.Contracts;
 using OrderSystem.Application.Notifications;
 using OrderSystem.Infrastructure.Configuration;
@@ -14,9 +15,11 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
     IRabbitMqTopologyInitializer topologyInitializer,
     IRabbitMqChannelFactory channelFactory,
     IServiceScopeFactory scopeFactory,
+    IOperationHook operationHook,
     IOptions<RabbitMqOptions> options,
     ILogger<RabbitMqOrderCreatedNotificationConsumer> logger) : BackgroundService
 {
+    internal const string AfterCommitBeforeAcknowledgementCheckpoint = "messaging.order-created.after-commit-before-ack";
     private const string ContentType = "application/json";
     private const string MessageType = "OrderCreated";
 
@@ -60,6 +63,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
                 var processor = scope.ServiceProvider.GetRequiredService<OrderCreatedNotificationProcessor>();
 
                 await processor.ProcessAsync(message, stoppingToken);
+                await operationHook.ReachAsync(AfterCommitBeforeAcknowledgementCheckpoint, stoppingToken);
                 await channel.BasicAckAsync(delivery.DeliveryTag, false, stoppingToken);
 
                 MessageProcessedAndAcknowledged(
@@ -113,7 +117,8 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
             false,
             _rabbitMqOptions.OrderCreatedConsumerName,
             consumer,
-            stoppingToken);
+            stoppingToken
+        );
 
         try
         {
