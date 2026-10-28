@@ -6,12 +6,64 @@ using OrderSystem.Infrastructure.Messaging;
 using OrderSystem.IntegrationTests.Infrastructure;
 using RabbitMQ.Client;
 using System.Globalization;
+using System.Text.Json;
 
 namespace OrderSystem.IntegrationTests.Messaging;
 
 [Collection(RabbitMqCollectionDefinition.Name)]
 public sealed class MessagingTopologyTests(RabbitMqFixture rabbitMq)
 {
+    [Fact]
+    [Trait("Requirement", "S10-T06")]
+    public async Task Broker_RetryPolicyUsesApprovedDelayedAtLeastOnceDeadLettering()
+    {
+        var policiesJson = await rabbitMq.ListPoliciesAsync();
+        using var document = JsonDocument.Parse(policiesJson);
+        var retryPolicy = Assert.Single(
+            document.RootElement.EnumerateArray(),
+            policy => policy.GetProperty("pattern").GetString() == "^oims[.]notification[.]order-created[.]v1[.]retry$");
+        var definitionJson = retryPolicy.GetProperty("definition").GetString();
+
+        Assert.NotNull(definitionJson);
+        using var definitionDocument = JsonDocument.Parse(definitionJson);
+        var definition = definitionDocument.RootElement;
+
+        Assert.Equal(30_000, definition.GetProperty("message-ttl").GetInt32());
+        Assert.Equal("oims.notification.ingress", definition.GetProperty("dead-letter-exchange").GetString());
+        Assert.Equal("order-created.v1", definition.GetProperty("dead-letter-routing-key").GetString());
+        Assert.Equal("at-least-once", definition.GetProperty("dead-letter-strategy").GetString());
+        Assert.Equal("reject-publish", definition.GetProperty("overflow").GetString());
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T06")]
+    public async Task Broker_RequiredQueuesUseFiniteRejectPublishCapacityPolicies()
+    {
+        var requiredQueuePatterns = new[]
+        {
+            "^oims[.]notification[.]order-created[.]v1$",
+            "^oims[.]notification[.]order-created[.]v1[.]retry$",
+            "^oims[.]notification[.]order-created[.]v1[.]dlq$"
+        };
+        var policiesJson = await rabbitMq.ListPoliciesAsync();
+        using var document = JsonDocument.Parse(policiesJson);
+        var policies = document.RootElement.EnumerateArray().ToArray();
+
+        foreach (var requiredPattern in requiredQueuePatterns)
+        {
+            var policy = Assert.Single(
+                policies,
+                candidate => candidate.GetProperty("pattern").GetString() == requiredPattern);
+            var definitionJson = policy.GetProperty("definition").GetString();
+
+            Assert.NotNull(definitionJson);
+            using var definitionDocument = JsonDocument.Parse(definitionJson);
+            var definition = definitionDocument.RootElement;
+            Assert.True(definition.GetProperty("max-length-bytes").GetInt64() > 0);
+            Assert.Equal("reject-publish", definition.GetProperty("overflow").GetString());
+        }
+    }
+
     [Fact]
     [Trait("Requirement", "S10-T06")]
     public async Task InitializeAsync_DeclaresConsumerSpecificExchanges_Idempotently()

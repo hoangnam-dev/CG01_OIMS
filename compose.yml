@@ -42,13 +42,41 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${OIMS_RABBITMQ_USER:-oims}
       RABBITMQ_DEFAULT_PASS: ${OIMS_RABBITMQ_PASSWORD:?Set OIMS_RABBITMQ_PASSWORD in .env}
+      OIMS_RABBITMQ_MAIN_QUEUE_MAX_LENGTH_BYTES: ${OIMS_RABBITMQ_MAIN_QUEUE_MAX_LENGTH_BYTES:-1048576}
+      OIMS_RABBITMQ_RETRY_QUEUE_MAX_LENGTH_BYTES: ${OIMS_RABBITMQ_RETRY_QUEUE_MAX_LENGTH_BYTES:-1048576}
+      OIMS_RABBITMQ_DEAD_LETTER_QUEUE_MAX_LENGTH_BYTES: ${OIMS_RABBITMQ_DEAD_LETTER_QUEUE_MAX_LENGTH_BYTES:-1048576}
     ports:
       - "${OIMS_INFRA_BIND_ADDRESS:-127.0.0.1}:${OIMS_RABBITMQ_PORT:-5672}:5672"
       - "${OIMS_INFRA_BIND_ADDRESS:-127.0.0.1}:${OIMS_RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      - ./deploy/rabbitmq/definitions.template.json:/etc/rabbitmq/definitions.template.json:ro
+    post_start:
+      - command:
+          - sh
+          - -ec
+          - |
+            for value in "$${OIMS_RABBITMQ_MAIN_QUEUE_MAX_LENGTH_BYTES}" "$${OIMS_RABBITMQ_RETRY_QUEUE_MAX_LENGTH_BYTES}" "$${OIMS_RABBITMQ_DEAD_LETTER_QUEUE_MAX_LENGTH_BYTES}"; do
+              case "$${value}" in
+                ''|*[!0-9]*) echo "RabbitMQ queue capacity values must be positive integers" >&2; exit 1 ;;
+              esac
+              [ "$${value}" -gt 0 ] || { echo "RabbitMQ queue capacity values must be positive integers" >&2; exit 1; }
+            done
+            remaining_startup_probes=120
+            until rabbitmqctl await_startup >/dev/null 2>&1; do
+              remaining_startup_probes=$$((remaining_startup_probes - 1))
+              [ "$${remaining_startup_probes}" -gt 0 ] || { echo "RabbitMQ did not start before the policy import deadline" >&2; exit 1; }
+              sleep 1
+            done
+            sed \
+              -e "s/__OIMS_MAIN_QUEUE_MAX_LENGTH_BYTES__/$${OIMS_RABBITMQ_MAIN_QUEUE_MAX_LENGTH_BYTES}/g" \
+              -e "s/__OIMS_RETRY_QUEUE_MAX_LENGTH_BYTES__/$${OIMS_RABBITMQ_RETRY_QUEUE_MAX_LENGTH_BYTES}/g" \
+              -e "s/__OIMS_DEAD_LETTER_QUEUE_MAX_LENGTH_BYTES__/$${OIMS_RABBITMQ_DEAD_LETTER_QUEUE_MAX_LENGTH_BYTES}/g" \
+              /etc/rabbitmq/definitions.template.json > /tmp/oims-rabbitmq-definitions.json
+            rabbitmqctl import_definitions /tmp/oims-rabbitmq-definitions.json
+        user: rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping && rabbitmqctl list_policies --formatter=json | grep -q oims-notification-order-created-retry"]
       interval: 10s
       timeout: 5s
       retries: 10
