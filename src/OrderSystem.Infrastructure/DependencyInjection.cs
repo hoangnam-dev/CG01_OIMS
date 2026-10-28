@@ -220,6 +220,12 @@ public static class DependencyInjection
             .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedRoutingKey), "RabbitMq:OrderCreatedRoutingKey is required.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedQueueName), "RabbitMq:OrderCreatedQueueName is required.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedConsumerName), "RabbitMq:OrderCreatedConsumerName is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.ConsumerIngressExchangeName), "RabbitMq:ConsumerIngressExchangeName is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.RetryExchangeName), "RabbitMq:RetryExchangeName is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.DeadLetterExchangeName), "RabbitMq:DeadLetterExchangeName is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedConsumerRoutingKey), "RabbitMq:OrderCreatedConsumerRoutingKey is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedRetryQueueName), "RabbitMq:OrderCreatedRetryQueueName is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedDeadLetterQueueName), "RabbitMq:OrderCreatedDeadLetterQueueName is required.")
             .Validate(options => options.PublisherConfirmTimeout > TimeSpan.Zero, "RabbitMq:PublisherConfirmTimeout must be positive.")
             .ValidateOnStart();
         services.AddSingleton<IConnectionFactory>(provider =>

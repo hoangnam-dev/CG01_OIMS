@@ -79,6 +79,12 @@ public sealed class MessagingDependencyInjectionTests
         Assert.Equal("order.created.v1", options.OrderCreatedRoutingKey);
         Assert.Equal("oims.notification.order-created.v1", options.OrderCreatedQueueName);
         Assert.Equal("OrderCreatedNotificationConsumer", options.OrderCreatedConsumerName);
+        Assert.Equal("oims.notification.ingress", options.ConsumerIngressExchangeName);
+        Assert.Equal("oims.notification.retry", options.RetryExchangeName);
+        Assert.Equal("oims.notification.dead-letter", options.DeadLetterExchangeName);
+        Assert.Equal("order-created.v1", options.OrderCreatedConsumerRoutingKey);
+        Assert.Equal("oims.notification.order-created.v1.retry", options.OrderCreatedRetryQueueName);
+        Assert.Equal("oims.notification.order-created.v1.dlq", options.OrderCreatedDeadLetterQueueName);
 
         await host.StopAsync();
     }
@@ -89,6 +95,12 @@ public sealed class MessagingDependencyInjectionTests
     [InlineData("RabbitMq:OrderCreatedRoutingKey", " ", "OrderCreatedRoutingKey")]
     [InlineData("RabbitMq:OrderCreatedQueueName", " ", "OrderCreatedQueueName")]
     [InlineData("RabbitMq:OrderCreatedConsumerName", " ", "OrderCreatedConsumerName")]
+    [InlineData("RabbitMq:ConsumerIngressExchangeName", " ", "ConsumerIngressExchangeName")]
+    [InlineData("RabbitMq:RetryExchangeName", " ", "RetryExchangeName")]
+    [InlineData("RabbitMq:DeadLetterExchangeName", " ", "DeadLetterExchangeName")]
+    [InlineData("RabbitMq:OrderCreatedConsumerRoutingKey", " ", "OrderCreatedConsumerRoutingKey")]
+    [InlineData("RabbitMq:OrderCreatedRetryQueueName", " ", "OrderCreatedRetryQueueName")]
+    [InlineData("RabbitMq:OrderCreatedDeadLetterQueueName", " ", "OrderCreatedDeadLetterQueueName")]
     [Trait("Requirement", "S9-T02")]
     public async Task MessagingCapability_WithInvalidTopology_FailsStartup(
         string key,
