@@ -30,4 +30,13 @@
     <ProjectReference Include="..\..\src\OrderSystem.Domain\OrderSystem.Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\deploy\rabbitmq\rabbitmq.conf"
+        Link="rabbitmq\rabbitmq.conf"
+        CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\deploy\rabbitmq\definitions.template.json"
+          Link="rabbitmq\definitions.template.json"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

@@ -58,7 +58,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
             OrderCreatedV1? message = null;
             try
             {
-                message = ReadMessage(delivery);
+                message = ReadMessage(delivery, _rabbitMqOptions);
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var processor = scope.ServiceProvider.GetRequiredService<OrderCreatedNotificationProcessor>();
 
@@ -129,8 +129,14 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
         }
     }
 
-    private static OrderCreatedV1 ReadMessage(BasicDeliverEventArgs delivery)
+    internal static OrderCreatedV1 ReadMessage(BasicDeliverEventArgs delivery, RabbitMqOptions options)
     {
+        OrderCreatedAttemptMetadataReader.Read(
+            delivery.Exchange,
+            delivery.RoutingKey,
+            delivery.BasicProperties.Headers,
+            options
+        );
         if (!string.Equals(delivery.BasicProperties.ContentType, ContentType, StringComparison.Ordinal) ||
             !string.Equals(delivery.BasicProperties.Type, MessageType, StringComparison.Ordinal) ||
             delivery.BasicProperties.Persistent != true ||

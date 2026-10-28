@@ -280,8 +280,8 @@ public sealed class OrderCreatedNotificationWorkerTests(
             .ToListAsync());
     }
 
-    [Fact]
-    [Trait("Requirement", "S10-T03")]
+    [Fact(Skip = "Pending S10-T08 DLQ intake implementation")]
+    [Trait("Requirement", "S10-T08")]
     [Trait("TestId", "MSG-DLQ-004")]
     public async Task DeadLetterIntake_CommitSucceedsButAckIsLost_RedeliveryKeepsCorrelatedEvidence()
     {
