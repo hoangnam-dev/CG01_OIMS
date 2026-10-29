@@ -11,6 +11,8 @@ public sealed class FailedMessage
     public const int MaximumExchangeLength = 255;
     public const int MaximumRoutingKeyLength = 255;
     public const int MaximumFailureCodeLength = 100;
+    public const int MaximumOperationalReasonLength = 500;
+    public static readonly TimeSpan MaximumRedriveAge = TimeSpan.FromDays(7);
 
     private FailedMessage()
     {
@@ -135,6 +137,38 @@ public sealed class FailedMessage
     public string? CloseReason { get; private set; }
 
     public DateTimeOffset? TerminalAt { get; private set; }
+
+    public bool TryRequestRedrive(Guid adminUserId, string reason, DateTimeOffset requestedAt)
+    {
+        DomainGuard.RequiredGuid(adminUserId);
+        var normalizedReason = RequiredBoundedText(
+            reason,
+            nameof(reason),
+            MaximumOperationalReasonLength);
+
+        if (Status == FailedMessageStatus.RedriveRequested)
+        {
+            return true;
+        }
+
+        if (Status != FailedMessageStatus.Pending ||
+            FailureKind != FailedMessageFailureKind.RetryExhausted ||
+            MessageId is null ||
+            EventVersion != 1 ||
+            OccurredAt is not { } occurredAt ||
+            occurredAt > requestedAt ||
+            requestedAt - occurredAt > MaximumRedriveAge
+        )
+        {
+            return false;
+        }
+
+        Status = FailedMessageStatus.RedriveRequested;
+        RedriveRequestedAt = requestedAt;
+        RedriveRequestedByUserId = adminUserId;
+        RedriveReason = normalizedReason;
+        return true;
+    }
 
     private static Guid? OptionalGuid(Guid? value, string paramName) =>
         value is null ? null : DomainGuard.RequiredGuid(value.Value, paramName);

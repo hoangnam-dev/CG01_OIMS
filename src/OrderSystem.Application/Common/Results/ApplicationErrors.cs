@@ -167,4 +167,17 @@ public static class ApplicationErrors
             "REFUND_NOT_RETRYABLE",
             "The Payment refund is not eligible for manual retry.");
     }
+
+    public static class MessageFailures
+    {
+        public static readonly ApplicationErrorDefinition NotFound = new(
+            ApplicationErrorKind.NotFound,
+            "MESSAGE_FAILURE_NOT_FOUND",
+            "The Message Failure was not found.");
+
+        public static readonly ApplicationErrorDefinition NotRedrivable = new(
+            ApplicationErrorKind.Conflict,
+            "MESSAGE_FAILURE_NOT_REDRIVABLE",
+            "The Message Failure is not eligible for redrive.");
+    }
 }

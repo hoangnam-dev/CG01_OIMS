@@ -28,7 +28,7 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
     [Trait("TestId", "MSG-REDRIVE-001")]
     public async Task Redrive_EligibleRetryExhaustedFailure_PersistsOneRequest()
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = PostgreSqlUtcNow();
         await using var factory = CreateFactory(now);
         var seeded = await SeedFailureAsync(
             factory,
@@ -93,7 +93,7 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
     [Trait("TestId", "MSG-REDRIVE-002")]
     public async Task Redrive_PermanentFailure_ReturnsConflictWithoutStateChange()
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = PostgreSqlUtcNow();
         await using var factory = CreateFactory(now);
         var seeded = await SeedFailureAsync(
             factory,
@@ -227,6 +227,12 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
                     .GetProperty("data")
                     .GetProperty("accessToken")
                     .GetString());
+    }
+
+    private static DateTimeOffset PostgreSqlUtcNow()
+    {
+        var now = DateTimeOffset.UtcNow;
+        return now.AddTicks(-(now.Ticks % TimeSpan.TicksPerMicrosecond));
     }
 
     private sealed record FixedClock(DateTimeOffset UtcNow) : IClock;
