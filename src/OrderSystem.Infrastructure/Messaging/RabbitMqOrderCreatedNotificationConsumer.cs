@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -6,6 +7,7 @@ using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Messaging.Contracts;
 using OrderSystem.Application.Notifications;
 using OrderSystem.Infrastructure.Configuration;
+using OrderSystem.Infrastructure.Persistence;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 
@@ -20,6 +22,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
     ILogger<RabbitMqOrderCreatedNotificationConsumer> logger) : BackgroundService
 {
     internal const string AfterCommitBeforeAcknowledgementCheckpoint = "messaging.order-created.after-commit-before-ack";
+    internal const string PostgreSqlOutageDetectedCheckpoint = "messaging.order-created.postgresql-outage-detected";
     private const string ContentType = "application/json";
     private const string MessageType = "OrderCreated";
 
@@ -44,6 +47,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
     {
         await topologyInitializer.InitializeAsync(stoppingToken);
         await using var channel = await channelFactory.CreateChannelAsync(stoppingToken);
+        await using var transferChannel = await channelFactory.CreatePublisherChannelAsync(stoppingToken);
         await channel.BasicQosAsync(0, 1, false, stoppingToken);
 
         var processingStopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -58,11 +62,56 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
             OrderCreatedV1? message = null;
             try
             {
-                message = ReadMessage(delivery, _rabbitMqOptions);
-                await using var scope = scopeFactory.CreateAsyncScope();
-                var processor = scope.ServiceProvider.GetRequiredService<OrderCreatedNotificationProcessor>();
+                message = ReadMessage(delivery, _rabbitMqOptions, out var attempt);
+                var processingResult = await ProcessAsync(message, stoppingToken);
+                while (processingResult == OrderCreatedNotificationProcessingResult.TransientFailure &&
+                       !await CanConnectToPostgreSqlAsync(stoppingToken))
+                {
+                    await operationHook.ReachAsync(PostgreSqlOutageDetectedCheckpoint, stoppingToken);
+                    await WaitForPostgreSqlRecoveryAsync(stoppingToken);
+                    processingResult = await ProcessAsync(message, stoppingToken);
+                }
+                if (processingResult is OrderCreatedNotificationProcessingResult.FutureOccurredAt
+                    or OrderCreatedNotificationProcessingResult.Expired
+                    or OrderCreatedNotificationProcessingResult.PermanentFailure)
+                {
+                    var transferred = await TryTransferToDeadLetterAndAcknowledgeAsync(
+                        transferChannel,
+                        channel,
+                        delivery,
+                        stoppingToken);
+                    if (!transferred)
+                    {
+                        processingStopped.TrySetResult();
+                    }
 
-                await processor.ProcessAsync(message, _rabbitMqOptions.OrderCreatedConsumerName, stoppingToken);
+                    return;
+                }
+
+                if (processingResult == OrderCreatedNotificationProcessingResult.TransientFailure)
+                {
+                    var transferred = attempt < 3
+                        ? await TryTransferToRetryAndAcknowledgeAsync(
+                            transferChannel,
+                            channel,
+                            delivery,
+                            attempt + 1,
+                            stoppingToken
+                        )
+                        : await TryTransferToDeadLetterAndAcknowledgeAsync(
+                            transferChannel,
+                            channel,
+                            delivery,
+                            stoppingToken
+                        );
+                    if (!transferred)
+                    {
+                        processingStopped.TrySetResult();
+                    }
+
+                    return;
+                }
+
                 await operationHook.ReachAsync(AfterCommitBeforeAcknowledgementCheckpoint, stoppingToken);
                 await channel.BasicAckAsync(delivery.DeliveryTag, false, stoppingToken);
 
@@ -76,6 +125,28 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
                     message.EventVersion,
                     null
                 );
+            }
+            catch (OrderCreatedMessageContractException exception)
+            {
+                ContractValidationFailed(
+                    logger,
+                    delivery.BasicProperties.MessageId,
+                    delivery.BasicProperties.CorrelationId,
+                    _rabbitMqOptions.OrderCreatedConsumerName,
+                    delivery.Exchange,
+                    delivery.RoutingKey,
+                    _rabbitMqOptions.OrderCreatedQueueName,
+                    exception);
+
+                var transferred = await TryTransferToDeadLetterAndAcknowledgeAsync(
+                    transferChannel,
+                    channel,
+                    delivery,
+                    stoppingToken);
+                if (!transferred)
+                {
+                    processingStopped.TrySetResult();
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -129,9 +200,47 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
         }
     }
 
+    private async Task<OrderCreatedNotificationProcessingResult> ProcessAsync(
+        OrderCreatedV1 message,
+        CancellationToken cancellationToken)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var processor = scope.ServiceProvider.GetRequiredService<OrderCreatedNotificationProcessor>();
+
+        return await processor.ProcessAsync(
+            message,
+            _rabbitMqOptions.OrderCreatedConsumerName,
+            cancellationToken);
+    }
+
+    private async Task WaitForPostgreSqlRecoveryAsync(CancellationToken cancellationToken)
+    {
+        do
+        {
+            await Task.Delay(_rabbitMqOptions.PostgreSqlOutageProbeInterval, cancellationToken);
+        }
+        while (!await CanConnectToPostgreSqlAsync(cancellationToken));
+    }
+
+    private async Task<bool> CanConnectToPostgreSqlAsync(CancellationToken cancellationToken)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        return await dbContext.Database.CanConnectAsync(cancellationToken);
+    }
+
     internal static OrderCreatedV1 ReadMessage(BasicDeliverEventArgs delivery, RabbitMqOptions options)
     {
-        OrderCreatedAttemptMetadataReader.Read(
+        return ReadMessage(delivery, options, out _);
+    }
+
+    private static OrderCreatedV1 ReadMessage(
+        BasicDeliverEventArgs delivery,
+        RabbitMqOptions options,
+        out int attempt
+    )
+    {
+        attempt = OrderCreatedAttemptMetadataReader.Read(
             delivery.Exchange,
             delivery.RoutingKey,
             delivery.BasicProperties.Headers,
@@ -146,9 +255,99 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
             !string.Equals(delivery.BasicProperties.CorrelationId, message.CorrelationId.ToString("D"), StringComparison.Ordinal)
         )
         {
-            throw new InvalidDataException("OrderCreated message contract is invalid");
+            throw new OrderCreatedMessageContractException();
         }
 
         return message;
     }
+
+    private async Task<bool> TryTransferToRetryAndAcknowledgeAsync(
+        IChannel transferChannel,
+        IChannel consumerChannel,
+        BasicDeliverEventArgs delivery,
+        int nextAttempt,
+        CancellationToken stoppingToken
+    )
+    {
+        var properties = new BasicProperties(delivery.BasicProperties)
+        {
+            Headers = delivery.BasicProperties.Headers is null
+                ? new Dictionary<string, object?>()
+                : new Dictionary<string, object?>(delivery.BasicProperties.Headers)
+        };
+        properties.Headers[OrderCreatedAttemptMetadataReader.AttemptHeaderName] = nextAttempt;
+
+        return await TryTransferAndAcknowledgeAsync(
+            transferChannel,
+            consumerChannel,
+            delivery,
+            _rabbitMqOptions.RetryExchangeName,
+            properties,
+            stoppingToken
+        );
+    }
+
+    private async Task<bool> TryTransferToDeadLetterAndAcknowledgeAsync(
+        IChannel transferChannel,
+        IChannel consumerChannel,
+        BasicDeliverEventArgs delivery,
+        CancellationToken stoppingToken
+    )
+    {
+        return await TryTransferAndAcknowledgeAsync(
+            transferChannel,
+            consumerChannel,
+            delivery,
+            _rabbitMqOptions.DeadLetterExchangeName,
+            new BasicProperties(delivery.BasicProperties),
+            stoppingToken
+        );
+    }
+
+    private async Task<bool> TryTransferAndAcknowledgeAsync(
+        IChannel transferChannel,
+        IChannel consumerChannel,
+        BasicDeliverEventArgs delivery,
+        string targetExchange,
+        BasicProperties properties,
+        CancellationToken stoppingToken
+    )
+    {
+        try
+        {
+            using var transferTimeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            transferTimeout.CancelAfter(_rabbitMqOptions.PublisherConfirmTimeout);
+
+            await transferChannel.BasicPublishAsync(
+                targetExchange,
+                _rabbitMqOptions.OrderCreatedConsumerRoutingKey,
+                mandatory: true,
+                properties,
+                delivery.Body,
+                transferTimeout.Token);
+            await consumerChannel.BasicAckAsync(delivery.DeliveryTag, false, stoppingToken);
+
+            return true;
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception exception)
+        {
+            ContractValidationFailed(
+                logger,
+                delivery.BasicProperties.MessageId,
+                delivery.BasicProperties.CorrelationId,
+                _rabbitMqOptions.OrderCreatedConsumerName,
+                delivery.Exchange,
+                delivery.RoutingKey,
+                _rabbitMqOptions.OrderCreatedQueueName,
+                exception);
+
+            return false;
+        }
+    }
 }
+
+internal sealed class OrderCreatedMessageContractException() : Exception("OrderCreated message contract is invalid");

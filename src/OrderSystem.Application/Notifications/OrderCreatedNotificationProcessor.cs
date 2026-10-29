@@ -8,20 +8,31 @@ namespace OrderSystem.Application.Notifications;
 public sealed class OrderCreatedNotificationProcessor(
     IClock clock,
     IIdGenerator idGenerator,
-    IOrderCreatedNotificationStore store)
+    IOrderCreatedNotificationStore store
+)
 {
-    public Task ProcessAsync(OrderCreatedV1 message, string consumerName, CancellationToken cancellationToken)
+    public async Task<OrderCreatedNotificationProcessingResult> ProcessAsync(OrderCreatedV1 message, string consumerName, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(message);
         cancellationToken.ThrowIfCancellationRequested();
 
         var processedAt = clock.UtcNow;
+        if (message.OccurredAt > processedAt)
+        {
+            return OrderCreatedNotificationProcessingResult.FutureOccurredAt;
+        }
+
+        if (processedAt - message.OccurredAt > TimeSpan.FromDays(7))
+        {
+            return OrderCreatedNotificationProcessingResult.Expired;
+        }
+
         var notification = new Notification(
             idGenerator.NewId(),
             message.UserId,
             message.OrderId,
             message.MessageId,
-            clock.UtcNow
+            processedAt
         );
         var processedMessage = new ProcessedMessage(
             message.MessageId,
@@ -29,6 +40,19 @@ public sealed class OrderCreatedNotificationProcessor(
             processedAt
         );
 
-        return store.CreateAsync(notification, processedMessage, cancellationToken);
+        try
+        {
+            await store.CreateAsync(notification, processedMessage, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            return OrderCreatedNotificationProcessingResult.TransientFailure;
+        }
+        catch (OrderCreatedNotificationPermanentException)
+        {
+            return OrderCreatedNotificationProcessingResult.PermanentFailure;
+        }
+
+        return OrderCreatedNotificationProcessingResult.Completed;
     }
 }
