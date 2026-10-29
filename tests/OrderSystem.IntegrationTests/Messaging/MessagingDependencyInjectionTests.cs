@@ -85,6 +85,7 @@ public sealed class MessagingDependencyInjectionTests
         Assert.Equal("order-created.v1", options.OrderCreatedConsumerRoutingKey);
         Assert.Equal("oims.notification.order-created.v1.retry", options.OrderCreatedRetryQueueName);
         Assert.Equal("oims.notification.order-created.v1.dlq", options.OrderCreatedDeadLetterQueueName);
+        Assert.Equal(TimeSpan.FromSeconds(5), options.PostgreSqlOutageProbeInterval);
 
         await host.StopAsync();
     }
@@ -101,6 +102,7 @@ public sealed class MessagingDependencyInjectionTests
     [InlineData("RabbitMq:OrderCreatedConsumerRoutingKey", " ", "OrderCreatedConsumerRoutingKey")]
     [InlineData("RabbitMq:OrderCreatedRetryQueueName", " ", "OrderCreatedRetryQueueName")]
     [InlineData("RabbitMq:OrderCreatedDeadLetterQueueName", " ", "OrderCreatedDeadLetterQueueName")]
+    [InlineData("RabbitMq:PostgreSqlOutageProbeInterval", "00:00:00", "PostgreSqlOutageProbeInterval")]
     [Trait("Requirement", "S9-T02")]
     public async Task MessagingCapability_WithInvalidTopology_FailsStartup(
         string key,

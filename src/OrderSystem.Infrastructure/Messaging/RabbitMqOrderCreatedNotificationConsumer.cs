@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -6,6 +7,7 @@ using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Messaging.Contracts;
 using OrderSystem.Application.Notifications;
 using OrderSystem.Infrastructure.Configuration;
+using OrderSystem.Infrastructure.Persistence;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 
@@ -20,6 +22,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
     ILogger<RabbitMqOrderCreatedNotificationConsumer> logger) : BackgroundService
 {
     internal const string AfterCommitBeforeAcknowledgementCheckpoint = "messaging.order-created.after-commit-before-ack";
+    internal const string PostgreSqlOutageDetectedCheckpoint = "messaging.order-created.postgresql-outage-detected";
     private const string ContentType = "application/json";
     private const string MessageType = "OrderCreated";
 
@@ -60,13 +63,14 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
             try
             {
                 message = ReadMessage(delivery, _rabbitMqOptions, out var attempt);
-                await using var scope = scopeFactory.CreateAsyncScope();
-                var processor = scope.ServiceProvider.GetRequiredService<OrderCreatedNotificationProcessor>();
-
-                var processingResult = await processor.ProcessAsync(
-                    message,
-                    _rabbitMqOptions.OrderCreatedConsumerName,
-                    stoppingToken);
+                var processingResult = await ProcessAsync(message, stoppingToken);
+                while (processingResult == OrderCreatedNotificationProcessingResult.TransientFailure &&
+                       !await CanConnectToPostgreSqlAsync(stoppingToken))
+                {
+                    await operationHook.ReachAsync(PostgreSqlOutageDetectedCheckpoint, stoppingToken);
+                    await WaitForPostgreSqlRecoveryAsync(stoppingToken);
+                    processingResult = await ProcessAsync(message, stoppingToken);
+                }
                 if (processingResult is OrderCreatedNotificationProcessingResult.FutureOccurredAt
                     or OrderCreatedNotificationProcessingResult.Expired
                     or OrderCreatedNotificationProcessingResult.PermanentFailure)
@@ -194,6 +198,35 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
         }
+    }
+
+    private async Task<OrderCreatedNotificationProcessingResult> ProcessAsync(
+        OrderCreatedV1 message,
+        CancellationToken cancellationToken)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var processor = scope.ServiceProvider.GetRequiredService<OrderCreatedNotificationProcessor>();
+
+        return await processor.ProcessAsync(
+            message,
+            _rabbitMqOptions.OrderCreatedConsumerName,
+            cancellationToken);
+    }
+
+    private async Task WaitForPostgreSqlRecoveryAsync(CancellationToken cancellationToken)
+    {
+        do
+        {
+            await Task.Delay(_rabbitMqOptions.PostgreSqlOutageProbeInterval, cancellationToken);
+        }
+        while (!await CanConnectToPostgreSqlAsync(cancellationToken));
+    }
+
+    private async Task<bool> CanConnectToPostgreSqlAsync(CancellationToken cancellationToken)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        return await dbContext.Database.CanConnectAsync(cancellationToken);
     }
 
     internal static OrderCreatedV1 ReadMessage(BasicDeliverEventArgs delivery, RabbitMqOptions options)

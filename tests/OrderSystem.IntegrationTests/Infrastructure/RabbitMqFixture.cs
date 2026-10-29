@@ -53,6 +53,19 @@ public sealed class RabbitMqFixture : IAsyncLifetime
 
     public Task StopBrokerAsync() => ExecuteRabbitMqControlAsync("stop_app");
 
+    public Task SetQueuePolicyAsync(string name, string pattern, string definition, int priority) =>
+        ExecuteRabbitMqControlAsync(
+            "set_policy",
+            "--apply-to",
+            "queues",
+            "--priority",
+            priority.ToString(CultureInfo.InvariantCulture),
+            name,
+            pattern,
+            definition);
+
+    public Task ClearPolicyAsync(string name) => ExecuteRabbitMqControlAsync("clear_policy", name);
+
     public Task DisposeAsync() => _container.DisposeAsync().AsTask();
 
     public async Task<string> ListPoliciesAsync()
