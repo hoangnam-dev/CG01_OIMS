@@ -12,6 +12,23 @@ public sealed class MessageFailureOperationsService(
     ICurrentUser currentUser,
     IClock clock)
 {
+    public async Task<ApplicationResult<MessageFailureDto>> GetAsync(
+        Guid failedMessageId,
+        CancellationToken cancellationToken
+    )
+    {
+        var authorizationError = GetAdminAuthorizationError();
+        if (authorizationError is not null)
+        {
+            return ApplicationResult.Failure<MessageFailureDto>(authorizationError);
+        }
+
+        var failedMessage = await store.GetAsync(failedMessageId, cancellationToken);
+        return failedMessage is null
+            ? ApplicationResult.Failure<MessageFailureDto>(ApplicationErrors.MessageFailures.NotFound.Create())
+            : ApplicationResult.Success(CreateDto(failedMessage));
+    }
+
     public async Task<ApplicationResult<MessageFailureDto>> RequestRedriveAsync(
         Guid failedMessageId,
         string? reason,
@@ -111,6 +128,18 @@ public sealed class MessageFailureOperationsService(
                 {
                     ["reason"] = ["Reason must contain between 1 and 500 characters after trimming."]
                 }));
+
+    private ApplicationError? GetAdminAuthorizationError()
+    {
+        if (!currentUser.IsAuthenticated || currentUser.UserId is not { } userId || userId == Guid.Empty)
+        {
+            return ApplicationErrors.Unauthorized.Create();
+        }
+
+        return currentUser.Role == UserRole.Admin
+            ? null
+            : ApplicationErrors.Forbidden.Create();
+    }
 
     private static MessageFailureDto CreateDto(FailedMessage message) =>
         new(

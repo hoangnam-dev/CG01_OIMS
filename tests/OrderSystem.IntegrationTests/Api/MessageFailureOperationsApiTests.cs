@@ -197,6 +197,45 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
         Assert.Equal(firstPersisted.TerminalAt, replayed.TerminalAt);
     }
 
+    [Fact]
+    [Trait("Requirement", "S10-T08")]
+    [Trait("TestId", "MSG-REDRIVE-004")]
+    public async Task MetadataDetail_AdminReceivesFailureEvidenceWithoutStoredBody()
+    {
+        var now = PostgreSqlUtcNow();
+        await using var factory = CreateFactory(now);
+        var seeded = await SeedFailureAsync(
+            factory,
+            now,
+            FailedMessageFailureKind.Permanent,
+            failureCode: "order_not_found",
+            attemptCount: 1);
+        using var client = factory.CreateClient();
+        await LoginAndSetBearerAsync(client, seeded.AdminEmail);
+
+        using var response = await client.GetAsync(
+            $"/api/operations/message-failures/{seeded.FailedMessageId:D}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync());
+        var data = document.RootElement.GetProperty("data");
+
+        Assert.Equal(seeded.FailedMessageId, data.GetProperty("id").GetGuid());
+        Assert.Equal("OrderCreatedNotificationConsumer", data.GetProperty("consumerName").GetString());
+        Assert.Equal("Permanent", data.GetProperty("failureKind").GetString());
+        Assert.Equal("order_not_found", data.GetProperty("failureCode").GetString());
+        Assert.Equal(1, data.GetProperty("attemptCount").GetInt32());
+        Assert.Equal("Pending", data.GetProperty("status").GetString());
+        Assert.Equal("oims.events", data.GetProperty("originalExchange").GetString());
+        Assert.Equal("order.created.v1", data.GetProperty("originalRoutingKey").GetString());
+        Assert.Equal(FailedMessageBodyFingerprint.Compute(seeded.Body), data.GetProperty("bodySha256").GetString());
+        Assert.Equal(seeded.Body.Length, data.GetProperty("bodyLength").GetInt32());
+        Assert.True(data.TryGetProperty("safeHeaders", out _));
+        Assert.False(data.TryGetProperty("body", out _));
+    }
+
     private WebApplicationFactory<Program> CreateFactory(DateTimeOffset now) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {

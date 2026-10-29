@@ -14,6 +14,13 @@ public static class MessageFailureEndpoints
             .WithTags("Message Failure Operations")
             .RequireAuthorization(AuthorizationPolicies.Admin);
 
+        failures.MapGet("/{id}", GetAsync)
+            .Produces<ApiResponse<MessageFailureDto>>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound);
+
         failures.MapPost("/{id}/redrive", RequestRedriveAsync)
             .Produces<ApiResponse<MessageFailureDto>>(StatusCodes.Status202Accepted)
             .ProducesProblem(StatusCodes.Status400BadRequest)
@@ -31,6 +38,23 @@ public static class MessageFailureEndpoints
             .ProducesProblem(StatusCodes.Status409Conflict);
 
         return endpoints;
+    }
+
+    private static async Task<IResult> GetAsync(
+        string id,
+        HttpContext context,
+        MessageFailureOperationsService service,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(id, out var failedMessageId) || failedMessageId == Guid.Empty)
+        {
+            return ApplicationResultHttpMapper.InvalidUuid(context, "id");
+        }
+
+        var result = await service.GetAsync(failedMessageId, cancellationToken);
+        return result.IsSuccess
+            ? Results.Ok(new ApiResponse<MessageFailureDto>(result.Value!, null))
+            : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
     }
 
     private static async Task<IResult> RequestRedriveAsync(

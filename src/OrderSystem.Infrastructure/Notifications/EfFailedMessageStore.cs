@@ -15,6 +15,19 @@ internal sealed class EfFailedMessageStore(OrderSystemDbContext dbContext) : IFa
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
+    public Task<FailedMessage?> GetAsync(Guid failedMessageId, CancellationToken cancellationToken)
+    {
+        if (failedMessageId == Guid.Empty)
+        {
+            throw new ArgumentException("Failed Message ID cannot be empty", nameof(failedMessageId));
+        }
+
+        return dbContext.FailedMessages
+            .AsNoTracking()
+            .SingleOrDefaultAsync(message => message.Id == failedMessageId, cancellationToken
+        );
+    }
+
     public async Task<FailedMessageRedriveStoreResult> RequestRedriveAsync(
         Guid failedMessageId,
         Guid adminUserId,

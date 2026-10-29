@@ -6,6 +6,8 @@ public interface IFailedMessageStore
 {
     Task CaptureAsync(FailedMessage failedMessage, CancellationToken cancellationToken);
 
+    Task<FailedMessage?> GetAsync(Guid failedMessageId, CancellationToken cancellationToken);
+
     Task<FailedMessageRedriveStoreResult> RequestRedriveAsync(
         Guid failedMessageId,
         Guid adminUserId,
@@ -33,7 +35,7 @@ public enum FailedMessageRedriveStoreStatus
 
 public sealed record FailedMessageRedriveStoreResult(
     FailedMessageRedriveStoreStatus Status,
-    FailedMessage? FailedMessage\
+    FailedMessage? FailedMessage
 );
 
 public enum FailedMessageCloseStoreStatus
