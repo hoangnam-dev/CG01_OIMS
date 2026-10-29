@@ -72,13 +72,19 @@ internal sealed class EfFailedMessageStore(OrderSystemDbContext dbContext) : IFa
         return new(items, request.Page, request.PageSize, totalCount, totalPages);
     }
 
-    public Task<FailedMessage?> GetNextRedriveRequestedAsync(CancellationToken cancellationToken) =>
-        dbContext.FailedMessages
+    public Task<FailedMessage?> GetNextRedriveRequestedAsync(string consumerName, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(consumerName);
+
+        return dbContext.FailedMessages
             .AsNoTracking()
-            .Where(message => message.Status == FailedMessageStatus.RedriveRequested)
+            .Where(message =>
+                message.ConsumerName == consumerName &&
+                message.Status == FailedMessageStatus.RedriveRequested)
             .OrderBy(message => message.CapturedAt)
             .ThenBy(message => message.Id)
             .FirstOrDefaultAsync(cancellationToken);
+    }
 
     public async Task<bool> MarkRedrivenAsync(Guid failedMessageId, DateTimeOffset redrivenAt, CancellationToken cancellationToken)
     {

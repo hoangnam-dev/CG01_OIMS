@@ -59,7 +59,7 @@ internal sealed partial class RabbitMqFailedMessageRedriveDispatcher(
             {
                 using var scope = scopeFactory.CreateScope();
                 var store = scope.ServiceProvider.GetRequiredService<IFailedMessageStore>();
-                failedMessage = await store.GetNextRedriveRequestedAsync(stoppingToken);
+                failedMessage = await store.GetNextRedriveRequestedAsync(rabbitMq.OrderCreatedConsumerName, stoppingToken);
                 if (failedMessage is null)
                 {
                     await Task.Delay(EmptyQueuePollingInterval, stoppingToken);
@@ -78,7 +78,8 @@ internal sealed partial class RabbitMqFailedMessageRedriveDispatcher(
                         failedMessage.Id,
                         messageId,
                         failedMessage.CorrelationId,
-                        failedMessage.ConsumerName);
+                        failedMessage.ConsumerName
+                    );
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
