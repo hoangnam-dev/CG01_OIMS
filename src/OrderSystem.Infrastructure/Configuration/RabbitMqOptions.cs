@@ -37,4 +37,6 @@ public sealed class RabbitMqOptions
     public string OrderCreatedDeadLetterQueueName { get; init; } = "oims.notification.order-created.v1.dlq";
 
     public TimeSpan PublisherConfirmTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
+    public TimeSpan PostgreSqlOutageProbeInterval { get; init; } = TimeSpan.FromSeconds(5);
 }

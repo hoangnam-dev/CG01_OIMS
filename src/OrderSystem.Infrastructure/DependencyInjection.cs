@@ -227,6 +227,7 @@ public static class DependencyInjection
             .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedRetryQueueName), "RabbitMq:OrderCreatedRetryQueueName is required.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.OrderCreatedDeadLetterQueueName), "RabbitMq:OrderCreatedDeadLetterQueueName is required.")
             .Validate(options => options.PublisherConfirmTimeout > TimeSpan.Zero, "RabbitMq:PublisherConfirmTimeout must be positive.")
+            .Validate(options => options.PostgreSqlOutageProbeInterval > TimeSpan.Zero, "RabbitMq:PostgreSqlOutageProbeInterval must be positive.")
             .ValidateOnStart();
         services.AddSingleton<IConnectionFactory>(provider =>
         {
