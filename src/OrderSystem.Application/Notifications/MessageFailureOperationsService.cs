@@ -1,6 +1,7 @@
 using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Identifiers;
+using OrderSystem.Application.Common.Models;
 using OrderSystem.Application.Common.Results;
 using OrderSystem.Application.Notifications.Contracts;
 using OrderSystem.Domain.Notifications;
@@ -14,6 +15,42 @@ public sealed class MessageFailureOperationsService(
     IClock clock,
     IIdGenerator idGenerator)
 {
+    public async Task<ApplicationResult<PagedResult<MessageFailureSummaryDto>>> ListAsync(
+        MessageFailureListRequest request,
+        CancellationToken cancellationToken)
+    {
+        var authorizationError = GetAdminAuthorizationError();
+        if (authorizationError is not null)
+        {
+            return ApplicationResult.Failure<PagedResult<MessageFailureSummaryDto>>(authorizationError);
+        }
+
+        var validationErrors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        if (request.Page < 1)
+        {
+            validationErrors["page"] = ["Page must be at least 1."];
+        }
+
+        if (request.PageSize is < 1 or > 100)
+        {
+            validationErrors["pageSize"] = ["Page size must be between 1 and 100."];
+        }
+
+        if (request.Status is { } status && !Enum.IsDefined(status))
+        {
+            validationErrors["status"] = ["Message Failure status is invalid."];
+        }
+
+        if (validationErrors.Count > 0)
+        {
+            return ApplicationResult.Failure<PagedResult<MessageFailureSummaryDto>>(
+                ApplicationErrors.ValidationFailed.Create(validationErrors: validationErrors));
+        }
+
+        var page = await store.ListAsync(request, cancellationToken);
+        return ApplicationResult.Success(page);
+    }
+
     public async Task<ApplicationResult<MessageFailureDto>> GetAsync(
         Guid failedMessageId,
         CancellationToken cancellationToken

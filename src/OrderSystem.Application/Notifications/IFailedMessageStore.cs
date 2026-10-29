@@ -1,3 +1,5 @@
+using OrderSystem.Application.Common.Models;
+using OrderSystem.Application.Notifications.Contracts;
 using OrderSystem.Domain.Notifications;
 
 namespace OrderSystem.Application.Notifications;
@@ -7,6 +9,10 @@ public interface IFailedMessageStore
     Task CaptureAsync(FailedMessage failedMessage, CancellationToken cancellationToken);
 
     Task<FailedMessage?> GetAsync(Guid failedMessageId, CancellationToken cancellationToken);
+
+    Task<PagedResult<MessageFailureSummaryDto>> ListAsync(
+        MessageFailureListRequest request,
+        CancellationToken cancellationToken);
 
     Task<byte[]?> GetPayloadAndRecordAccessAsync(
         Guid failedMessageId,

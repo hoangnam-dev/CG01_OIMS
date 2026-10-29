@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using OrderSystem.Application.Common.Models;
 using OrderSystem.Application.Notifications;
+using OrderSystem.Application.Notifications.Contracts;
 using OrderSystem.Domain.Notifications;
 using OrderSystem.Infrastructure.Persistence;
 
@@ -26,6 +28,48 @@ internal sealed class EfFailedMessageStore(OrderSystemDbContext dbContext) : IFa
             .AsNoTracking()
             .SingleOrDefaultAsync(message => message.Id == failedMessageId, cancellationToken
         );
+    }
+
+    public async Task<PagedResult<MessageFailureSummaryDto>> ListAsync(MessageFailureListRequest request, CancellationToken cancellationToken)
+    {
+        var messages = dbContext.FailedMessages.AsNoTracking();
+        if (request.Status is { } status)
+        {
+            messages = messages.Where(message => message.Status == status);
+        }
+
+        var totalCount = await messages.LongCountAsync(cancellationToken);
+        var totalPages = (int)Math.Ceiling(totalCount / (double)request.PageSize);
+        var offset = (long)(request.Page - 1) * request.PageSize;
+
+        IReadOnlyList<MessageFailureSummaryDto> items;
+        if (offset >= totalCount)
+        {
+            items = [];
+        }
+        else
+        {
+            items = await messages
+                .OrderByDescending(message => message.CapturedAt)
+                .ThenByDescending(message => message.Id)
+                .Skip((int)offset)
+                .Take(request.PageSize)
+                .Select(message => new MessageFailureSummaryDto(
+                    message.Id,
+                    message.MessageId,
+                    message.ConsumerName,
+                    message.FailureKind,
+                    message.FailureCode,
+                    message.AttemptCount,
+                    message.Status,
+                    message.OccurredAt,
+                    message.CapturedAt,
+                    message.TerminalAt
+                ))
+                .ToListAsync(cancellationToken);
+        }
+
+        return new(items, request.Page, request.PageSize, totalCount, totalPages);
     }
 
     public async Task<byte[]?> GetPayloadAndRecordAccessAsync(

@@ -14,6 +14,12 @@ public static class MessageFailureEndpoints
             .WithTags("Message Failure Operations")
             .RequireAuthorization(AuthorizationPolicies.Admin);
 
+        failures.MapGet("", ListAsync)
+            .Produces<ApiResponse<MessageFailureSummaryDto[]>>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden);
+
         failures.MapGet("/{id}", GetAsync)
             .Produces<ApiResponse<MessageFailureDto>>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status400BadRequest)
@@ -45,6 +51,26 @@ public static class MessageFailureEndpoints
             .ProducesProblem(StatusCodes.Status409Conflict);
 
         return endpoints;
+    }
+
+    private static async Task<IResult> ListAsync(
+        [AsParameters] MessageFailureListParameters parameters,
+        HttpContext context,
+        MessageFailureOperationsService service,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.ListAsync(
+            new(parameters.Page ?? 1, parameters.PageSize ?? 20, parameters.Status),
+            cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return ApplicationResultHttpMapper.ToProblem(context, result.Error!);
+        }
+
+        var page = result.Value!;
+        return Results.Ok(new ApiResponse<MessageFailureSummaryDto[]>(
+            page.Items.ToArray(),
+            new(new PaginationMetadata(page.Page, page.PageSize, page.TotalCount, page.TotalPages))));
     }
 
     private static async Task<IResult> GetAsync(
@@ -134,5 +160,14 @@ public static class MessageFailureEndpoints
         return result.IsSuccess
             ? Results.Ok(new ApiResponse<MessageFailureDto>(result.Value!, null))
             : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
+    }
+
+    public sealed class MessageFailureListParameters
+    {
+        public int? Page { get; init; }
+
+        public int? PageSize { get; init; }
+
+        public Domain.Notifications.FailedMessageStatus? Status { get; init; }
     }
 }

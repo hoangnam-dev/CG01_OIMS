@@ -265,6 +265,68 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
         Assert.Equal(now, audit.AccessedAt);
     }
 
+    [Fact]
+    [Trait("Requirement", "S10-T08")]
+    public async Task List_AdminFiltersPendingFailuresWithPaginationMetadata()
+    {
+        var now = PostgreSqlUtcNow();
+        await using var factory = CreateFactory(now);
+        var seeded = await SeedFailureAsync(
+            factory,
+            now,
+            FailedMessageFailureKind.Permanent,
+            failureCode: "order_not_found",
+            attemptCount: 1);
+        var closed = await SeedFailureAsync(
+            factory,
+            now,
+            FailedMessageFailureKind.Permanent,
+            failureCode: "closed_failure",
+            attemptCount: 1,
+            close: true);
+        using var client = factory.CreateClient();
+        await LoginAndSetBearerAsync(client, seeded.AdminEmail);
+
+        using var response = await client.GetAsync(
+            "/api/operations/message-failures?status=Pending&page=1&pageSize=100");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync());
+        var items = document.RootElement
+            .GetProperty("data")
+            .EnumerateArray()
+            .ToArray();
+        var item = items
+            .Single(candidate =>
+                candidate.GetProperty("id").GetGuid() == seeded.FailedMessageId);
+
+        Assert.DoesNotContain(items, candidate =>
+            candidate.GetProperty("id").GetGuid() == closed.FailedMessageId);
+        Assert.Equal(seeded.MessageId, item.GetProperty("messageId").GetGuid());
+        Assert.Equal("OrderCreatedNotificationConsumer", item.GetProperty("consumerName").GetString());
+        Assert.Equal("Permanent", item.GetProperty("failureKind").GetString());
+        Assert.Equal("order_not_found", item.GetProperty("failureCode").GetString());
+        Assert.Equal(1, item.GetProperty("attemptCount").GetInt32());
+        Assert.Equal("Pending", item.GetProperty("status").GetString());
+        Assert.Equal(seeded.OccurredAt, item.GetProperty("occurredAt").GetDateTimeOffset());
+        Assert.Equal(seeded.CapturedAt, item.GetProperty("capturedAt").GetDateTimeOffset());
+        Assert.Equal(JsonValueKind.Null, item.GetProperty("terminalAt").ValueKind);
+        Assert.False(item.TryGetProperty("originalExchange", out _));
+        Assert.False(item.TryGetProperty("bodySha256", out _));
+        Assert.False(item.TryGetProperty("bodyLength", out _));
+        Assert.False(item.TryGetProperty("body", out _));
+
+        var pagination = document.RootElement
+            .GetProperty("metadata")
+            .GetProperty("pagination");
+        Assert.Equal(1, pagination.GetProperty("page").GetInt32());
+        Assert.Equal(100, pagination.GetProperty("pageSize").GetInt32());
+        Assert.True(pagination.GetProperty("totalCount").GetInt64() >= 1);
+        Assert.True(pagination.GetProperty("totalPages").GetInt32() >= 1);
+    }
+
     private WebApplicationFactory<Program> CreateFactory(DateTimeOffset now) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
@@ -285,7 +347,8 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
         DateTimeOffset now,
         FailedMessageFailureKind failureKind,
         string failureCode,
-        int attemptCount)
+        int attemptCount,
+        bool close = false)
     {
         using var scope = factory.Services.CreateScope();
         var provider = scope.ServiceProvider;
@@ -304,6 +367,29 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
             OccurredAt: now.AddHours(-1));
         var body = OrderCreatedV1Serializer.Serialize(message);
         var passwordHasher = provider.GetRequiredService<IPasswordHasher>();
+        var capturedAt = now.AddMinutes(-30);
+        var failedMessage = new FailedMessage(
+            failedMessageId,
+            "OrderCreatedNotificationConsumer",
+            message.MessageId,
+            message.MessageId.ToString("D"),
+            message.CorrelationId,
+            "OrderCreated",
+            message.EventVersion,
+            message.OccurredAt,
+            body,
+            FailedMessageBodyFingerprint.Compute(body),
+            safeHeaders: "{}",
+            originalExchange: "oims.events",
+            originalRoutingKey: "order.created.v1",
+            failureKind,
+            failureCode,
+            attemptCount,
+            capturedAt);
+        if (close)
+        {
+            failedMessage.TryClose(adminId, "Resolved during test setup", now);
+        }
 
         dbContext.AddRange(
             new User(
@@ -313,30 +399,16 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
                 passwordHasher.Hash(TestCredentials.ValidPassword),
                 UserRole.Admin,
                 now.AddDays(-1)),
-            new FailedMessage(
-                failedMessageId,
-                "OrderCreatedNotificationConsumer",
-                message.MessageId,
-                message.MessageId.ToString("D"),
-                message.CorrelationId,
-                "OrderCreated",
-                message.EventVersion,
-                message.OccurredAt,
-                body,
-                FailedMessageBodyFingerprint.Compute(body),
-                safeHeaders: "{}",
-                originalExchange: "oims.events",
-                originalRoutingKey: "order.created.v1",
-                failureKind,
-                failureCode,
-                attemptCount,
-                capturedAt: now.AddMinutes(-30)));
+            failedMessage);
         await dbContext.SaveChangesAsync();
 
         return new SeededFailure(
             adminId,
             adminEmail,
             failedMessageId,
+            message.MessageId,
+            message.OccurredAt,
+            capturedAt,
             body);
     }
 
@@ -376,5 +448,8 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
         Guid AdminId,
         string AdminEmail,
         Guid FailedMessageId,
+        Guid MessageId,
+        DateTimeOffset OccurredAt,
+        DateTimeOffset CapturedAt,
         byte[] Body);
 }

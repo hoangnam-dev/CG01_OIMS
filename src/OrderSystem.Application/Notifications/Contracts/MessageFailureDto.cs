@@ -32,3 +32,22 @@ public sealed record MessageFailureDto(
 );
 
 public sealed record MessageFailurePayloadDto(string BodyBase64);
+
+public sealed record MessageFailureListRequest(
+    int Page = 1,
+    int PageSize = 20,
+    FailedMessageStatus? Status = null
+);
+
+public sealed record MessageFailureSummaryDto(
+    Guid Id,
+    Guid? MessageId,
+    string ConsumerName,
+    FailedMessageFailureKind FailureKind,
+    string FailureCode,
+    int AttemptCount,
+    FailedMessageStatus Status,
+    DateTimeOffset? OccurredAt,
+    DateTimeOffset CapturedAt,
+    DateTimeOffset? TerminalAt
+);
