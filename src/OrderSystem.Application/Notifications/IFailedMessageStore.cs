@@ -14,6 +14,10 @@ public interface IFailedMessageStore
         MessageFailureListRequest request,
         CancellationToken cancellationToken);
 
+    Task<FailedMessage?> GetNextRedriveRequestedAsync(CancellationToken cancellationToken);
+
+    Task<bool> MarkRedrivenAsync(Guid failedMessageId, DateTimeOffset redrivenAt, CancellationToken cancellationToken);
+
     Task<byte[]?> GetPayloadAndRecordAccessAsync(
         Guid failedMessageId,
         Guid accessId,

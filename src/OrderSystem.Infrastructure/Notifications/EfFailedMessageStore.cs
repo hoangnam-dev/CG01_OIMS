@@ -72,6 +72,35 @@ internal sealed class EfFailedMessageStore(OrderSystemDbContext dbContext) : IFa
         return new(items, request.Page, request.PageSize, totalCount, totalPages);
     }
 
+    public Task<FailedMessage?> GetNextRedriveRequestedAsync(CancellationToken cancellationToken) =>
+        dbContext.FailedMessages
+            .AsNoTracking()
+            .Where(message => message.Status == FailedMessageStatus.RedriveRequested)
+            .OrderBy(message => message.CapturedAt)
+            .ThenBy(message => message.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+    public async Task<bool> MarkRedrivenAsync(Guid failedMessageId, DateTimeOffset redrivenAt, CancellationToken cancellationToken)
+    {
+        if (failedMessageId == Guid.Empty)
+        {
+            throw new ArgumentException("Failed Message ID cannot be empty", nameof(failedMessageId));
+        }
+
+        var affectedRows = await dbContext.FailedMessages
+            .Where(message =>
+                message.Id == failedMessageId &&
+                message.Status == FailedMessageStatus.RedriveRequested)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(message => message.Status, FailedMessageStatus.Redriven)
+                    .SetProperty(message => message.RedrivenAt, redrivenAt)
+                    .SetProperty(message => message.TerminalAt, redrivenAt),
+                cancellationToken);
+
+        return affectedRows == 1;
+    }
+
     public async Task<byte[]?> GetPayloadAndRecordAccessAsync(
         Guid failedMessageId,
         Guid accessId,
