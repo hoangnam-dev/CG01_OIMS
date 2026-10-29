@@ -294,12 +294,21 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
         CancellationToken stoppingToken
     )
     {
+        var properties = new BasicProperties(delivery.BasicProperties)
+        {
+            Headers = delivery.BasicProperties.Headers is null
+                ? new Dictionary<string, object?>()
+                : new Dictionary<string, object?>(delivery.BasicProperties.Headers)
+        };
+        properties.Headers[OrderCreatedDeadLetterMetadata.OriginalExchangeHeaderName] = delivery.Exchange;
+        properties.Headers[OrderCreatedDeadLetterMetadata.OriginalRoutingKeyHeaderName] = delivery.RoutingKey;
+
         return await TryTransferAndAcknowledgeAsync(
             transferChannel,
             consumerChannel,
             delivery,
             _rabbitMqOptions.DeadLetterExchangeName,
-            new BasicProperties(delivery.BasicProperties),
+            properties,
             stoppingToken
         );
     }

@@ -1175,6 +1175,78 @@ public sealed class OrderCreatedNotificationWorkerTests(
     }
 
     [Fact]
+    [Trait("Requirement", "S10-T08")]
+    [Trait("TestId", "MSG-DLQ-004")]
+    public async Task DeadLetterIntake_UnsupportedVersion_PersistsClassificationAndOriginalRoute()
+    {
+        var now = new DateTimeOffset(2026, 10, 29, 11, 0, 0, TimeSpan.Zero);
+        var message = new OrderCreatedV1(
+            2,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            now);
+        var body = OrderCreatedV1Serializer.Serialize(message);
+        var suffix = Guid.NewGuid().ToString("N");
+        var exchangeName = $"oims.events.test.{suffix}";
+        var routingKey = $"order.created.v1.test.{suffix}";
+        var queueName = $"oims.notification.order-created.v1.test.{suffix}";
+        var deadLetterQueueName = $"{queueName}.dlq";
+        var consumerRoutingKey = $"order-created.v1.test.{suffix}";
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+        }
+
+        var afterAckHook = new SignalingCheckpointHook(
+            RabbitMqOrderCreatedDeadLetterIntakeConsumer.AfterAcknowledgementCheckpoint);
+        using var host = CreateNotificationConsumerHost(
+            exchangeName,
+            routingKey,
+            queueName,
+            afterAckHook,
+            deadLetterQueueName: deadLetterQueueName,
+            consumerRoutingKey: consumerRoutingKey,
+            clock: new FakeClock(now),
+            enableDeadLetterIntake: true);
+        await host.Services.GetRequiredService<IRabbitMqTopologyInitializer>().InitializeAsync();
+        await PublishAsync(message, exchangeName, routingKey, queueName);
+        await host.StartAsync();
+        try
+        {
+            Assert.True(
+                await afterAckHook.WaitUntilReachedAsync(TimeSpan.FromSeconds(10)),
+                "The unsupported delivery was not persisted and acknowledged by DLQ intake");
+
+            await using var assertionContext = new OrderSystemDbContext(dbOptions);
+            var failedMessage = await assertionContext.FailedMessages
+                .AsNoTracking()
+                .SingleAsync(candidate => candidate.MessageId == message.MessageId);
+
+            Assert.Equal(message.CorrelationId, failedMessage.CorrelationId);
+            Assert.Equal("OrderCreated", failedMessage.EventType);
+            Assert.Equal(2, failedMessage.EventVersion);
+            Assert.Equal(now, failedMessage.OccurredAt);
+            Assert.Equal(body, failedMessage.Body);
+            Assert.Equal(FailedMessageBodyFingerprint.Compute(body), failedMessage.BodySha256);
+            Assert.Equal(FailedMessageFailureKind.UnsupportedVersion, failedMessage.FailureKind);
+            Assert.Equal("unsupported_version", failedMessage.FailureCode);
+            Assert.Equal(1, failedMessage.AttemptCount);
+            Assert.Equal(FailedMessageStatus.Pending, failedMessage.Status);
+            Assert.Equal(exchangeName, failedMessage.OriginalExchange);
+            Assert.Equal(routingKey, failedMessage.OriginalRoutingKey);
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    [Fact]
     [Trait("Requirement", "S9-T05")]
     [Trait("Requirement", "S9-T06")]
     [Trait("TestId", "MSG-CONSUME-001")]

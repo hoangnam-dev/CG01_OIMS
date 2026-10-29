@@ -216,6 +216,28 @@ internal sealed class RabbitMqOrderCreatedDeadLetterIntakeConsumer(
 
     private static OriginalRoute ReadOriginalRoute(BasicDeliverEventArgs delivery)
     {
+        if (delivery.BasicProperties.Headers is not null)
+        {
+            var originalExchange = ReadUtf8(
+                delivery.BasicProperties.Headers,
+                OrderCreatedDeadLetterMetadata.OriginalExchangeHeaderName
+            );
+            var originalRoutingKey = ReadUtf8(
+                delivery.BasicProperties.Headers,
+                OrderCreatedDeadLetterMetadata.OriginalRoutingKeyHeaderName
+            );
+            if (!string.IsNullOrWhiteSpace(originalExchange) &&
+                !string.IsNullOrWhiteSpace(originalRoutingKey)
+            )
+            {
+                return new(
+                    originalExchange,
+                    originalRoutingKey,
+                    JsonSerializer.Serialize(new { originalExchange, originalRoutingKey })
+                );
+            }
+        }
+
         if (delivery.BasicProperties.Headers is not null &&
             delivery.BasicProperties.Headers.TryGetValue(OrderCreatedAttemptMetadataReader.DeathHeaderName, out var deathValue) &&
             deathValue is IReadOnlyList<object?> { Count: > 0 } deaths &&
