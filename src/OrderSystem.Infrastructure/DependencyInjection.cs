@@ -321,6 +321,15 @@ public static class DependencyInjection
         return services;
     }
 
+    public static IServiceCollection AddOrderSystemDeadLetterIntakeConsumer(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddHostedService<RabbitMqOrderCreatedDeadLetterIntakeConsumer>();
+
+        return services;
+    }
+
     private static bool IsRedisConnectionString(string connectionString)
     {
         try

@@ -1045,7 +1045,7 @@ public sealed class OrderCreatedNotificationWorkerTests(
             .ToListAsync());
     }
 
-    [Fact(Skip = "Pending S10-T08 DLQ intake implementation")]
+    [Fact]
     [Trait("Requirement", "S10-T08")]
     [Trait("TestId", "MSG-DLQ-004")]
     public async Task DeadLetterIntake_CommitSucceedsButAckIsLost_RedeliveryKeepsCorrelatedEvidence()
@@ -1088,7 +1088,8 @@ public sealed class OrderCreatedNotificationWorkerTests(
             sourceExchange,
             sourceRoutingKey,
             sourceQueue,
-            beforeAckHook))
+            beforeAckHook,
+            enableDeadLetterIntake: true))
         {
             await firstHost.StartAsync();
             try
@@ -1125,7 +1126,8 @@ public sealed class OrderCreatedNotificationWorkerTests(
             sourceExchange,
             sourceRoutingKey,
             sourceQueue,
-            afterAckHook))
+            afterAckHook,
+            enableDeadLetterIntake: true))
         {
             await secondHost.StartAsync();
             try
@@ -1708,7 +1710,8 @@ public sealed class OrderCreatedNotificationWorkerTests(
         string? retryQueueName = null,
         FailOnceNotificationStoreGate? transientFailureGate = null,
         string? databaseConnectionString = null,
-        AlwaysFailNotificationStoreGate? persistentTransientFailureGate = null)
+        AlwaysFailNotificationStoreGate? persistentTransientFailureGate = null,
+        bool enableDeadLetterIntake = false)
     {
         var settings = new Dictionary<string, string?>
         {
@@ -1748,6 +1751,10 @@ public sealed class OrderCreatedNotificationWorkerTests(
                     .AddOrderSystemCommonInfrastructure()
                     .AddOrderSystemMessagingInfrastructure(context.Configuration)
                     .AddOrderSystemNotificationConsumer();
+                if (enableDeadLetterIntake)
+                {
+                    services.AddOrderSystemDeadLetterIntakeConsumer();
+                }
                 services.RemoveAll<IOperationHook>();
                 services.AddSingleton(operationHook);
                 if (clock is not null)
