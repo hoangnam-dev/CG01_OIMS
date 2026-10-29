@@ -327,6 +327,73 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
         Assert.True(pagination.GetProperty("totalPages").GetInt32() >= 1);
     }
 
+    [Fact]
+    [Trait("Requirement", "S10-T08")]
+    public async Task Operations_AnonymousAndCustomerAreRejectedWithoutStateChange()
+    {
+        var now = PostgreSqlUtcNow();
+        await using var factory = CreateFactory(now);
+        var seeded = await SeedFailureAsync(
+            factory,
+            now,
+            FailedMessageFailureKind.RetryExhausted,
+            failureCode: "retry_exhausted",
+            attemptCount: 3);
+        var customerEmail = await SeedCustomerAsync(factory, now);
+        var detailPath = $"/api/operations/message-failures/{seeded.FailedMessageId:D}";
+
+        using (var anonymousClient = factory.CreateClient())
+        {
+            Assert.Equal(
+                HttpStatusCode.Unauthorized,
+                (await anonymousClient.GetAsync("/api/operations/message-failures")).StatusCode);
+            Assert.Equal(
+                HttpStatusCode.Unauthorized,
+                (await anonymousClient.GetAsync(detailPath)).StatusCode);
+            Assert.Equal(
+                HttpStatusCode.Unauthorized,
+                (await anonymousClient.PostAsJsonAsync($"{detailPath}/payload", new { reason = "Inspect" })).StatusCode);
+            Assert.Equal(
+                HttpStatusCode.Unauthorized,
+                (await anonymousClient.PostAsJsonAsync($"{detailPath}/redrive", new { reason = "Retry" })).StatusCode);
+            Assert.Equal(
+                HttpStatusCode.Unauthorized,
+                (await anonymousClient.PostAsJsonAsync($"{detailPath}/close", new { reason = "Close" })).StatusCode);
+        }
+
+        using (var customerClient = factory.CreateClient())
+        {
+            await LoginAndSetBearerAsync(customerClient, customerEmail);
+            Assert.Equal(
+                HttpStatusCode.Forbidden,
+                (await customerClient.GetAsync("/api/operations/message-failures")).StatusCode);
+            Assert.Equal(
+                HttpStatusCode.Forbidden,
+                (await customerClient.GetAsync(detailPath)).StatusCode);
+            Assert.Equal(
+                HttpStatusCode.Forbidden,
+                (await customerClient.PostAsJsonAsync($"{detailPath}/payload", new { reason = "Inspect" })).StatusCode);
+            Assert.Equal(
+                HttpStatusCode.Forbidden,
+                (await customerClient.PostAsJsonAsync($"{detailPath}/redrive", new { reason = "Retry" })).StatusCode);
+            Assert.Equal(
+                HttpStatusCode.Forbidden,
+                (await customerClient.PostAsJsonAsync($"{detailPath}/close", new { reason = "Close" })).StatusCode);
+        }
+
+        using var assertionScope = factory.Services.CreateScope();
+        var dbContext = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var persisted = await dbContext.FailedMessages
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == seeded.FailedMessageId);
+        Assert.Equal(FailedMessageStatus.Pending, persisted.Status);
+        Assert.Null(persisted.RedriveRequestedAt);
+        Assert.Null(persisted.ClosedAt);
+        Assert.Empty(await dbContext.FailedMessagePayloadAccesses
+            .Where(candidate => candidate.FailedMessageId == seeded.FailedMessageId)
+            .ToListAsync());
+    }
+
     private WebApplicationFactory<Program> CreateFactory(DateTimeOffset now) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
@@ -434,6 +501,27 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
                     .GetProperty("data")
                     .GetProperty("accessToken")
                     .GetString());
+    }
+
+    private static async Task<string> SeedCustomerAsync(
+        WebApplicationFactory<Program> factory,
+        DateTimeOffset now)
+    {
+        using var scope = factory.Services.CreateScope();
+        var provider = scope.ServiceProvider;
+        var dbContext = provider.GetRequiredService<OrderSystemDbContext>();
+        var passwordHasher = provider.GetRequiredService<IPasswordHasher>();
+        var customerId = Guid.NewGuid();
+        var customerEmail = $"message-failure-customer-{customerId:N}@example.com";
+        dbContext.Add(new User(
+            customerId,
+            customerEmail,
+            customerEmail,
+            passwordHasher.Hash(TestCredentials.ValidPassword),
+            UserRole.Customer,
+            now.AddDays(-1)));
+        await dbContext.SaveChangesAsync();
+        return customerEmail;
     }
 
     private static DateTimeOffset PostgreSqlUtcNow()
