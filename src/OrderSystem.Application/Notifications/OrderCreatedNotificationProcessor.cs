@@ -48,6 +48,10 @@ public sealed class OrderCreatedNotificationProcessor(
         {
             return OrderCreatedNotificationProcessingResult.TransientFailure;
         }
+        catch (OrderCreatedNotificationPermanentException)
+        {
+            return OrderCreatedNotificationProcessingResult.PermanentFailure;
+        }
 
         return OrderCreatedNotificationProcessingResult.Completed;
     }

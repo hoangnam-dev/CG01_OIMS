@@ -131,6 +131,70 @@ public sealed class OrderCreatedNotificationWorkerTests(
 
     [Fact]
     [Trait("Requirement", "S10-T07")]
+    [Trait("FailureClass", "Permanent")]
+    public async Task ConsumeOrderCreated_MissingReferences_TransfersDirectlyToDeadLetterQueue()
+    {
+        var now = new DateTimeOffset(2026, 10, 29, 8, 0, 0, TimeSpan.Zero);
+        var message = new OrderCreatedV1(
+            1,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            now);
+        var suffix = Guid.NewGuid().ToString("N");
+        var exchangeName = $"oims.events.test.{suffix}";
+        var routingKey = $"order.created.v1.test.{suffix}";
+        var queueName = $"oims.notification.order-created.v1.test.{suffix}";
+        var deadLetterQueueName = $"{queueName}.dlq";
+        var consumerRoutingKey = $"order-created.v1.test.{suffix}";
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+        }
+
+        using var host = CreateNotificationConsumerHost(
+            exchangeName,
+            routingKey,
+            queueName,
+            new PassThroughOperationHook(),
+            deadLetterQueueName: deadLetterQueueName,
+            consumerRoutingKey: consumerRoutingKey,
+            clock: new FakeClock(now));
+        await host.Services.GetRequiredService<IRabbitMqTopologyInitializer>().InitializeAsync();
+        await PublishAsync(message, exchangeName, routingKey, queueName);
+        await host.StartAsync();
+        try
+        {
+            var deadLetterState = await WaitForQueueStateAsync(
+                deadLetterQueueName,
+                expectedMessageCount: 1,
+                expectedConsumerCount: 0,
+                TimeSpan.FromSeconds(5));
+            Assert.Equal(1u, deadLetterState.MessageCount);
+            var sourceState = await WaitForQueueStateAsync(
+                queueName,
+                expectedMessageCount: 0,
+                expectedConsumerCount: 1,
+                TimeSpan.FromSeconds(5));
+            Assert.Equal(0u, sourceState.MessageCount);
+            Assert.Equal(1u, sourceState.ConsumerCount);
+
+            await using var assertionContext = new OrderSystemDbContext(dbOptions);
+            Assert.False(await assertionContext.Notifications.AnyAsync(item => item.MessageId == message.MessageId));
+            Assert.False(await assertionContext.ProcessedMessages.AnyAsync(item => item.MessageId == message.MessageId));
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T07")]
     [Trait("TestId", "MSG-AGE-001")]
     public async Task ConsumeOrderCreated_FutureOccurredAt_TransfersToDeadLetterWithoutBusinessEffect()
     {

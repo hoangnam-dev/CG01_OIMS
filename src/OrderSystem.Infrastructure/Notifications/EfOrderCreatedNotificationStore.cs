@@ -43,5 +43,10 @@ internal sealed class EfOrderCreatedNotificationStore(OrderSystemDbContext dbCon
         {
             throw new TimeoutException("A transient PostgreSQL failure interrupted notification persistence", exception);
         }
+        catch (DbUpdateException exception)
+            when (exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.ForeignKeyViolation })
+        {
+            throw new OrderCreatedNotificationPermanentException("OrderCreated references do not identify an existing order and user", exception);
+        }
     }
 }

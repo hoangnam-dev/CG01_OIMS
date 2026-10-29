@@ -5,5 +5,6 @@ public enum OrderCreatedNotificationProcessingResult
     Completed,
     FutureOccurredAt,
     Expired,
-    TransientFailure
+    TransientFailure,
+    PermanentFailure
 }
