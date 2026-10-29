@@ -13,6 +13,7 @@ using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using OrderSystem.Application.Messaging.Contracts;
+using OrderSystem.Application.Notifications;
 using OrderSystem.Domain.Notifications;
 using OrderSystem.Domain.Orders;
 using OrderSystem.Domain.Users;
@@ -243,6 +244,90 @@ public sealed class OrderCreatedNotificationWorkerTests(
                 item => item.MessageId == expiredMessage.MessageId));
             Assert.False(await assertionContext.ProcessedMessages.AnyAsync(
                 item => item.MessageId == expiredMessage.MessageId));
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T07")]
+    [Trait("TestId", "MSG-RETRY-001")]
+    public async Task ConsumeOrderCreated_TransientStoreFailure_TransfersAttemptTwoToRetryQueue()
+    {
+        var now = new DateTimeOffset(2026, 10, 28, 8, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var message = new OrderCreatedV1(1, Guid.NewGuid(), orderId, userId, Guid.NewGuid(), now);
+        var suffix = Guid.NewGuid().ToString("N");
+        var exchangeName = $"oims.events.test.{suffix}";
+        var routingKey = $"order.created.v1.test.{suffix}";
+        var queueName = $"oims.notification.order-created.v1.test.{suffix}";
+        var consumerIngressExchangeName = $"oims.notification.ingress.test.{suffix}";
+        var retryExchangeName = $"oims.notification.retry.test.{suffix}";
+        var retryQueueName = $"{queueName}.retry";
+        var consumerRoutingKey = $"order-created.v1.test.{suffix}";
+        var failureGate = new FailOnceNotificationStoreGate();
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+            arrangeContext.AddRange(
+                new User(userId, $"retry-{userId:N}@example.com", $"retry-{userId:N}@example.com",
+                    TestCredentials.CreateHashPlaceholder(), UserRole.Customer, now),
+                new Order(orderId, userId, 0m, now.AddMinutes(15), now));
+            await arrangeContext.SaveChangesAsync();
+        }
+
+        using var host = CreateNotificationConsumerHost(
+            exchangeName,
+            routingKey,
+            queueName,
+            new PassThroughOperationHook(),
+            consumerRoutingKey: consumerRoutingKey,
+            clock: new FakeClock(now),
+            consumerIngressExchangeName: consumerIngressExchangeName,
+            retryExchangeName: retryExchangeName,
+            retryQueueName: retryQueueName,
+            transientFailureGate: failureGate);
+        await host.Services.GetRequiredService<IRabbitMqTopologyInitializer>().InitializeAsync();
+        await PublishAsync(message, exchangeName, routingKey, queueName);
+        await host.StartAsync();
+        try
+        {
+            Assert.True(await failureGate.WaitUntilFailedAsync(TimeSpan.FromSeconds(5)));
+            var retryState = await WaitForQueueStateAsync(retryQueueName, 1, 0, TimeSpan.FromSeconds(5));
+            Assert.Equal(1u, retryState.MessageCount);
+            var sourceState = await WaitForQueueStateAsync(queueName, 0, 1, TimeSpan.FromSeconds(5));
+            Assert.Equal(0u, sourceState.MessageCount);
+
+            var connectionFactory = new ConnectionFactory
+            {
+                HostName = rabbitMq.Host,
+                Port = rabbitMq.Port,
+                VirtualHost = "/",
+                UserName = rabbitMq.Username,
+                Password = rabbitMq.Password
+            };
+            await using var connection = await connectionFactory.CreateConnectionAsync();
+            await using var channel = await connection.CreateChannelAsync();
+            var retryDelivery = await channel.BasicGetAsync(retryQueueName, autoAck: false);
+            Assert.NotNull(retryDelivery);
+            var headers = retryDelivery.BasicProperties.Headers ??
+                throw new Xunit.Sdk.XunitException("Retry delivery headers are missing");
+            Assert.True(headers.TryGetValue("x-oims-attempt", out var attempt));
+            Assert.Equal(2, Convert.ToInt32(attempt, CultureInfo.InvariantCulture));
+            Assert.Equal(message.MessageId.ToString("D"), retryDelivery.BasicProperties.MessageId);
+            Assert.Equal(message.CorrelationId.ToString("D"), retryDelivery.BasicProperties.CorrelationId);
+            Assert.Equal(OrderCreatedV1Serializer.Serialize(message), retryDelivery.Body.ToArray());
+            await channel.BasicNackAsync(retryDelivery.DeliveryTag, multiple: false, requeue: true);
+
+            await using var assertionContext = new OrderSystemDbContext(dbOptions);
+            Assert.False(await assertionContext.Notifications.AnyAsync(item => item.MessageId == message.MessageId));
+            Assert.False(await assertionContext.ProcessedMessages.AnyAsync(item => item.MessageId == message.MessageId));
         }
         finally
         {
@@ -1125,7 +1210,11 @@ public sealed class OrderCreatedNotificationWorkerTests(
         ILoggerProvider? loggerProvider = null,
         string? deadLetterQueueName = null,
         string? consumerRoutingKey = null,
-        IClock? clock = null)
+        IClock? clock = null,
+        string? consumerIngressExchangeName = null,
+        string? retryExchangeName = null,
+        string? retryQueueName = null,
+        FailOnceNotificationStoreGate? transientFailureGate = null)
     {
         var settings = new Dictionary<string, string?>
         {
@@ -1138,6 +1227,9 @@ public sealed class OrderCreatedNotificationWorkerTests(
             ["RabbitMq:ExchangeName"] = exchangeName,
             ["RabbitMq:OrderCreatedRoutingKey"] = routingKey,
             ["RabbitMq:OrderCreatedQueueName"] = queueName,
+            ["RabbitMq:ConsumerIngressExchangeName"] = consumerIngressExchangeName ?? new RabbitMqOptions().ConsumerIngressExchangeName,
+            ["RabbitMq:RetryExchangeName"] = retryExchangeName ?? new RabbitMqOptions().RetryExchangeName,
+            ["RabbitMq:OrderCreatedRetryQueueName"] = retryQueueName ?? new RabbitMqOptions().OrderCreatedRetryQueueName,
             ["RabbitMq:OrderCreatedDeadLetterQueueName"] = deadLetterQueueName ?? new RabbitMqOptions().OrderCreatedDeadLetterQueueName,
             ["RabbitMq:OrderCreatedConsumerRoutingKey"] = consumerRoutingKey ?? "order-created.v1"
         };
@@ -1168,6 +1260,14 @@ public sealed class OrderCreatedNotificationWorkerTests(
                 {
                     services.RemoveAll<IClock>();
                     services.AddSingleton(clock);
+                }
+                if (transientFailureGate is not null)
+                {
+                    services.RemoveAll<IOrderCreatedNotificationStore>();
+                    services.AddScoped<IOrderCreatedNotificationStore>(provider =>
+                        new FailOnceOrderCreatedNotificationStore(
+                            new EfOrderCreatedNotificationStore(provider.GetRequiredService<OrderSystemDbContext>()),
+                            transientFailureGate));
                 }
             })
             .Build();
@@ -1464,6 +1564,54 @@ WaitForProcessedMessageAsync(
             ArgumentException.ThrowIfNullOrWhiteSpace(checkpoint);
             cancellationToken.ThrowIfCancellationRequested();
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FailOnceNotificationStoreGate
+    {
+        private readonly TaskCompletionSource failed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int failureClaimed;
+
+        public bool TryClaimFailure()
+        {
+            var claimed = Interlocked.CompareExchange(ref failureClaimed, 1, 0) == 0;
+            if (claimed)
+            {
+                failed.TrySetResult();
+            }
+
+            return claimed;
+        }
+
+        public async Task<bool> WaitUntilFailedAsync(TimeSpan timeout)
+        {
+            try
+            {
+                await failed.Task.WaitAsync(timeout);
+                return true;
+            }
+            catch (TimeoutException)
+            {
+                return false;
+            }
+        }
+    }
+
+    private sealed class FailOnceOrderCreatedNotificationStore(
+        IOrderCreatedNotificationStore inner,
+        FailOnceNotificationStoreGate failureGate) : IOrderCreatedNotificationStore
+    {
+        public Task CreateAsync(
+            Notification notification,
+            ProcessedMessage processedMessage,
+            CancellationToken cancellationToken)
+        {
+            if (failureGate.TryClaimFailure())
+            {
+                throw new TimeoutException("Simulated transient PostgreSQL timeout");
+            }
+
+            return inner.CreateAsync(notification, processedMessage, cancellationToken);
         }
     }
 

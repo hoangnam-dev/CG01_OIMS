@@ -59,7 +59,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
             OrderCreatedV1? message = null;
             try
             {
-                message = ReadMessage(delivery, _rabbitMqOptions);
+                message = ReadMessage(delivery, _rabbitMqOptions, out var attempt);
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var processor = scope.ServiceProvider.GetRequiredService<OrderCreatedNotificationProcessor>();
 
@@ -75,6 +75,30 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
                         channel,
                         delivery,
                         stoppingToken);
+                    if (!transferred)
+                    {
+                        processingStopped.TrySetResult();
+                    }
+
+                    return;
+                }
+
+                if (processingResult == OrderCreatedNotificationProcessingResult.TransientFailure)
+                {
+                    var transferred = attempt < 3
+                        ? await TryTransferToRetryAndAcknowledgeAsync(
+                            transferChannel,
+                            channel,
+                            delivery,
+                            attempt + 1,
+                            stoppingToken
+                        )
+                        : await TryTransferToDeadLetterAndAcknowledgeAsync(
+                            transferChannel,
+                            channel,
+                            delivery,
+                            stoppingToken
+                        );
                     if (!transferred)
                     {
                         processingStopped.TrySetResult();
@@ -173,7 +197,16 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
 
     internal static OrderCreatedV1 ReadMessage(BasicDeliverEventArgs delivery, RabbitMqOptions options)
     {
-        OrderCreatedAttemptMetadataReader.Read(
+        return ReadMessage(delivery, options, out _);
+    }
+
+    private static OrderCreatedV1 ReadMessage(
+        BasicDeliverEventArgs delivery,
+        RabbitMqOptions options,
+        out int attempt
+    )
+    {
+        attempt = OrderCreatedAttemptMetadataReader.Read(
             delivery.Exchange,
             delivery.RoutingKey,
             delivery.BasicProperties.Headers,
@@ -194,11 +227,57 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
         return message;
     }
 
+    private async Task<bool> TryTransferToRetryAndAcknowledgeAsync(
+        IChannel transferChannel,
+        IChannel consumerChannel,
+        BasicDeliverEventArgs delivery,
+        int nextAttempt,
+        CancellationToken stoppingToken
+    )
+    {
+        var properties = new BasicProperties(delivery.BasicProperties)
+        {
+            Headers = delivery.BasicProperties.Headers is null
+                ? new Dictionary<string, object?>()
+                : new Dictionary<string, object?>(delivery.BasicProperties.Headers)
+        };
+        properties.Headers[OrderCreatedAttemptMetadataReader.AttemptHeaderName] = nextAttempt;
+
+        return await TryTransferAndAcknowledgeAsync(
+            transferChannel,
+            consumerChannel,
+            delivery,
+            _rabbitMqOptions.RetryExchangeName,
+            properties,
+            stoppingToken
+        );
+    }
+
     private async Task<bool> TryTransferToDeadLetterAndAcknowledgeAsync(
         IChannel transferChannel,
         IChannel consumerChannel,
         BasicDeliverEventArgs delivery,
-        CancellationToken stoppingToken)
+        CancellationToken stoppingToken
+    )
+    {
+        return await TryTransferAndAcknowledgeAsync(
+            transferChannel,
+            consumerChannel,
+            delivery,
+            _rabbitMqOptions.DeadLetterExchangeName,
+            new BasicProperties(delivery.BasicProperties),
+            stoppingToken
+        );
+    }
+
+    private async Task<bool> TryTransferAndAcknowledgeAsync(
+        IChannel transferChannel,
+        IChannel consumerChannel,
+        BasicDeliverEventArgs delivery,
+        string targetExchange,
+        BasicProperties properties,
+        CancellationToken stoppingToken
+    )
     {
         try
         {
@@ -206,10 +285,10 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
             transferTimeout.CancelAfter(_rabbitMqOptions.PublisherConfirmTimeout);
 
             await transferChannel.BasicPublishAsync(
-                _rabbitMqOptions.DeadLetterExchangeName,
+                targetExchange,
                 _rabbitMqOptions.OrderCreatedConsumerRoutingKey,
                 mandatory: true,
-                new BasicProperties(delivery.BasicProperties),
+                properties,
                 delivery.Body,
                 transferTimeout.Token);
             await consumerChannel.BasicAckAsync(delivery.DeliveryTag, false, stoppingToken);
@@ -237,5 +316,4 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
     }
 }
 
-internal sealed class OrderCreatedMessageContractException()
-    : Exception("OrderCreated message contract is invalid");
+internal sealed class OrderCreatedMessageContractException() : Exception("OrderCreated message contract is invalid");

@@ -4,5 +4,6 @@ public enum OrderCreatedNotificationProcessingResult
 {
     Completed,
     FutureOccurredAt,
-    Expired
+    Expired,
+    TransientFailure
 }

@@ -40,7 +40,15 @@ public sealed class OrderCreatedNotificationProcessor(
             processedAt
         );
 
-        await store.CreateAsync(notification, processedMessage, cancellationToken);
+        try
+        {
+            await store.CreateAsync(notification, processedMessage, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            return OrderCreatedNotificationProcessingResult.TransientFailure;
+        }
+
         return OrderCreatedNotificationProcessingResult.Completed;
     }
 }
