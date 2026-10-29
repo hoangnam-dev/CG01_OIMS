@@ -22,6 +22,14 @@ public static class MessageFailureEndpoints
             .ProducesProblem(StatusCodes.Status404NotFound)
             .ProducesProblem(StatusCodes.Status409Conflict);
 
+        failures.MapPost("/{id}/close", CloseAsync)
+            .Produces<ApiResponse<MessageFailureDto>>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict);
+
         return endpoints;
     }
 
@@ -48,6 +56,28 @@ public static class MessageFailureEndpoints
             ? Results.Json(
                 new ApiResponse<MessageFailureDto>(result.Value!, null),
                 statusCode: StatusCodes.Status202Accepted)
+            : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
+    }
+
+    private static async Task<IResult> CloseAsync(
+        string id,
+        MessageFailureActionRequest request,
+        HttpContext context,
+        MessageFailureOperationsService service,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(id, out var failedMessageId) || failedMessageId == Guid.Empty)
+        {
+            return ApplicationResultHttpMapper.InvalidUuid(context, "id");
+        }
+
+        var result = await service.CloseAsync(
+            failedMessageId,
+            request.Reason,
+            cancellationToken);
+
+        return result.IsSuccess
+            ? Results.Ok(new ApiResponse<MessageFailureDto>(result.Value!, null))
             : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
     }
 }

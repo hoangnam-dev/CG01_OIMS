@@ -179,5 +179,10 @@ public static class ApplicationErrors
             ApplicationErrorKind.Conflict,
             "MESSAGE_FAILURE_NOT_REDRIVABLE",
             "The Message Failure is not eligible for redrive.");
+
+        public static readonly ApplicationErrorDefinition StateConflict = new(
+            ApplicationErrorKind.Conflict,
+            "MESSAGE_FAILURE_STATE_CONFLICT",
+            "The Message Failure state does not allow the requested transition.");
     }
 }

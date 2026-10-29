@@ -11,7 +11,16 @@ public interface IFailedMessageStore
         Guid adminUserId,
         string reason,
         DateTimeOffset requestedAt,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken
+    );
+
+    Task<FailedMessageCloseStoreResult> CloseAsync(
+        Guid failedMessageId,
+        Guid adminUserId,
+        string reason,
+        DateTimeOffset closedAt,
+        CancellationToken cancellationToken
+    );
 }
 
 public enum FailedMessageRedriveStoreStatus
@@ -24,4 +33,18 @@ public enum FailedMessageRedriveStoreStatus
 
 public sealed record FailedMessageRedriveStoreResult(
     FailedMessageRedriveStoreStatus Status,
-    FailedMessage? FailedMessage);
+    FailedMessage? FailedMessage\
+);
+
+public enum FailedMessageCloseStoreStatus
+{
+    NotFound,
+    Closed,
+    AlreadyClosed,
+    StateConflict
+}
+
+public sealed record FailedMessageCloseStoreResult(
+    FailedMessageCloseStoreStatus Status,
+    FailedMessage? FailedMessage
+);

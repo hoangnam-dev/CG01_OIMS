@@ -130,6 +130,73 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
         Assert.Null(persisted.TerminalAt);
     }
 
+    [Fact]
+    [Trait("Requirement", "S10-T08")]
+    public async Task Close_PendingFailure_PersistsOneTerminalDisposition()
+    {
+        var now = PostgreSqlUtcNow();
+        await using var factory = CreateFactory(now);
+        var seeded = await SeedFailureAsync(
+            factory,
+            now,
+            FailedMessageFailureKind.Permanent,
+            failureCode: "order_not_found",
+            attemptCount: 1);
+        using var client = factory.CreateClient();
+        await LoginAndSetBearerAsync(client, seeded.AdminEmail);
+
+        const string reason = "Investigation completed without redrive";
+        using var firstResponse = await client.PostAsJsonAsync(
+            $"/api/operations/message-failures/{seeded.FailedMessageId:D}/close",
+            new { reason });
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        using var firstDocument = JsonDocument.Parse(
+            await firstResponse.Content.ReadAsStringAsync());
+        Assert.Equal(
+            "Closed",
+            firstDocument.RootElement
+                .GetProperty("data")
+                .GetProperty("status")
+                .GetString());
+
+        using var firstScope = factory.Services.CreateScope();
+        var firstContext = firstScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>();
+        var firstPersisted = await firstContext.FailedMessages
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == seeded.FailedMessageId);
+
+        Assert.Equal(FailedMessageStatus.Closed, firstPersisted.Status);
+        Assert.Equal(now, firstPersisted.ClosedAt);
+        Assert.Equal(seeded.AdminId, firstPersisted.ClosedByUserId);
+        Assert.Equal(reason, firstPersisted.CloseReason);
+        Assert.Equal(now, firstPersisted.TerminalAt);
+        Assert.Null(firstPersisted.RedriveRequestedAt);
+        Assert.Null(firstPersisted.RedriveRequestedByUserId);
+        Assert.Null(firstPersisted.RedriveReason);
+        Assert.Null(firstPersisted.RedrivenAt);
+
+        using var replayResponse = await client.PostAsJsonAsync(
+            $"/api/operations/message-failures/{seeded.FailedMessageId:D}/close",
+            new { reason = "A different reason must not replace the first" });
+
+        Assert.Equal(HttpStatusCode.OK, replayResponse.StatusCode);
+
+        using var replayScope = factory.Services.CreateScope();
+        var replayContext = replayScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>();
+        var replayed = await replayContext.FailedMessages
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == seeded.FailedMessageId);
+
+        Assert.Equal(firstPersisted.ClosedAt, replayed.ClosedAt);
+        Assert.Equal(firstPersisted.ClosedByUserId, replayed.ClosedByUserId);
+        Assert.Equal(firstPersisted.CloseReason, replayed.CloseReason);
+        Assert.Equal(firstPersisted.TerminalAt, replayed.TerminalAt);
+    }
+
     private WebApplicationFactory<Program> CreateFactory(DateTimeOffset now) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {

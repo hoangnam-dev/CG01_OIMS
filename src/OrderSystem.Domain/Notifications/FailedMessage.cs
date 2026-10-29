@@ -170,6 +170,32 @@ public sealed class FailedMessage
         return true;
     }
 
+    public bool TryClose(Guid adminUserId, string reason, DateTimeOffset closedAt)
+    {
+        DomainGuard.RequiredGuid(adminUserId);
+        var normalizedReason = RequiredBoundedText(
+            reason,
+            nameof(reason),
+            MaximumOperationalReasonLength);
+
+        if (Status == FailedMessageStatus.Closed)
+        {
+            return true;
+        }
+
+        if (Status != FailedMessageStatus.Pending)
+        {
+            return false;
+        }
+
+        Status = FailedMessageStatus.Closed;
+        ClosedAt = closedAt;
+        ClosedByUserId = adminUserId;
+        CloseReason = normalizedReason;
+        TerminalAt = closedAt;
+        return true;
+    }
+
     private static Guid? OptionalGuid(Guid? value, string paramName) =>
         value is null ? null : DomainGuard.RequiredGuid(value.Value, paramName);
 
