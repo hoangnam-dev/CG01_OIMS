@@ -8,6 +8,15 @@ public interface IFailedMessageStore
 
     Task<FailedMessage?> GetAsync(Guid failedMessageId, CancellationToken cancellationToken);
 
+    Task<byte[]?> GetPayloadAndRecordAccessAsync(
+        Guid failedMessageId,
+        Guid accessId,
+        Guid adminUserId,
+        string reason,
+        DateTimeOffset accessedAt,
+        CancellationToken cancellationToken
+    );
+
     Task<FailedMessageRedriveStoreResult> RequestRedriveAsync(
         Guid failedMessageId,
         Guid adminUserId,

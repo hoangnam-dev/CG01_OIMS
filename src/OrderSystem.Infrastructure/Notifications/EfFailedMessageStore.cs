@@ -28,6 +28,46 @@ internal sealed class EfFailedMessageStore(OrderSystemDbContext dbContext) : IFa
         );
     }
 
+    public async Task<byte[]?> GetPayloadAndRecordAccessAsync(
+        Guid failedMessageId,
+        Guid accessId,
+        Guid adminUserId,
+        string reason,
+        DateTimeOffset accessedAt,
+        CancellationToken cancellationToken
+    )
+    {
+        if (failedMessageId == Guid.Empty)
+        {
+            throw new ArgumentException("Failed Message ID cannot be empty", nameof(failedMessageId));
+        }
+
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        var failedMessage = await dbContext.FailedMessages
+            .FromSqlInterpolated($"SELECT * FROM failed_messages WHERE id = {failedMessageId} FOR SHARE")
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (failedMessage is null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return null;
+        }
+
+        var payload = failedMessage.Body.ToArray();
+        dbContext.FailedMessagePayloadAccesses.Add(
+            new FailedMessagePayloadAccess(
+                accessId,
+                failedMessageId,
+                adminUserId,
+                reason,
+                accessedAt
+            )
+        );
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return payload;
+    }
+
     public async Task<FailedMessageRedriveStoreResult> RequestRedriveAsync(
         Guid failedMessageId,
         Guid adminUserId,

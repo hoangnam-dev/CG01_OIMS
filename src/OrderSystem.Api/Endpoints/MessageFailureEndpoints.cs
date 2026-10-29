@@ -21,6 +21,13 @@ public static class MessageFailureEndpoints
             .ProducesProblem(StatusCodes.Status403Forbidden)
             .ProducesProblem(StatusCodes.Status404NotFound);
 
+        failures.MapPost("/{id}/payload", GetPayloadAsync)
+            .Produces<ApiResponse<MessageFailurePayloadDto>>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound);
+
         failures.MapPost("/{id}/redrive", RequestRedriveAsync)
             .Produces<ApiResponse<MessageFailureDto>>(StatusCodes.Status202Accepted)
             .ProducesProblem(StatusCodes.Status400BadRequest)
@@ -80,6 +87,30 @@ public static class MessageFailureEndpoints
             ? Results.Json(
                 new ApiResponse<MessageFailureDto>(result.Value!, null),
                 statusCode: StatusCodes.Status202Accepted)
+            : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
+    }
+
+    private static async Task<IResult> GetPayloadAsync(
+        string id,
+        MessageFailureActionRequest request,
+        HttpContext context,
+        MessageFailureOperationsService service,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!Guid.TryParse(id, out var failedMessageId) || failedMessageId == Guid.Empty)
+        {
+            return ApplicationResultHttpMapper.InvalidUuid(context, "id");
+        }
+
+        var result = await service.GetPayloadAsync(
+            failedMessageId,
+            request.Reason,
+            cancellationToken
+        );
+
+        return result.IsSuccess
+            ? Results.Ok(new ApiResponse<MessageFailurePayloadDto>(result.Value!, null))
             : ApplicationResultHttpMapper.ToProblem(context, result.Error!);
     }
 

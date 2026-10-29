@@ -1,5 +1,6 @@
 using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Common.Clock;
+using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Application.Common.Results;
 using OrderSystem.Application.Notifications.Contracts;
 using OrderSystem.Domain.Notifications;
@@ -10,7 +11,8 @@ namespace OrderSystem.Application.Notifications;
 public sealed class MessageFailureOperationsService(
     IFailedMessageStore store,
     ICurrentUser currentUser,
-    IClock clock)
+    IClock clock,
+    IIdGenerator idGenerator)
 {
     public async Task<ApplicationResult<MessageFailureDto>> GetAsync(
         Guid failedMessageId,
@@ -69,6 +71,48 @@ public sealed class MessageFailureOperationsService(
                 ApplicationResult.Failure<MessageFailureDto>(ApplicationErrors.MessageFailures.NotRedrivable.Create()),
             _ => throw new InvalidOperationException("Message Failure redrive produced an unsupported result")
         };
+    }
+
+    public async Task<ApplicationResult<MessageFailurePayloadDto>> GetPayloadAsync(
+        Guid failedMessageId,
+        string? reason,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!currentUser.IsAuthenticated || currentUser.UserId is not { } userId || userId == Guid.Empty)
+        {
+            return ApplicationResult.Failure<MessageFailurePayloadDto>(ApplicationErrors.Unauthorized.Create());
+        }
+
+        if (currentUser.Role != UserRole.Admin)
+        {
+            return ApplicationResult.Failure<MessageFailurePayloadDto>(ApplicationErrors.Forbidden.Create());
+        }
+
+        if (string.IsNullOrWhiteSpace(reason) || reason.Trim().Length > FailedMessage.MaximumOperationalReasonLength)
+        {
+            return ApplicationResult.Failure<MessageFailurePayloadDto>(
+                ApplicationErrors.ValidationFailed.Create(
+                    validationErrors: new Dictionary<string, string[]>
+                    {
+                        ["reason"] = ["Reason must contain between 1 and 500 characters after trimming."]
+                    }
+                )
+            );
+        }
+
+        var payload = await store.GetPayloadAndRecordAccessAsync(
+            failedMessageId,
+            idGenerator.NewId(),
+            userId,
+            reason.Trim(),
+            clock.UtcNow,
+            cancellationToken
+        );
+
+        return payload is null
+            ? ApplicationResult.Failure<MessageFailurePayloadDto>(ApplicationErrors.MessageFailures.NotFound.Create())
+            : ApplicationResult.Success(new MessageFailurePayloadDto(Convert.ToBase64String(payload)));
     }
 
     public async Task<ApplicationResult<MessageFailureDto>> CloseAsync(

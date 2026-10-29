@@ -200,7 +200,7 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
     [Fact]
     [Trait("Requirement", "S10-T08")]
     [Trait("TestId", "MSG-REDRIVE-004")]
-    public async Task MetadataDetail_AdminReceivesFailureEvidenceWithoutStoredBody()
+    public async Task PayloadAccess_AdminReceivesBodyOnlyAfterDurableAudit()
     {
         var now = PostgreSqlUtcNow();
         await using var factory = CreateFactory(now);
@@ -234,6 +234,35 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
         Assert.Equal(seeded.Body.Length, data.GetProperty("bodyLength").GetInt32());
         Assert.True(data.TryGetProperty("safeHeaders", out _));
         Assert.False(data.TryGetProperty("body", out _));
+
+        const string reason = "Inspect payload after dependency incident";
+        using var payloadResponse = await client.PostAsJsonAsync(
+            $"/api/operations/message-failures/{seeded.FailedMessageId:D}/payload",
+            new { reason });
+
+        Assert.Equal(HttpStatusCode.OK, payloadResponse.StatusCode);
+
+        using var payloadDocument = JsonDocument.Parse(
+            await payloadResponse.Content.ReadAsStringAsync());
+        Assert.Equal(
+            Convert.ToBase64String(seeded.Body),
+            payloadDocument.RootElement
+                .GetProperty("data")
+                .GetProperty("bodyBase64")
+                .GetString());
+
+        using var auditScope = factory.Services.CreateScope();
+        var auditContext = auditScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>();
+        var audit = await auditContext.FailedMessagePayloadAccesses
+            .AsNoTracking()
+            .SingleAsync(candidate =>
+                candidate.FailedMessageId == seeded.FailedMessageId);
+
+        Assert.NotEqual(Guid.Empty, audit.Id);
+        Assert.Equal(seeded.AdminId, audit.AccessedByUserId);
+        Assert.Equal(reason, audit.Reason);
+        Assert.Equal(now, audit.AccessedAt);
     }
 
     private WebApplicationFactory<Program> CreateFactory(DateTimeOffset now) =>

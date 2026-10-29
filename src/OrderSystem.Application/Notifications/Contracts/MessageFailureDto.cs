@@ -28,4 +28,7 @@ public sealed record MessageFailureDto(
     DateTimeOffset? ClosedAt,
     Guid? ClosedByUserId,
     string? CloseReason,
-    DateTimeOffset? TerminalAt);
+    DateTimeOffset? TerminalAt
+);
+
+public sealed record MessageFailurePayloadDto(string BodyBase64);
