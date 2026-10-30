@@ -346,6 +346,23 @@ public static class DependencyInjection
         return services;
     }
 
+    public static IServiceCollection AddOrderSystemMessageCleanupInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        services.AddOptions<MessageCleanupOptions>()
+            .Bind(configuration.GetRequiredSection(MessageCleanupOptions.SectionName))
+            .Validate(options => options.CleanupInitialDelay > TimeSpan.Zero, "MessageCleanup:CleanupInitialDelay must be positive.")
+            .Validate(options => options.CleanupInterval > TimeSpan.Zero, "MessageCleanup:CleanupInterval must be positive.")
+            .Validate(options => options.CleanupBatchSize > 0, "MessageCleanup:CleanupBatchSize must be positive.")
+            .ValidateOnStart();
+
+        return services;
+    }
+
     private static bool IsRedisConnectionString(string connectionString)
     {
         try
