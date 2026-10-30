@@ -11,4 +11,6 @@ public sealed class MessageCleanupOptions
     public TimeSpan CleanupInterval { get; init; }
 
     public int CleanupBatchSize { get; init; }
+
+    public TimeSpan ProcessedMessageRetention { get; init; }
 }
