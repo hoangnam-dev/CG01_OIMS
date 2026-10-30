@@ -1045,7 +1045,7 @@ public sealed class OrderCreatedNotificationWorkerTests(
             .ToListAsync());
     }
 
-    [Fact(Skip = "Pending S10-T08 DLQ intake implementation")]
+    [Fact]
     [Trait("Requirement", "S10-T08")]
     [Trait("TestId", "MSG-DLQ-004")]
     public async Task DeadLetterIntake_CommitSucceedsButAckIsLost_RedeliveryKeepsCorrelatedEvidence()
@@ -1088,7 +1088,8 @@ public sealed class OrderCreatedNotificationWorkerTests(
             sourceExchange,
             sourceRoutingKey,
             sourceQueue,
-            beforeAckHook))
+            beforeAckHook,
+            enableDeadLetterIntake: true))
         {
             await firstHost.StartAsync();
             try
@@ -1125,7 +1126,8 @@ public sealed class OrderCreatedNotificationWorkerTests(
             sourceExchange,
             sourceRoutingKey,
             sourceQueue,
-            afterAckHook))
+            afterAckHook,
+            enableDeadLetterIntake: true))
         {
             await secondHost.StartAsync();
             try
@@ -1170,6 +1172,371 @@ public sealed class OrderCreatedNotificationWorkerTests(
             Assert.Equal(sourceExchange, failedMessage.OriginalExchange);
             Assert.Equal(sourceRoutingKey, failedMessage.OriginalRoutingKey);
         });
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T08")]
+    [Trait("TestId", "MSG-DLQ-004")]
+    public async Task DeadLetterIntake_UnsupportedVersion_PersistsClassificationAndOriginalRoute()
+    {
+        var now = new DateTimeOffset(2026, 10, 29, 11, 0, 0, TimeSpan.Zero);
+        var message = new OrderCreatedV1(
+            2,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            now);
+        var body = OrderCreatedV1Serializer.Serialize(message);
+        var suffix = Guid.NewGuid().ToString("N");
+        var exchangeName = $"oims.events.test.{suffix}";
+        var routingKey = $"order.created.v1.test.{suffix}";
+        var queueName = $"oims.notification.order-created.v1.test.{suffix}";
+        var deadLetterQueueName = $"{queueName}.dlq";
+        var consumerRoutingKey = $"order-created.v1.test.{suffix}";
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+        }
+
+        var afterAckHook = new SignalingCheckpointHook(
+            RabbitMqOrderCreatedDeadLetterIntakeConsumer.AfterAcknowledgementCheckpoint);
+        using var host = CreateNotificationConsumerHost(
+            exchangeName,
+            routingKey,
+            queueName,
+            afterAckHook,
+            deadLetterQueueName: deadLetterQueueName,
+            consumerRoutingKey: consumerRoutingKey,
+            clock: new FakeClock(now),
+            enableDeadLetterIntake: true);
+        await host.Services.GetRequiredService<IRabbitMqTopologyInitializer>().InitializeAsync();
+        await PublishAsync(message, exchangeName, routingKey, queueName);
+        await host.StartAsync();
+        try
+        {
+            Assert.True(
+                await afterAckHook.WaitUntilReachedAsync(TimeSpan.FromSeconds(10)),
+                "The unsupported delivery was not persisted and acknowledged by DLQ intake");
+
+            await using var assertionContext = new OrderSystemDbContext(dbOptions);
+            var failedMessage = await assertionContext.FailedMessages
+                .AsNoTracking()
+                .SingleAsync(candidate => candidate.MessageId == message.MessageId);
+
+            Assert.Equal(message.CorrelationId, failedMessage.CorrelationId);
+            Assert.Equal("OrderCreated", failedMessage.EventType);
+            Assert.Equal(2, failedMessage.EventVersion);
+            Assert.Equal(now, failedMessage.OccurredAt);
+            Assert.Equal(body, failedMessage.Body);
+            Assert.Equal(FailedMessageBodyFingerprint.Compute(body), failedMessage.BodySha256);
+            Assert.Equal(FailedMessageFailureKind.UnsupportedVersion, failedMessage.FailureKind);
+            Assert.Equal("unsupported_version", failedMessage.FailureCode);
+            Assert.Equal(1, failedMessage.AttemptCount);
+            Assert.Equal(FailedMessageStatus.Pending, failedMessage.Status);
+            Assert.Equal(exchangeName, failedMessage.OriginalExchange);
+            Assert.Equal(routingKey, failedMessage.OriginalRoutingKey);
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T08")]
+    [Trait("TestId", "MSG-REDRIVE-001")]
+    public async Task RedriveDispatcher_RequestedFailure_PublishesOriginalMessageAndMarksRedriven()
+    {
+        var currentUtc = DateTimeOffset.UtcNow;
+        var now = currentUtc.AddTicks(-(currentUtc.Ticks % TimeSpan.TicksPerMicrosecond));
+        var adminId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var failedMessageId = Guid.NewGuid();
+        var message = new OrderCreatedV1(
+            EventVersion: 1,
+            MessageId: Guid.NewGuid(),
+            OrderId: orderId,
+            UserId: userId,
+            CorrelationId: Guid.NewGuid(),
+            OccurredAt: now.AddHours(-1));
+        var body = OrderCreatedV1Serializer.Serialize(message);
+        var suffix = Guid.NewGuid().ToString("N");
+        var exchangeName = $"oims.events.test.{suffix}";
+        var routingKey = $"order.created.v1.test.{suffix}";
+        var queueName = $"oims.notification.order-created.v1.test.{suffix}";
+        var consumerRoutingKey = $"order-created.v1.test.{suffix}";
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+            var failedMessage = new FailedMessage(
+                failedMessageId,
+                "OrderCreatedNotificationConsumer",
+                message.MessageId,
+                message.MessageId.ToString("D"),
+                message.CorrelationId,
+                "OrderCreated",
+                message.EventVersion,
+                message.OccurredAt,
+                body,
+                FailedMessageBodyFingerprint.Compute(body),
+                safeHeaders: "{}",
+                originalExchange: exchangeName,
+                originalRoutingKey: routingKey,
+                FailedMessageFailureKind.RetryExhausted,
+                failureCode: "retry_exhausted",
+                attemptCount: 3,
+                capturedAt: now);
+            Assert.True(failedMessage.TryRequestRedrive(adminId, "Dependency recovered", now));
+
+            arrangeContext.AddRange(
+                new User(
+                    adminId,
+                    $"redrive-admin-{adminId:N}@example.com",
+                    $"redrive-admin-{adminId:N}@example.com",
+                    TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Admin,
+                    now.AddDays(-1)),
+                new User(
+                    userId,
+                    $"redrive-user-{userId:N}@example.com",
+                    $"redrive-user-{userId:N}@example.com",
+                    TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Customer,
+                    now.AddDays(-1)),
+                new Order(
+                    orderId,
+                    userId,
+                    totalAmount: 0m,
+                    reservationExpiresAt: now.AddMinutes(15),
+                    createdAt: now.AddHours(-1)),
+                failedMessage);
+            await arrangeContext.SaveChangesAsync();
+        }
+
+        using var process = StartWorker(
+            exchangeName,
+            routingKey,
+            queueName,
+            consumerRoutingKey: consumerRoutingKey,
+            redriveRatePerSecond: 100);
+        var output = new StringBuilder();
+        process.OutputDataReceived += (_, eventArgs) => CaptureOutput(output, eventArgs.Data);
+        process.ErrorDataReceived += (_, eventArgs) => CaptureOutput(output, eventArgs.Data);
+
+        try
+        {
+            Assert.True(process.Start(), "The Worker process could not be started.");
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            var status = await WaitForFailedMessageStatusAsync(
+                dbOptions,
+                failedMessageId,
+                FailedMessageStatus.Redriven,
+                process,
+                output,
+                TimeSpan.FromSeconds(10));
+
+            Assert.Equal(FailedMessageStatus.Redriven, status);
+            var notification = await WaitForNotificationAsync(
+                dbOptions,
+                message.MessageId,
+                process,
+                output,
+                TimeSpan.FromSeconds(10));
+            Assert.NotNull(notification);
+            Assert.Equal(orderId, notification.OrderId);
+            Assert.Equal(userId, notification.UserId);
+
+            await using var assertionContext = new OrderSystemDbContext(dbOptions);
+            Assert.Equal(
+                1,
+                await assertionContext.ProcessedMessages.CountAsync(candidate =>
+                    candidate.MessageId == message.MessageId &&
+                    candidate.ConsumerName == "OrderCreatedNotificationConsumer"));
+
+            var persistedFailure = await assertionContext.FailedMessages
+                .AsNoTracking()
+                .SingleAsync(candidate => candidate.Id == failedMessageId);
+            Assert.NotNull(persistedFailure.RedrivenAt);
+            Assert.True(persistedFailure.RedrivenAt >= persistedFailure.RedriveRequestedAt);
+            Assert.Equal(persistedFailure.RedrivenAt, persistedFailure.TerminalAt);
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+
+            await process.WaitForExitAsync();
+        }
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T08")]
+    [Trait("TestId", "MSG-REDRIVE-003")]
+    public async Task RedriveDispatcher_PublishSucceedsButMarkFails_RepublishKeepsOneEffectAndConverges()
+    {
+        var currentUtc = DateTimeOffset.UtcNow;
+        var now = currentUtc.AddTicks(-(currentUtc.Ticks % TimeSpan.TicksPerMicrosecond));
+        var adminId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var failedMessageId = Guid.NewGuid();
+        var message = new OrderCreatedV1(
+            EventVersion: 1,
+            MessageId: Guid.NewGuid(),
+            OrderId: orderId,
+            UserId: userId,
+            CorrelationId: Guid.NewGuid(),
+            OccurredAt: now.AddHours(-1));
+        var body = OrderCreatedV1Serializer.Serialize(message);
+        var suffix = Guid.NewGuid().ToString("N");
+        var exchangeName = $"oims.events.test.{suffix}";
+        var routingKey = $"order.created.v1.test.{suffix}";
+        var queueName = $"oims.notification.order-created.v1.test.{suffix}";
+        var consumerRoutingKey = $"order-created.v1.test.{suffix}";
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+        var triggerInstalled = false;
+
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+            var failedMessage = new FailedMessage(
+                failedMessageId,
+                "OrderCreatedNotificationConsumer",
+                message.MessageId,
+                message.MessageId.ToString("D"),
+                message.CorrelationId,
+                "OrderCreated",
+                message.EventVersion,
+                message.OccurredAt,
+                body,
+                FailedMessageBodyFingerprint.Compute(body),
+                safeHeaders: "{}",
+                originalExchange: exchangeName,
+                originalRoutingKey: routingKey,
+                FailedMessageFailureKind.RetryExhausted,
+                failureCode: "retry_exhausted",
+                attemptCount: 3,
+                capturedAt: now);
+            Assert.True(failedMessage.TryRequestRedrive(adminId, "Dependency recovered", now));
+
+            arrangeContext.AddRange(
+                new User(
+                    adminId,
+                    $"redrive-mark-admin-{adminId:N}@example.com",
+                    $"redrive-mark-admin-{adminId:N}@example.com",
+                    TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Admin,
+                    now.AddDays(-1)),
+                new User(
+                    userId,
+                    $"redrive-mark-user-{userId:N}@example.com",
+                    $"redrive-mark-user-{userId:N}@example.com",
+                    TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Customer,
+                    now.AddDays(-1)),
+                new Order(
+                    orderId,
+                    userId,
+                    totalAmount: 0m,
+                    reservationExpiresAt: now.AddMinutes(15),
+                    createdAt: now.AddHours(-1)),
+                failedMessage);
+            await arrangeContext.SaveChangesAsync();
+            await InstallFailingRedriveMarkTriggerAsync(arrangeContext, failedMessageId);
+            triggerInstalled = true;
+        }
+
+        using var process = StartWorker(
+            exchangeName,
+            routingKey,
+            queueName,
+            consumerRoutingKey: consumerRoutingKey,
+            redriveRatePerSecond: 10);
+        var output = new StringBuilder();
+        process.OutputDataReceived += (_, eventArgs) => CaptureOutput(output, eventArgs.Data);
+        process.ErrorDataReceived += (_, eventArgs) => CaptureOutput(output, eventArgs.Data);
+
+        try
+        {
+            Assert.True(process.Start(), "The Worker process could not be started.");
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            var notification = await WaitForNotificationAsync(
+                dbOptions,
+                message.MessageId,
+                process,
+                output,
+                TimeSpan.FromSeconds(10));
+            Assert.NotNull(notification);
+
+            await using (var blockedContext = new OrderSystemDbContext(dbOptions))
+            {
+                var blockedFailure = await blockedContext.FailedMessages
+                    .AsNoTracking()
+                    .SingleAsync(candidate => candidate.Id == failedMessageId);
+                Assert.Equal(FailedMessageStatus.RedriveRequested, blockedFailure.Status);
+                Assert.Null(blockedFailure.RedrivenAt);
+                Assert.Null(blockedFailure.TerminalAt);
+            }
+
+            await RemoveFailingRedriveMarkTriggerAsync(dbOptions);
+            triggerInstalled = false;
+
+            var status = await WaitForFailedMessageStatusAsync(
+                dbOptions,
+                failedMessageId,
+                FailedMessageStatus.Redriven,
+                process,
+                output,
+                TimeSpan.FromSeconds(10));
+            Assert.Equal(FailedMessageStatus.Redriven, status);
+
+            await using var assertionContext = new OrderSystemDbContext(dbOptions);
+            Assert.Equal(
+                1,
+                await assertionContext.Notifications.CountAsync(candidate =>
+                    candidate.MessageId == message.MessageId));
+            Assert.Equal(
+                1,
+                await assertionContext.ProcessedMessages.CountAsync(candidate =>
+                    candidate.MessageId == message.MessageId &&
+                    candidate.ConsumerName == "OrderCreatedNotificationConsumer"));
+
+            var persistedFailure = await assertionContext.FailedMessages
+                .AsNoTracking()
+                .SingleAsync(candidate => candidate.Id == failedMessageId);
+            Assert.NotNull(persistedFailure.RedrivenAt);
+            Assert.Equal(persistedFailure.RedrivenAt, persistedFailure.TerminalAt);
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+
+            await process.WaitForExitAsync();
+            if (triggerInstalled)
+            {
+                await RemoveFailingRedriveMarkTriggerAsync(dbOptions);
+            }
+        }
     }
 
     [Fact]
@@ -1356,12 +1723,20 @@ public sealed class OrderCreatedNotificationWorkerTests(
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
-            var deadLetterState = await WaitForQueueStateAsync(
-                deadLetterQueueName,
-                expectedMessageCount: 1,
-                expectedConsumerCount: 0,
+            var failedMessage = await WaitForFailedMessageAsync(
+                dbOptions,
+                messageId,
+                process,
+                output,
                 TimeSpan.FromSeconds(10));
-            Assert.Equal(1u, deadLetterState.MessageCount);
+            Assert.NotNull(failedMessage);
+            Assert.Equal(correlationId, failedMessage.CorrelationId);
+            Assert.Equal(OrderCreatedV1Serializer.Serialize(message), failedMessage.Body);
+            Assert.Equal(FailedMessageFailureKind.Permanent, failedMessage.FailureKind);
+            Assert.Equal("permanent_failure", failedMessage.FailureCode);
+            Assert.Equal(FailedMessageStatus.Pending, failedMessage.Status);
+            Assert.Equal(exchangeName, failedMessage.OriginalExchange);
+            Assert.Equal(routingKey, failedMessage.OriginalRoutingKey);
             var sourceState = await WaitForQueueStateAsync(queueName, 0, 1, TimeSpan.FromSeconds(5));
             Assert.Equal(0u, sourceState.MessageCount);
             Assert.Equal(1u, sourceState.ConsumerCount);
@@ -1406,6 +1781,9 @@ public sealed class OrderCreatedNotificationWorkerTests(
         var queueName = $"oims.notification.order-created.v1.test.{Guid.NewGuid():N}";
         const string sensitiveMarker = "must-not-appear-in-worker-logs";
         var deadLetterQueueName = $"{queueName}.dlq";
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
         var payload = Encoding.UTF8.GetBytes($$"""
             {"eventVersion":1,"secretMarker":"{{sensitiveMarker}}"}
             """);
@@ -1417,6 +1795,11 @@ public sealed class OrderCreatedNotificationWorkerTests(
             MessageId = messageId,
             CorrelationId = correlationId
         };
+
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+        }
 
         await PublishAsync(payload, properties, exchangeName, routingKey, queueName);
 
@@ -1446,31 +1829,24 @@ public sealed class OrderCreatedNotificationWorkerTests(
             Assert.Contains($"RoutingKey {routingKey}", traceLine, StringComparison.Ordinal);
             Assert.Contains($"Queue {queueName}", traceLine, StringComparison.Ordinal);
 
-            var deadLetterState = await WaitForQueueStateAsync(
-                deadLetterQueueName, 1, 0, TimeSpan.FromSeconds(5));
-            Assert.Equal(1u, deadLetterState.MessageCount);
+            var failedMessage = await WaitForFailedMessageAsync(
+                dbOptions,
+                Guid.Parse(messageId),
+                process,
+                output,
+                TimeSpan.FromSeconds(10));
+            Assert.NotNull(failedMessage);
+            Assert.Equal(Guid.Parse(correlationId), failedMessage.CorrelationId);
+            Assert.Equal(payload, failedMessage.Body);
+            Assert.Equal(FailedMessageFailureKind.Malformed, failedMessage.FailureKind);
+            Assert.Equal("malformed_message", failedMessage.FailureCode);
+            Assert.Equal(FailedMessageStatus.Pending, failedMessage.Status);
+            Assert.Equal(exchangeName, failedMessage.OriginalExchange);
+            Assert.Equal(routingKey, failedMessage.OriginalRoutingKey);
             var queueState = await WaitForQueueStateAsync(
                 queueName, 0, 1, TimeSpan.FromSeconds(5));
             Assert.Equal(0u, queueState.MessageCount);
             Assert.Equal(1u, queueState.ConsumerCount);
-
-            var connectionFactory = new ConnectionFactory
-            {
-                HostName = rabbitMq.Host,
-                Port = rabbitMq.Port,
-                VirtualHost = "/",
-                UserName = rabbitMq.Username,
-                Password = rabbitMq.Password
-            };
-            await using (var connection = await connectionFactory.CreateConnectionAsync())
-            await using (var channel = await connection.CreateChannelAsync())
-            {
-                var deadLetter = await channel.BasicGetAsync(deadLetterQueueName, autoAck: false);
-                Assert.NotNull(deadLetter);
-                Assert.Equal(payload, deadLetter.Body.ToArray());
-                Assert.Equal(messageId, deadLetter.BasicProperties.MessageId);
-                Assert.Equal(correlationId, deadLetter.BasicProperties.CorrelationId);
-            }
 
             string capturedOutput;
             lock (output)
@@ -1642,7 +2018,8 @@ public sealed class OrderCreatedNotificationWorkerTests(
         string routingKey,
         string queueName,
         string? deadLetterQueueName = null,
-        string? consumerRoutingKey = null)
+        string? consumerRoutingKey = null,
+        int? redriveRatePerSecond = null)
     {
         var workerAssemblyPath =
             typeof(worker::OrderSystem.Worker.ReservationExpirationWorker)
@@ -1688,10 +2065,90 @@ public sealed class OrderCreatedNotificationWorkerTests(
             process.StartInfo.Environment["RabbitMq__OrderCreatedConsumerRoutingKey"] =
                 consumerRoutingKey;
         }
+        if (redriveRatePerSecond is not null)
+        {
+            process.StartInfo.Environment["MessageRedrive__Enabled"] = "true";
+            process.StartInfo.Environment["MessageRedrive__RatePerSecond"] =
+                redriveRatePerSecond.Value.ToString(CultureInfo.InvariantCulture);
+        }
+        else
+        {
+            process.StartInfo.Environment["MessageRedrive__Enabled"] = "false";
+        }
         process.StartInfo.Environment.Remove("Jwt__SigningKey");
         process.StartInfo.Environment.Remove("Payment__FakeWebhookSecret");
 
         return process;
+    }
+
+    private static Task<int> InstallFailingRedriveMarkTriggerAsync(
+        OrderSystemDbContext dbContext,
+        Guid failedMessageId)
+    {
+        var sql = $"""
+            DROP TRIGGER IF EXISTS trg_fail_redrive_mark ON failed_messages;
+            CREATE OR REPLACE FUNCTION fail_redrive_mark()
+            RETURNS trigger AS $$
+            BEGIN
+                IF NEW.id = '{failedMessageId:D}'::uuid
+                   AND OLD.status = 'RedriveRequested'
+                   AND NEW.status = 'Redriven' THEN
+                    RAISE EXCEPTION 'forced redrive mark failure';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            CREATE TRIGGER trg_fail_redrive_mark
+            BEFORE UPDATE ON failed_messages
+            FOR EACH ROW EXECUTE FUNCTION fail_redrive_mark();
+            """;
+        return dbContext.Database.ExecuteSqlRawAsync(sql);
+    }
+
+    private static async Task RemoveFailingRedriveMarkTriggerAsync(
+        DbContextOptions<OrderSystemDbContext> options)
+    {
+        await using var dbContext = new OrderSystemDbContext(options);
+        await dbContext.Database.ExecuteSqlRawAsync(
+            "DROP TRIGGER IF EXISTS trg_fail_redrive_mark ON failed_messages;");
+        await dbContext.Database.ExecuteSqlRawAsync(
+            "DROP FUNCTION IF EXISTS fail_redrive_mark();");
+    }
+
+    private static async Task<FailedMessageStatus> WaitForFailedMessageStatusAsync(
+        DbContextOptions<OrderSystemDbContext> options,
+        Guid failedMessageId,
+        FailedMessageStatus expectedStatus,
+        Process process,
+        StringBuilder output,
+        TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow.Add(timeout);
+        var observedStatus = FailedMessageStatus.Pending;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (process.HasExited)
+            {
+                throw new InvalidOperationException(
+                    $"Worker exited before the Message Failure reached {expectedStatus}" +
+                    $"{Environment.NewLine}{output}");
+            }
+
+            await using var assertionContext = new OrderSystemDbContext(options);
+            observedStatus = await assertionContext.FailedMessages
+                .AsNoTracking()
+                .Where(candidate => candidate.Id == failedMessageId)
+                .Select(candidate => candidate.Status)
+                .SingleAsync();
+            if (observedStatus == expectedStatus)
+            {
+                return observedStatus;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+        }
+
+        return observedStatus;
     }
 
     private IHost CreateNotificationConsumerHost(
@@ -1708,7 +2165,8 @@ public sealed class OrderCreatedNotificationWorkerTests(
         string? retryQueueName = null,
         FailOnceNotificationStoreGate? transientFailureGate = null,
         string? databaseConnectionString = null,
-        AlwaysFailNotificationStoreGate? persistentTransientFailureGate = null)
+        AlwaysFailNotificationStoreGate? persistentTransientFailureGate = null,
+        bool enableDeadLetterIntake = false)
     {
         var settings = new Dictionary<string, string?>
         {
@@ -1748,6 +2206,10 @@ public sealed class OrderCreatedNotificationWorkerTests(
                     .AddOrderSystemCommonInfrastructure()
                     .AddOrderSystemMessagingInfrastructure(context.Configuration)
                     .AddOrderSystemNotificationConsumer();
+                if (enableDeadLetterIntake)
+                {
+                    services.AddOrderSystemDeadLetterIntakeConsumer();
+                }
                 services.RemoveAll<IOperationHook>();
                 services.AddSingleton(operationHook);
                 if (clock is not null)
@@ -1816,6 +2278,40 @@ public sealed class OrderCreatedNotificationWorkerTests(
         throw new Xunit.Sdk.XunitException(
             $"The Worker did not persist Notification for MessageId {messageId:D} within {timeout}" +
             $"{Environment.NewLine}{capturedOutput}");
+    }
+
+    private static async Task<FailedMessage?> WaitForFailedMessageAsync(
+        DbContextOptions<OrderSystemDbContext> options,
+        Guid messageId,
+        Process process,
+        StringBuilder output,
+        TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow.Add(timeout);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (process.HasExited)
+            {
+                throw new InvalidOperationException(
+                    $"Worker exited before persisting failure evidence for MessageId {messageId:D}" +
+                    $"{Environment.NewLine}{output}");
+            }
+
+            await using var dbContext = new OrderSystemDbContext(options);
+            var failedMessage = await dbContext.FailedMessages
+                .AsNoTracking()
+                .Where(candidate => candidate.MessageId == messageId)
+                .OrderByDescending(candidate => candidate.CapturedAt)
+                .FirstOrDefaultAsync();
+            if (failedMessage is not null)
+            {
+                return failedMessage;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+        }
+
+        return null;
     }
 
     private static async Task WaitForNotificationEffectAsync(
