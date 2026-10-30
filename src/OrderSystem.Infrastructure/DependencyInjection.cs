@@ -321,6 +321,31 @@ public static class DependencyInjection
         return services;
     }
 
+    public static IServiceCollection AddOrderSystemDeadLetterIntakeConsumer(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddHostedService<RabbitMqOrderCreatedDeadLetterIntakeConsumer>();
+
+        return services;
+    }
+
+    public static IServiceCollection AddOrderSystemRedriveDispatcher(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        services.AddOptions<MessageRedriveOptions>()
+            .Bind(configuration.GetRequiredSection(MessageRedriveOptions.SectionName))
+            .Validate(options => !options.Enabled || options.RatePerSecond > 0, "MessageRedrive:RatePerSecond must be positive when redrive is enabled.")
+            .ValidateOnStart();
+        services.AddHostedService<RabbitMqFailedMessageRedriveDispatcher>();
+
+        return services;
+    }
+
     private static bool IsRedisConnectionString(string connectionString)
     {
         try

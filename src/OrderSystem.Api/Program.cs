@@ -29,6 +29,7 @@ using OrderSystem.Application.Payments;
 using OrderSystem.Api.Payments;
 using OrderSystem.Application.Shipments;
 using OrderSystem.Application.Messaging;
+using OrderSystem.Application.Notifications;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -167,6 +168,7 @@ builder.Services.AddScoped<PaymentCommandService>(provider =>
         idempotency.RetentionWindow);
 });
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
+builder.Services.AddScoped<MessageFailureOperationsService>();
 builder.Services.AddScoped<ShipmentCommandService>();
 builder.Services.AddOptions<AuthenticationWebOptions>()
     .Bind(builder.Configuration.GetRequiredSection(AuthenticationWebOptions.SectionName))
@@ -312,6 +314,7 @@ if (fakePaymentModuleEnabled)
 }
 app.MapOrderEndpoints();
 app.MapShipmentEndpoints();
+app.MapMessageFailureEndpoints();
 
 app.Run();
 
