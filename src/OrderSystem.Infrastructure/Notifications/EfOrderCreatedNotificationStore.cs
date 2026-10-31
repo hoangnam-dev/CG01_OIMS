@@ -35,6 +35,27 @@ internal sealed class EfOrderCreatedNotificationStore(OrderSystemDbContext dbCon
                 return;
             }
 
+            var existingNotification = await dbContext.Notifications
+                .AsNoTracking()
+                .SingleOrDefaultAsync(
+                    candidate =>
+                        candidate.MessageId == notification.MessageId &&
+                        candidate.Type == notification.Type,
+                    cancellationToken);
+            if (existingNotification is not null)
+            {
+                if (existingNotification.UserId != notification.UserId ||
+                    existingNotification.OrderId != notification.OrderId)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    throw new OrderCreatedNotificationPermanentException(
+                        "OrderCreated message identity conflicts with the existing Notification");
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+                return;
+            }
+
             dbContext.Notifications.Add(notification);
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);

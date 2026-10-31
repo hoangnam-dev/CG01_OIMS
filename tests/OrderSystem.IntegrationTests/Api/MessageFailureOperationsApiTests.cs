@@ -131,6 +131,45 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
     }
 
     [Fact]
+    [Trait("Requirement", "S10-T09")]
+    [Trait("TestId", "MSG-REDRIVE-002")]
+    public async Task Redrive_OldRetryExhaustedFailure_PersistsRequest()
+    {
+        var now = PostgreSqlUtcNow();
+        await using var factory = CreateFactory(now);
+        var seeded = await SeedFailureAsync(
+            factory,
+            now,
+            FailedMessageFailureKind.RetryExhausted,
+            failureCode: "retry_exhausted",
+            attemptCount: 3,
+            occurredAt: now.AddDays(-30));
+        using var client = factory.CreateClient();
+        await LoginAndSetBearerAsync(client, seeded.AdminEmail);
+
+        const string reason = "Dependency recovery verified after delayed investigation";
+        using var response = await client.PostAsJsonAsync(
+            $"/api/operations/message-failures/{seeded.FailedMessageId:D}/redrive",
+            new { reason });
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
+        using var assertionScope = factory.Services.CreateScope();
+        var dbContext = assertionScope.ServiceProvider
+            .GetRequiredService<OrderSystemDbContext>();
+        var persisted = await dbContext.FailedMessages
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == seeded.FailedMessageId);
+
+        Assert.Equal(FailedMessageStatus.RedriveRequested, persisted.Status);
+        Assert.Equal(seeded.AdminId, persisted.RedriveRequestedByUserId);
+        Assert.Equal(reason, persisted.RedriveReason);
+        Assert.Equal(now, persisted.RedriveRequestedAt);
+        Assert.Equal(now.AddDays(-30), persisted.OccurredAt);
+        Assert.Equal(seeded.Body, persisted.Body);
+    }
+
+    [Fact]
     [Trait("Requirement", "S10-T08")]
     public async Task Close_PendingFailure_PersistsOneTerminalDisposition()
     {
@@ -415,7 +454,8 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
         FailedMessageFailureKind failureKind,
         string failureCode,
         int attemptCount,
-        bool close = false)
+        bool close = false,
+        DateTimeOffset? occurredAt = null)
     {
         using var scope = factory.Services.CreateScope();
         var provider = scope.ServiceProvider;
@@ -431,7 +471,7 @@ public sealed class MessageFailureOperationsApiTests(PostgreSqlFixture postgres)
             OrderId: Guid.NewGuid(),
             UserId: Guid.NewGuid(),
             CorrelationId: Guid.NewGuid(),
-            OccurredAt: now.AddHours(-1));
+            OccurredAt: occurredAt ?? now.AddHours(-1));
         var body = OrderCreatedV1Serializer.Serialize(message);
         var passwordHasher = provider.GetRequiredService<IPasswordHasher>();
         var capturedAt = now.AddMinutes(-30);
