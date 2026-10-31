@@ -12,8 +12,6 @@ public sealed class FailedMessage
     public const int MaximumRoutingKeyLength = 255;
     public const int MaximumFailureCodeLength = 100;
     public const int MaximumOperationalReasonLength = 500;
-    public static readonly TimeSpan MaximumRedriveAge = TimeSpan.FromDays(7);
-
     private FailedMessage()
     {
     }
@@ -156,8 +154,7 @@ public sealed class FailedMessage
             MessageId is null ||
             EventVersion != 1 ||
             OccurredAt is not { } occurredAt ||
-            occurredAt > requestedAt ||
-            requestedAt - occurredAt > MaximumRedriveAge
+            occurredAt > requestedAt
         )
         {
             return false;

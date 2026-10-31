@@ -72,7 +72,6 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
                     processingResult = await ProcessAsync(message, stoppingToken);
                 }
                 if (processingResult is OrderCreatedNotificationProcessingResult.FutureOccurredAt
-                    or OrderCreatedNotificationProcessingResult.Expired
                     or OrderCreatedNotificationProcessingResult.PermanentFailure)
                 {
                     var transferred = await TryTransferToDeadLetterAndAcknowledgeAsync(

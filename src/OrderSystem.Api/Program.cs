@@ -169,6 +169,7 @@ builder.Services.AddScoped<PaymentCommandService>(provider =>
 });
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddScoped<MessageFailureOperationsService>();
+builder.Services.AddScoped<NotificationQueryService>();
 builder.Services.AddScoped<ShipmentCommandService>();
 builder.Services.AddOptions<AuthenticationWebOptions>()
     .Bind(builder.Configuration.GetRequiredSection(AuthenticationWebOptions.SectionName))
@@ -313,6 +314,7 @@ if (fakePaymentModuleEnabled)
     app.MapPaymentInitiationEndpoints();
 }
 app.MapOrderEndpoints();
+app.MapNotificationEndpoints();
 app.MapShipmentEndpoints();
 app.MapMessageFailureEndpoints();
 

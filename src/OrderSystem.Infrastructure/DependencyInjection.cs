@@ -58,6 +58,7 @@ public static class DependencyInjection
         });
         services.AddScoped<DbContext>(provider => provider.GetRequiredService<OrderSystemDbContext>());
         services.AddScoped<IFailedMessageStore, EfFailedMessageStore>();
+        services.AddScoped<INotificationReadStore, EfNotificationReadStore>();
         services.AddHealthChecks()
             .AddDbContextCheck<OrderSystemDbContext>("postgresql", tags: ["ready"]);
 
@@ -342,6 +343,27 @@ public static class DependencyInjection
             .Validate(options => !options.Enabled || options.RatePerSecond > 0, "MessageRedrive:RatePerSecond must be positive when redrive is enabled.")
             .ValidateOnStart();
         services.AddHostedService<RabbitMqFailedMessageRedriveDispatcher>();
+
+        return services;
+    }
+
+    public static IServiceCollection AddOrderSystemMessageCleanupInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        services.AddOptions<MessageCleanupOptions>()
+            .Bind(configuration.GetRequiredSection(MessageCleanupOptions.SectionName))
+            .Validate(options => options.CleanupInitialDelay > TimeSpan.Zero, "MessageCleanup:CleanupInitialDelay must be positive.")
+            .Validate(options => options.CleanupInterval > TimeSpan.Zero, "MessageCleanup:CleanupInterval must be positive.")
+            .Validate(options => options.CleanupBatchSize > 0, "MessageCleanup:CleanupBatchSize must be positive.")
+            .Validate(options => options.ProcessedMessageRetention > TimeSpan.Zero, "MessageCleanup:ProcessedMessageRetention must be positive.")
+            .Validate(options => options.TerminalFailureRetention > TimeSpan.Zero, "MessageCleanup:TerminalFailureRetention must be positive.")
+            .ValidateOnStart();
+        services.AddScoped<IMessageCleanupStore, EfMessageCleanupStore>();
+        services.AddHostedService<MessageCleanupWorker>();
 
         return services;
     }
