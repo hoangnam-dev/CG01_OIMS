@@ -58,6 +58,7 @@ public static class DependencyInjection
         });
         services.AddScoped<DbContext>(provider => provider.GetRequiredService<OrderSystemDbContext>());
         services.AddScoped<IFailedMessageStore, EfFailedMessageStore>();
+        services.AddScoped<INotificationReadStore, EfNotificationReadStore>();
         services.AddHealthChecks()
             .AddDbContextCheck<OrderSystemDbContext>("postgresql", tags: ["ready"]);
 
