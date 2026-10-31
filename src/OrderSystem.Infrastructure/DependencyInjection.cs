@@ -360,6 +360,7 @@ public static class DependencyInjection
             .Validate(options => options.CleanupInterval > TimeSpan.Zero, "MessageCleanup:CleanupInterval must be positive.")
             .Validate(options => options.CleanupBatchSize > 0, "MessageCleanup:CleanupBatchSize must be positive.")
             .Validate(options => options.ProcessedMessageRetention > TimeSpan.Zero, "MessageCleanup:ProcessedMessageRetention must be positive.")
+            .Validate(options => options.TerminalFailureRetention > TimeSpan.Zero, "MessageCleanup:TerminalFailureRetention must be positive.")
             .ValidateOnStart();
         services.AddScoped<IMessageCleanupStore, EfMessageCleanupStore>();
         services.AddHostedService<MessageCleanupWorker>();

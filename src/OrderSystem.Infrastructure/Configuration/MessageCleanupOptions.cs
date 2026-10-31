@@ -13,4 +13,6 @@ public sealed class MessageCleanupOptions
     public int CleanupBatchSize { get; init; }
 
     public TimeSpan ProcessedMessageRetention { get; init; }
+
+    public TimeSpan TerminalFailureRetention { get; init; }
 }

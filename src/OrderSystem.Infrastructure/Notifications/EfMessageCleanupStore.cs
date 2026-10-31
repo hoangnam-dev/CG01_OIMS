@@ -27,4 +27,26 @@ internal sealed class EfMessageCleanupStore(OrderSystemDbContext dbContext) : IM
             """,
             cancellationToken);
     }
+
+    public Task<int> DeleteTerminalFailedMessagesBatchAsync(DateTimeOffset cutoff, int batchSize, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(batchSize);
+
+        return dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            WITH candidates AS (
+                SELECT message.id
+                FROM failed_messages AS message
+                WHERE message.status IN ('Redriven', 'Closed', 'Expired')
+                AND message.terminal_at <= {cutoff}
+                ORDER BY message.terminal_at, message.id
+                LIMIT {batchSize}
+                FOR UPDATE SKIP LOCKED
+            )
+            DELETE FROM failed_messages AS message
+            USING candidates
+            WHERE message.id = candidates.id
+            """,
+            cancellationToken);
+    }
 }

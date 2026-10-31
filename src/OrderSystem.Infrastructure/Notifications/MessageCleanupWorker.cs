@@ -33,10 +33,16 @@ internal sealed class MessageCleanupWorker(
             {
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var store = scope.ServiceProvider.GetRequiredService<IMessageCleanupStore>();
-                var cutoff = clock.UtcNow.Subtract(settings.ProcessedMessageRetention);
+                var now = clock.UtcNow;
+                var processedMessageCutoff = now.Subtract(settings.ProcessedMessageRetention);
+                var terminalFailureCutoff = now.Subtract(settings.TerminalFailureRetention);
 
                 await store.DeleteProcessedMessagesBatchAsync(
-                    cutoff,
+                    processedMessageCutoff,
+                    settings.CleanupBatchSize,
+                    stoppingToken);
+                await store.DeleteTerminalFailedMessagesBatchAsync(
+                    terminalFailureCutoff,
                     settings.CleanupBatchSize,
                     stoppingToken);
             }
