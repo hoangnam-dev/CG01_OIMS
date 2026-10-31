@@ -391,20 +391,20 @@ public sealed class OrderCreatedNotificationWorkerTests(
     }
 
     [Fact]
-    [Trait("Requirement", "S10-T07")]
+    [Trait("Requirement", "S10-T09")]
     [Trait("TestId", "MSG-AGE-001")]
-    public async Task ConsumeOrderCreated_SevenDayWindow_IsInclusiveAndExpiresAfterBoundary()
+    public async Task ConsumeOrderCreated_AfterSevenDays_PersistsNotificationAndProcessedMessage()
     {
         var now = new DateTimeOffset(2026, 10, 28, 8, 0, 0, TimeSpan.Zero);
         var clock = new FakeClock(now);
         var boundaryUserId = Guid.NewGuid();
         var boundaryOrderId = Guid.NewGuid();
-        var expiredUserId = Guid.NewGuid();
-        var expiredOrderId = Guid.NewGuid();
+        var delayedUserId = Guid.NewGuid();
+        var delayedOrderId = Guid.NewGuid();
         var boundaryMessage = new OrderCreatedV1(
             1, Guid.NewGuid(), boundaryOrderId, boundaryUserId, Guid.NewGuid(), now.AddDays(-7));
-        var expiredMessage = new OrderCreatedV1(
-            1, Guid.NewGuid(), expiredOrderId, expiredUserId, Guid.NewGuid(), now.AddDays(-7).AddSeconds(-1));
+        var delayedMessage = new OrderCreatedV1(
+            1, Guid.NewGuid(), delayedOrderId, delayedUserId, Guid.NewGuid(), now.AddDays(-30));
         var suffix = Guid.NewGuid().ToString("N");
         var exchangeName = $"oims.events.test.{suffix}";
         var routingKey = $"order.created.v1.test.{suffix}";
@@ -422,11 +422,11 @@ public sealed class OrderCreatedNotificationWorkerTests(
                     UserRole.Customer, boundaryMessage.OccurredAt),
                 new Order(boundaryOrderId, boundaryUserId, 0m, boundaryMessage.OccurredAt.AddMinutes(15),
                     boundaryMessage.OccurredAt),
-                new User(expiredUserId, $"expired-{expiredUserId:N}@example.com",
-                    $"expired-{expiredUserId:N}@example.com", TestCredentials.CreateHashPlaceholder(),
-                    UserRole.Customer, expiredMessage.OccurredAt),
-                new Order(expiredOrderId, expiredUserId, 0m, expiredMessage.OccurredAt.AddMinutes(15),
-                    expiredMessage.OccurredAt));
+                new User(delayedUserId, $"delayed-{delayedUserId:N}@example.com",
+                    $"delayed-{delayedUserId:N}@example.com", TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Customer, delayedMessage.OccurredAt),
+                new Order(delayedOrderId, delayedUserId, 0m, delayedMessage.OccurredAt.AddMinutes(15),
+                    delayedMessage.OccurredAt));
             await arrangeContext.SaveChangesAsync();
         }
 
@@ -435,25 +435,29 @@ public sealed class OrderCreatedNotificationWorkerTests(
             deadLetterQueueName: deadLetterQueueName, consumerRoutingKey: routingKey, clock: clock);
         await host.Services.GetRequiredService<IRabbitMqTopologyInitializer>().InitializeAsync();
         await PublishAsync(boundaryMessage, exchangeName, routingKey, queueName);
-        await PublishAsync(expiredMessage, exchangeName, routingKey, queueName);
+        await PublishAsync(delayedMessage, exchangeName, routingKey, queueName);
         await host.StartAsync();
         try
         {
-            var deadLetterState = await WaitForQueueStateAsync(deadLetterQueueName, 1, 0, TimeSpan.FromSeconds(5));
-            Assert.Equal(1u, deadLetterState.MessageCount);
+            await WaitForNotificationEffectAsync(dbOptions, boundaryMessage.MessageId, TimeSpan.FromSeconds(5));
+            await WaitForNotificationEffectAsync(dbOptions, delayedMessage.MessageId, TimeSpan.FromSeconds(5));
+
             var sourceState = await WaitForQueueStateAsync(queueName, 0, 1, TimeSpan.FromSeconds(5));
             Assert.Equal(0u, sourceState.MessageCount);
             Assert.Equal(1u, sourceState.ConsumerCount);
+            var deadLetterState = await WaitForQueueStateAsync(
+                deadLetterQueueName, 0, 0, TimeSpan.FromSeconds(5));
+            Assert.Equal(0u, deadLetterState.MessageCount);
 
             await using var assertionContext = new OrderSystemDbContext(dbOptions);
             Assert.True(await assertionContext.Notifications.AnyAsync(
                 item => item.MessageId == boundaryMessage.MessageId));
             Assert.True(await assertionContext.ProcessedMessages.AnyAsync(
                 item => item.MessageId == boundaryMessage.MessageId));
-            Assert.False(await assertionContext.Notifications.AnyAsync(
-                item => item.MessageId == expiredMessage.MessageId));
-            Assert.False(await assertionContext.ProcessedMessages.AnyAsync(
-                item => item.MessageId == expiredMessage.MessageId));
+            Assert.True(await assertionContext.Notifications.AnyAsync(
+                item => item.MessageId == delayedMessage.MessageId));
+            Assert.True(await assertionContext.ProcessedMessages.AnyAsync(
+                item => item.MessageId == delayedMessage.MessageId));
         }
         finally
         {
@@ -792,6 +796,245 @@ public sealed class OrderCreatedNotificationWorkerTests(
         {
             await rabbitMq.ClearPolicyAsync(policyName);
         }
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T09")]
+    [Trait("TestId", "MSG-IDEM-003")]
+    public async Task NotificationStore_AfterProcessedMessageCleanup_RejectsConflictingNotificationIdentity()
+    {
+        const string consumerName = "OrderCreatedNotificationConsumer";
+        var now = new DateTimeOffset(2026, 10, 31, 8, 0, 0, TimeSpan.Zero);
+        var originalUserId = Guid.NewGuid();
+        var conflictingUserId = Guid.NewGuid();
+        var originalOrderId = Guid.NewGuid();
+        var conflictingOrderId = Guid.NewGuid();
+        var messageId = Guid.NewGuid();
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+            arrangeContext.AddRange(
+                new User(
+                    originalUserId,
+                    $"original-{originalUserId:N}@example.com",
+                    $"original-{originalUserId:N}@example.com",
+                    TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Customer,
+                    now.AddDays(-30)),
+                new User(
+                    conflictingUserId,
+                    $"conflict-{conflictingUserId:N}@example.com",
+                    $"conflict-{conflictingUserId:N}@example.com",
+                    TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Customer,
+                    now.AddDays(-30)),
+                new Order(
+                    originalOrderId,
+                    originalUserId,
+                    0m,
+                    now.AddDays(-30).AddMinutes(15),
+                    now.AddDays(-30)),
+                new Order(
+                    conflictingOrderId,
+                    conflictingUserId,
+                    0m,
+                    now.AddDays(-30).AddMinutes(15),
+                    now.AddDays(-30)),
+                new Notification(
+                    Guid.NewGuid(),
+                    originalUserId,
+                    originalOrderId,
+                    messageId,
+                    now.AddDays(-29)));
+            await arrangeContext.SaveChangesAsync();
+        }
+
+        await using (var actContext = new OrderSystemDbContext(dbOptions))
+        {
+            var store = new EfOrderCreatedNotificationStore(actContext);
+            await Assert.ThrowsAsync<OrderCreatedNotificationPermanentException>(() =>
+                store.CreateAsync(
+                    new Notification(
+                        Guid.NewGuid(),
+                        conflictingUserId,
+                        conflictingOrderId,
+                        messageId,
+                        now),
+                    new ProcessedMessage(messageId, consumerName, now),
+                    CancellationToken.None));
+        }
+
+        await using var assertionContext = new OrderSystemDbContext(dbOptions);
+        Assert.Single(await assertionContext.Notifications
+            .AsNoTracking()
+            .Where(candidate => candidate.MessageId == messageId)
+            .ToListAsync());
+        Assert.Empty(await assertionContext.ProcessedMessages
+            .AsNoTracking()
+            .Where(candidate =>
+                candidate.MessageId == messageId &&
+                candidate.ConsumerName == consumerName)
+            .ToListAsync());
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T09")]
+    [Trait("TestId", "MSG-IDEM-003")]
+    public async Task NotificationStore_AfterProcessedMessageCleanup_RecognizesMatchingNotification()
+    {
+        const string consumerName = "OrderCreatedNotificationConsumer";
+        var now = new DateTimeOffset(2026, 10, 31, 8, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var messageId = Guid.NewGuid();
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+            arrangeContext.AddRange(
+                new User(
+                    userId,
+                    $"late-store-{userId:N}@example.com",
+                    $"late-store-{userId:N}@example.com",
+                    TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Customer,
+                    now.AddDays(-30)),
+                new Order(
+                    orderId,
+                    userId,
+                    0m,
+                    now.AddDays(-30).AddMinutes(15),
+                    now.AddDays(-30)),
+                new Notification(
+                    Guid.NewGuid(),
+                    userId,
+                    orderId,
+                    messageId,
+                    now.AddDays(-29)));
+            await arrangeContext.SaveChangesAsync();
+        }
+
+        await using (var actContext = new OrderSystemDbContext(dbOptions))
+        {
+            var store = new EfOrderCreatedNotificationStore(actContext);
+            await store.CreateAsync(
+                new Notification(Guid.NewGuid(), userId, orderId, messageId, now),
+                new ProcessedMessage(messageId, consumerName, now),
+                CancellationToken.None);
+        }
+
+        await using var assertionContext = new OrderSystemDbContext(dbOptions);
+        Assert.Single(await assertionContext.Notifications
+            .AsNoTracking()
+            .Where(candidate => candidate.MessageId == messageId)
+            .ToListAsync());
+        Assert.Single(await assertionContext.ProcessedMessages
+            .AsNoTracking()
+            .Where(candidate =>
+                candidate.MessageId == messageId &&
+                candidate.ConsumerName == consumerName)
+            .ToListAsync());
+    }
+
+    [Fact]
+    [Trait("Requirement", "S10-T09")]
+    [Trait("TestId", "MSG-IDEM-003")]
+    public async Task ConsumeOrderCreated_AfterProcessedMessageCleanup_AcknowledgesMatchingNotificationWithoutDuplicate()
+    {
+        const string consumerName = "OrderCreatedNotificationConsumer";
+        var now = new DateTimeOffset(2026, 10, 31, 8, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var messageId = Guid.NewGuid();
+        var message = new OrderCreatedV1(
+            1,
+            messageId,
+            orderId,
+            userId,
+            Guid.NewGuid(),
+            now.AddDays(-30));
+        var suffix = Guid.NewGuid().ToString("N");
+        var exchangeName = $"oims.events.test.{suffix}";
+        var routingKey = $"order.created.v1.test.{suffix}";
+        var queueName = $"oims.notification.order-created.v1.test.{suffix}";
+        var deadLetterQueueName = $"{queueName}.dlq";
+        var checkpoint = RabbitMqOrderCreatedNotificationConsumer.AfterCommitBeforeAcknowledgementCheckpoint;
+        var operationHook = new SignalingCheckpointHook(checkpoint);
+        var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+
+        await using (var arrangeContext = new OrderSystemDbContext(dbOptions))
+        {
+            await arrangeContext.Database.MigrateAsync();
+            arrangeContext.AddRange(
+                new User(
+                    userId,
+                    $"late-duplicate-{userId:N}@example.com",
+                    $"late-duplicate-{userId:N}@example.com",
+                    TestCredentials.CreateHashPlaceholder(),
+                    UserRole.Customer,
+                    message.OccurredAt),
+                new Order(
+                    orderId,
+                    userId,
+                    0m,
+                    message.OccurredAt.AddMinutes(15),
+                    message.OccurredAt),
+                new Notification(
+                    Guid.NewGuid(),
+                    userId,
+                    orderId,
+                    messageId,
+                    now.AddDays(-29)));
+            await arrangeContext.SaveChangesAsync();
+        }
+
+        using var host = CreateNotificationConsumerHost(
+            exchangeName,
+            routingKey,
+            queueName,
+            operationHook,
+            deadLetterQueueName: deadLetterQueueName,
+            consumerRoutingKey: routingKey,
+            clock: new FakeClock(now));
+        await host.Services.GetRequiredService<IRabbitMqTopologyInitializer>().InitializeAsync();
+        await PublishAsync(message, exchangeName, routingKey, queueName);
+        await host.StartAsync();
+        try
+        {
+            Assert.True(
+                await operationHook.WaitUntilReachedAsync(TimeSpan.FromSeconds(5)),
+                "The matching late duplicate did not complete durable processing before acknowledgement");
+
+            await using var assertionContext = new OrderSystemDbContext(dbOptions);
+            Assert.Single(await assertionContext.Notifications
+                .AsNoTracking()
+                .Where(candidate => candidate.MessageId == messageId)
+                .ToListAsync());
+            Assert.Single(await assertionContext.ProcessedMessages
+                .AsNoTracking()
+                .Where(candidate =>
+                    candidate.MessageId == messageId &&
+                    candidate.ConsumerName == consumerName)
+                .ToListAsync());
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+
+        var sourceState = await WaitForQueueStateAsync(queueName, 0, 0, TimeSpan.FromSeconds(5));
+        Assert.Equal(0u, sourceState.MessageCount);
+        var deadLetterState = await WaitForQueueStateAsync(deadLetterQueueName, 0, 0, TimeSpan.FromSeconds(5));
+        Assert.Equal(0u, deadLetterState.MessageCount);
     }
 
     [Fact]

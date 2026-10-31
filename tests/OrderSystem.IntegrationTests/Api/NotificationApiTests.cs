@@ -57,6 +57,38 @@ public sealed class NotificationApiTests(PostgreSqlFixture postgres)
         Assert.Equal(seeded.OldestNotificationId, secondPageItems[0].GetProperty("id").GetGuid());
     }
 
+    [Fact]
+    [Trait("Requirement", "S10-T09")]
+    [Trait("TestId", "API-NOTIF-002")]
+    public async Task ListNotifications_EnforcesCustomerRecipientScope()
+    {
+        await using var factory = CreateFactory();
+        var seeded = await SeedNotificationsAsync(factory);
+
+        using var anonymousClient = factory.CreateClient();
+        using var anonymousResponse = await anonymousClient.GetAsync("/api/notifications");
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
+
+        using var adminClient = factory.CreateClient();
+        await AuthenticateAsync(adminClient, seeded.AdminEmail);
+        using var adminResponse = await adminClient.GetAsync("/api/notifications");
+        Assert.Equal(HttpStatusCode.Forbidden, adminResponse.StatusCode);
+
+        using var otherCustomerClient = factory.CreateClient();
+        await AuthenticateAsync(otherCustomerClient, seeded.OtherCustomerEmail);
+        using var otherCustomerResponse = await otherCustomerClient.GetAsync(
+            $"/api/notifications?userId={seeded.CustomerId:D}&page=1&pageSize=20");
+        Assert.Equal(HttpStatusCode.OK, otherCustomerResponse.StatusCode);
+
+        using var document = JsonDocument.Parse(await otherCustomerResponse.Content.ReadAsStringAsync());
+        var items = document.RootElement.GetProperty("data");
+        Assert.Single(items.EnumerateArray());
+        Assert.Equal(seeded.OtherCustomerNotificationId, items[0].GetProperty("id").GetGuid());
+        Assert.Equal(
+            1,
+            document.RootElement.GetProperty("metadata").GetProperty("pagination").GetProperty("totalCount").GetInt32());
+    }
+
     private WebApplicationFactory<Program> CreateFactory() =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddOimsTestConfiguration(
@@ -72,30 +104,37 @@ public sealed class NotificationApiTests(PostgreSqlFixture postgres)
         var now = new DateTimeOffset(2026, 10, 31, 10, 0, 0, TimeSpan.Zero);
         var customer = new TestUser(Guid.NewGuid(), $"notification-customer-{Guid.NewGuid():N}@example.com");
         var otherCustomer = new TestUser(Guid.NewGuid(), $"notification-other-{Guid.NewGuid():N}@example.com");
+        var admin = new TestUser(Guid.NewGuid(), $"notification-admin-{Guid.NewGuid():N}@example.com");
         var customerOrder = new Order(Guid.NewGuid(), customer.Id, 10m, now.AddDays(-199), now.AddDays(-200));
         var otherOrder = new Order(Guid.NewGuid(), otherCustomer.Id, 20m, now.AddDays(-199), now.AddDays(-200));
         var notificationIdPrefix = Guid.NewGuid().ToByteArray();
         var secondNewestId = CreateNotificationId(notificationIdPrefix, 1);
         var newestId = CreateNotificationId(notificationIdPrefix, 2);
         var oldestId = Guid.NewGuid();
+        var otherCustomerNotificationId = Guid.NewGuid();
 
         dbContext.Users.AddRange(
             new User(customer.Id, customer.Email, customer.Email, hasher.Hash(TestCredentials.ValidPassword), UserRole.Customer, now.AddDays(-200)),
-            new User(otherCustomer.Id, otherCustomer.Email, otherCustomer.Email, hasher.Hash(TestCredentials.ValidPassword), UserRole.Customer, now.AddDays(-200)));
+            new User(otherCustomer.Id, otherCustomer.Email, otherCustomer.Email, hasher.Hash(TestCredentials.ValidPassword), UserRole.Customer, now.AddDays(-200)),
+            new User(admin.Id, admin.Email, admin.Email, hasher.Hash(TestCredentials.ValidPassword), UserRole.Admin, now.AddDays(-200)));
         dbContext.Orders.AddRange(customerOrder, otherOrder);
         dbContext.Notifications.AddRange(
             new Notification(oldestId, customer.Id, customerOrder.Id, Guid.NewGuid(), now.AddDays(-100)),
             new Notification(secondNewestId, customer.Id, customerOrder.Id, Guid.NewGuid(), now),
             new Notification(newestId, customer.Id, customerOrder.Id, Guid.NewGuid(), now),
-            new Notification(Guid.NewGuid(), otherCustomer.Id, otherOrder.Id, Guid.NewGuid(), now.AddDays(1)));
+            new Notification(otherCustomerNotificationId, otherCustomer.Id, otherOrder.Id, Guid.NewGuid(), now.AddDays(1)));
         await dbContext.SaveChangesAsync();
 
         return new(
             customer.Email,
+            customer.Id,
+            otherCustomer.Email,
+            admin.Email,
             customerOrder.Id,
             newestId,
             secondNewestId,
-            oldestId);
+            oldestId,
+            otherCustomerNotificationId);
     }
 
     private static Guid CreateNotificationId(byte[] prefix, byte suffix)
@@ -121,8 +160,12 @@ public sealed class NotificationApiTests(PostgreSqlFixture postgres)
 
     private sealed record SeededNotifications(
         string CustomerEmail,
+        Guid CustomerId,
+        string OtherCustomerEmail,
+        string AdminEmail,
         Guid CustomerOrderId,
         Guid NewestNotificationId,
         Guid SecondNewestNotificationId,
-        Guid OldestNotificationId);
+        Guid OldestNotificationId,
+        Guid OtherCustomerNotificationId);
 }
