@@ -18,7 +18,7 @@ using RabbitMQ.Client.Events;
 
 namespace OrderSystem.Infrastructure.Messaging;
 
-internal sealed class RabbitMqOrderCreatedDeadLetterIntakeConsumer(
+internal sealed partial class RabbitMqOrderCreatedDeadLetterIntakeConsumer(
     IRabbitMqChannelFactory channelFactory,
     IServiceScopeFactory scopeFactory,
     IOperationHook operationHook,
@@ -36,6 +36,12 @@ internal sealed class RabbitMqOrderCreatedDeadLetterIntakeConsumer(
             LogLevel.Error,
             new EventId(2110, nameof(IntakeFailed)),
             "OrderCreated dead-letter intake failed for MessageId {MessageId}, CorrelationId {CorrelationId}, Queue {Queue}");
+
+    [LoggerMessage(
+        EventId = 2111,
+        Level = LogLevel.Information,
+        Message = "OrderCreated dead-letter intake persisted for FailureId {FailureId}, MessageId {MessageId}, CorrelationId {CorrelationId}, Attempt {Attempt}, FailureKind {FailureKind}, SourceExchange {SourceExchange}, SourceRoutingKey {SourceRoutingKey}, Queue {Queue}")]
+    private static partial void IntakePersisted(ILogger logger, Guid failureId, Guid? messageId, Guid? correlationId, int attempt, FailedMessageFailureKind failureKind, string sourceExchange, string sourceRoutingKey, string queue);
 
     private readonly RabbitMqOptions _rabbitMqOptions = options.Value;
 
@@ -63,6 +69,25 @@ internal sealed class RabbitMqOrderCreatedDeadLetterIntakeConsumer(
 
                 await operationHook.ReachAsync(AfterCommitBeforeAcknowledgementCheckpoint, stoppingToken);
                 await channel.BasicAckAsync(delivery.DeliveryTag, false, stoppingToken);
+                MessagingReliabilityMetrics.RecordOperation(
+                    MessagingOperation.DeadLetterIntake,
+                    MessagingOutcome.Success,
+                    MessagingRoute.FailureLedger,
+                    failedMessage.AttemptCount);
+                if (failedMessage.OccurredAt is { } occurredAt)
+                {
+                    MessagingReliabilityMetrics.RecordMessageAge(MessagingAgeStage.DeadLetterIntake, occurredAt, clock.UtcNow);
+                }
+                IntakePersisted(
+                    logger,
+                    failedMessage.Id,
+                    failedMessage.MessageId,
+                    failedMessage.CorrelationId,
+                    failedMessage.AttemptCount,
+                    failedMessage.FailureKind,
+                    failedMessage.OriginalExchange,
+                    failedMessage.OriginalRoutingKey,
+                    _rabbitMqOptions.OrderCreatedDeadLetterQueueName);
                 await operationHook.ReachAsync(AfterAcknowledgementCheckpoint, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -71,6 +96,11 @@ internal sealed class RabbitMqOrderCreatedDeadLetterIntakeConsumer(
             }
             catch (Exception exception)
             {
+                MessagingReliabilityMetrics.RecordOperation(
+                    MessagingOperation.DeadLetterIntake,
+                    MessagingOutcome.Failed,
+                    MessagingRoute.FailureLedger,
+                    ReadAttemptCount(delivery.BasicProperties.Headers));
                 IntakeFailed(
                     logger,
                     delivery.BasicProperties.MessageId,

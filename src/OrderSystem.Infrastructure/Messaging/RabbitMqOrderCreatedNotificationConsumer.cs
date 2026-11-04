@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Messaging.Contracts;
 using OrderSystem.Application.Notifications;
@@ -13,11 +14,12 @@ using RabbitMQ.Client.Events;
 
 namespace OrderSystem.Infrastructure.Messaging;
 
-internal sealed class RabbitMqOrderCreatedNotificationConsumer(
+internal sealed partial class RabbitMqOrderCreatedNotificationConsumer(
     IRabbitMqTopologyInitializer topologyInitializer,
     IRabbitMqChannelFactory channelFactory,
     IServiceScopeFactory scopeFactory,
     IOperationHook operationHook,
+    IClock clock,
     IOptions<RabbitMqOptions> options,
     ILogger<RabbitMqOrderCreatedNotificationConsumer> logger) : BackgroundService
 {
@@ -31,15 +33,34 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
         new EventId(2101, nameof(ContractValidationFailed)),
         "OrderCreated contract validation failed for MessageId {MessageId}, CorrelationId {CorrelationId}, ConsumerName {ConsumerName}, Exchange {Exchange}, RoutingKey {RoutingKey}, Queue {Queue}");
 
-    private static readonly Action<ILogger, Guid, Guid, Guid, Guid, string, int, Exception?> MessageProcessedAndAcknowledged = LoggerMessage.Define<Guid, Guid, Guid, Guid, string, int>(
-        LogLevel.Information,
-        new EventId(2100, nameof(MessageProcessedAndAcknowledged)),
-        "OrderCreated notification processed and acknowledged for MessageId {MessageId}, CorrelationId {CorrelationId}, OrderId {OrderId}, UserId {UserId}, ConsumerName {ConsumerName}, EventVersion {EventVersion}");
+    [LoggerMessage(
+        EventId = 2100,
+        Level = LogLevel.Information,
+        Message = "OrderCreated notification processed and acknowledged for MessageId {MessageId}, CorrelationId {CorrelationId}, OrderId {OrderId}, UserId {UserId}, ConsumerName {ConsumerName}, EventVersion {EventVersion}, Attempt {Attempt}, Outcome {Outcome}, Exchange {Exchange}, RoutingKey {RoutingKey}")]
+    private static partial void MessageProcessedAndAcknowledged(ILogger logger, Guid messageId, Guid correlationId, Guid orderId, Guid userId, string consumerName, int eventVersion, int attempt, string outcome, string exchange, string routingKey);
 
     private static readonly Action<ILogger, Guid, Guid, Guid, Guid, string, int, Exception?> MessageProcessingFailed = LoggerMessage.Define<Guid, Guid, Guid, Guid, string, int>(
         LogLevel.Error,
         new EventId(2102, nameof(MessageProcessingFailed)),
         "OrderCreated notification processing failed for MessageId {MessageId}, CorrelationId {CorrelationId}, OrderId {OrderId}, UserId {UserId}, ConsumerName {ConsumerName}, EventVersion {EventVersion}");
+
+    [LoggerMessage(
+        EventId = 2103,
+        Level = LogLevel.Information,
+        Message = "OrderCreated transferred for MessageId {MessageId}, CorrelationId {CorrelationId}, Attempt {Attempt}, SourceExchange {SourceExchange}, SourceRoutingKey {SourceRoutingKey}, TargetExchange {TargetExchange}, TargetRoutingKey {TargetRoutingKey}")]
+    private static partial void MessageTransferred(ILogger logger, string? messageId, string? correlationId, int attempt, string sourceExchange, string sourceRoutingKey, string targetExchange, string targetRoutingKey);
+
+    [LoggerMessage(
+        EventId = 2104,
+        Level = LogLevel.Error,
+        Message = "OrderCreated transfer failed for MessageId {MessageId}, CorrelationId {CorrelationId}, Attempt {Attempt}, SourceExchange {SourceExchange}, SourceRoutingKey {SourceRoutingKey}, TargetExchange {TargetExchange}, TargetRoutingKey {TargetRoutingKey}")]
+    private static partial void MessageTransferFailed(ILogger logger, string? messageId, string? correlationId, int attempt, string sourceExchange, string sourceRoutingKey, string targetExchange, string targetRoutingKey, Exception exception);
+
+    [LoggerMessage(
+        EventId = 2105,
+        Level = LogLevel.Error,
+        Message = "OrderCreated source acknowledgement failed after confirmed transfer for MessageId {MessageId}, CorrelationId {CorrelationId}, Attempt {Attempt}, SourceExchange {SourceExchange}, SourceRoutingKey {SourceRoutingKey}, TargetExchange {TargetExchange}, TargetRoutingKey {TargetRoutingKey}")]
+    private static partial void SourceAcknowledgementFailed(ILogger logger, string? messageId, string? correlationId, int attempt, string sourceExchange, string sourceRoutingKey, string targetExchange, string targetRoutingKey, Exception exception);
 
     private readonly RabbitMqOptions _rabbitMqOptions = options.Value;
 
@@ -60,9 +81,10 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
             }
 
             OrderCreatedV1? message = null;
+            var attempt = 1;
             try
             {
-                message = ReadMessage(delivery, _rabbitMqOptions, out var attempt);
+                message = ReadMessage(delivery, _rabbitMqOptions, out attempt);
                 var processingResult = await ProcessAsync(message, stoppingToken);
                 while (processingResult == OrderCreatedNotificationProcessingResult.TransientFailure &&
                        !await CanConnectToPostgreSqlAsync(stoppingToken))
@@ -71,6 +93,12 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
                     await WaitForPostgreSqlRecoveryAsync(stoppingToken);
                     processingResult = await ProcessAsync(message, stoppingToken);
                 }
+                MessagingReliabilityMetrics.RecordMessageAge(MessagingAgeStage.Consumed, message.OccurredAt, clock.UtcNow);
+                MessagingReliabilityMetrics.RecordOperation(
+                    MessagingOperation.Process,
+                    MapProcessingOutcome(processingResult),
+                    attempt == 1 ? MessagingRoute.Main : MessagingRoute.Retry,
+                    attempt);
                 if (processingResult is OrderCreatedNotificationProcessingResult.FutureOccurredAt
                     or OrderCreatedNotificationProcessingResult.PermanentFailure)
                 {
@@ -78,6 +106,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
                         transferChannel,
                         channel,
                         delivery,
+                        attempt,
                         stoppingToken);
                     if (!transferred)
                     {
@@ -101,6 +130,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
                             transferChannel,
                             channel,
                             delivery,
+                            attempt,
                             stoppingToken
                         );
                     if (!transferred)
@@ -122,7 +152,10 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
                     message.UserId,
                     _rabbitMqOptions.OrderCreatedConsumerName,
                     message.EventVersion,
-                    null
+                    attempt,
+                    processingResult == OrderCreatedNotificationProcessingResult.Duplicate ? "duplicate" : "success",
+                    delivery.Exchange,
+                    delivery.RoutingKey
                 );
             }
             catch (OrderCreatedMessageContractException exception)
@@ -141,6 +174,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
                     transferChannel,
                     channel,
                     delivery,
+                    attempt,
                     stoppingToken);
                 if (!transferred)
                 {
@@ -228,6 +262,16 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
         return await dbContext.Database.CanConnectAsync(cancellationToken);
     }
 
+    private static MessagingOutcome MapProcessingOutcome(OrderCreatedNotificationProcessingResult result) => result switch
+    {
+        OrderCreatedNotificationProcessingResult.Completed => MessagingOutcome.Success,
+        OrderCreatedNotificationProcessingResult.Duplicate => MessagingOutcome.Duplicate,
+        OrderCreatedNotificationProcessingResult.FutureOccurredAt => MessagingOutcome.PermanentFailure,
+        OrderCreatedNotificationProcessingResult.TransientFailure => MessagingOutcome.TransientFailure,
+        OrderCreatedNotificationProcessingResult.PermanentFailure => MessagingOutcome.PermanentFailure,
+        _ => throw new ArgumentOutOfRangeException(nameof(result), result, "Unsupported notification processing result")
+    };
+
     internal static OrderCreatedV1 ReadMessage(BasicDeliverEventArgs delivery, RabbitMqOptions options)
     {
         return ReadMessage(delivery, options, out _);
@@ -281,6 +325,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
             consumerChannel,
             delivery,
             _rabbitMqOptions.RetryExchangeName,
+            nextAttempt,
             properties,
             stoppingToken
         );
@@ -290,6 +335,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
         IChannel transferChannel,
         IChannel consumerChannel,
         BasicDeliverEventArgs delivery,
+        int attempt,
         CancellationToken stoppingToken
     )
     {
@@ -307,6 +353,7 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
             consumerChannel,
             delivery,
             _rabbitMqOptions.DeadLetterExchangeName,
+            attempt,
             properties,
             stoppingToken
         );
@@ -317,10 +364,12 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
         IChannel consumerChannel,
         BasicDeliverEventArgs delivery,
         string targetExchange,
+        int attempt,
         BasicProperties properties,
         CancellationToken stoppingToken
     )
     {
+        var transferConfirmed = false;
         try
         {
             using var transferTimeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -333,6 +382,32 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
                 properties,
                 delivery.Body,
                 transferTimeout.Token);
+            transferConfirmed = true;
+
+            var targetRoute = string.Equals(targetExchange, _rabbitMqOptions.RetryExchangeName, StringComparison.Ordinal)
+                ? MessagingRoute.Retry
+                : MessagingRoute.DeadLetter;
+            MessagingReliabilityMetrics.RecordOperation(
+                MessagingOperation.Transfer,
+                MessagingOutcome.Success,
+                targetRoute,
+                attempt);
+            if (OrderCreatedV1Serializer.TryDeserialize(delivery.Body.Span, out var message) && message is not null)
+            {
+                MessagingReliabilityMetrics.RecordMessageAge(
+                    targetRoute == MessagingRoute.Retry ? MessagingAgeStage.RetryTransfer : MessagingAgeStage.Consumed,
+                    message.OccurredAt,
+                    clock.UtcNow);
+            }
+            MessageTransferred(
+                logger,
+                delivery.BasicProperties.MessageId,
+                delivery.BasicProperties.CorrelationId,
+                attempt,
+                delivery.Exchange,
+                delivery.RoutingKey,
+                targetExchange,
+                _rabbitMqOptions.OrderCreatedConsumerRoutingKey);
             await consumerChannel.BasicAckAsync(delivery.DeliveryTag, false, stoppingToken);
 
             return true;
@@ -343,14 +418,43 @@ internal sealed class RabbitMqOrderCreatedNotificationConsumer(
         }
         catch (Exception exception)
         {
-            ContractValidationFailed(
+            if (transferConfirmed)
+            {
+                MessagingReliabilityMetrics.RecordOperation(
+                    MessagingOperation.Acknowledge,
+                    MessagingOutcome.Failed,
+                    attempt == 1 ? MessagingRoute.Main : MessagingRoute.Retry,
+                    attempt);
+                SourceAcknowledgementFailed(
+                    logger,
+                    delivery.BasicProperties.MessageId,
+                    delivery.BasicProperties.CorrelationId,
+                    attempt,
+                    delivery.Exchange,
+                    delivery.RoutingKey,
+                    targetExchange,
+                    _rabbitMqOptions.OrderCreatedConsumerRoutingKey,
+                    exception);
+                return false;
+            }
+
+            var targetRoute = string.Equals(targetExchange, _rabbitMqOptions.RetryExchangeName, StringComparison.Ordinal)
+                ? MessagingRoute.Retry
+                : MessagingRoute.DeadLetter;
+            MessagingReliabilityMetrics.RecordOperation(
+                MessagingOperation.Transfer,
+                MessagingOutcome.Failed,
+                targetRoute,
+                attempt);
+            MessageTransferFailed(
                 logger,
                 delivery.BasicProperties.MessageId,
                 delivery.BasicProperties.CorrelationId,
-                _rabbitMqOptions.OrderCreatedConsumerName,
+                attempt,
                 delivery.Exchange,
                 delivery.RoutingKey,
-                _rabbitMqOptions.OrderCreatedQueueName,
+                targetExchange,
+                _rabbitMqOptions.OrderCreatedConsumerRoutingKey,
                 exception);
 
             return false;
