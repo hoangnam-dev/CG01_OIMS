@@ -1,15 +1,19 @@
+using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Domain.Notifications;
 using OrderSystem.Domain.Orders;
 using OrderSystem.Domain.Users;
 using OrderSystem.Infrastructure;
 using OrderSystem.Infrastructure.Notifications;
+using OrderSystem.Infrastructure.Messaging;
 using OrderSystem.Infrastructure.Persistence;
 using OrderSystem.IntegrationTests.Infrastructure;
 
@@ -22,6 +26,7 @@ public sealed class MessagingCleanupWorkerTests(PostgreSqlFixture postgres)
 
     [Fact]
     [Trait("Requirement", "S10-T09")]
+    [Trait("Requirement", "S10-T10")]
     [Trait("TestId", "MSG-CLEANUP-001")]
     public async Task Worker_ProcessedMessageRetention_DeletesAtFourteenDayCutoffAndKeepsYoungerEvidence()
     {
@@ -81,7 +86,21 @@ public sealed class MessagingCleanupWorkerTests(PostgreSqlFixture postgres)
             await arrangeContext.SaveChangesAsync();
         }
 
-        using var host = CreateHost(cleanupBatchSize: 2);
+        var loggerProvider = new RecordingLoggerProvider();
+        var measurements = new ConcurrentQueue<(long Value, IReadOnlyList<KeyValuePair<string, object?>> Tags)>();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == MessagingReliabilityMetrics.MeterName &&
+                instrument.Name == MessagingReliabilityMetrics.CleanupDeletedCounterName)
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
+            measurements.Enqueue((value, tags.ToArray())));
+        listener.Start();
+        using var host = CreateHost(cleanupBatchSize: 2, loggerProvider);
 
         try
         {
@@ -100,6 +119,14 @@ public sealed class MessagingCleanupWorkerTests(PostgreSqlFixture postgres)
 
             await using var assertionContext = new OrderSystemDbContext(options);
             Assert.True(await assertionContext.Notifications.AnyAsync(notification => notification.Id == notificationId));
+            Assert.Contains(measurements, measurement =>
+                measurement.Value == 2 &&
+                measurement.Tags.Any(tag => tag is { Key: "record_type", Value: "processed_message" }));
+            Assert.Contains(measurements, measurement =>
+                measurement.Value == 2 &&
+                measurement.Tags.Any(tag => tag is { Key: "record_type", Value: "terminal_failure" }));
+            Assert.Contains(loggerProvider.Messages, message =>
+                message.Contains("ProcessedMessageDeletedCount 2, TerminalFailureDeletedCount 2", StringComparison.Ordinal));
         }
         finally
         {
@@ -152,7 +179,7 @@ public sealed class MessagingCleanupWorkerTests(PostgreSqlFixture postgres)
         }
     }
 
-    private IHost CreateHost(int cleanupBatchSize = 10)
+    private IHost CreateHost(int cleanupBatchSize = 10, ILoggerProvider? loggerProvider = null)
     {
         var settings = new Dictionary<string, string?>
         {
@@ -173,7 +200,13 @@ public sealed class MessagingCleanupWorkerTests(PostgreSqlFixture postgres)
             })
             .ConfigureServices((context, services) =>
             {
-                services.AddLogging();
+                services.AddLogging(builder =>
+                {
+                    if (loggerProvider is not null)
+                    {
+                        builder.AddProvider(loggerProvider);
+                    }
+                });
                 services
                     .AddOrderSystemPersistence(context.Configuration)
                     .AddOrderSystemCommonInfrastructure()
@@ -182,6 +215,27 @@ public sealed class MessagingCleanupWorkerTests(PostgreSqlFixture postgres)
                 services.AddSingleton<IClock>(new FakeClock(FixedNow));
             })
             .Build();
+    }
+
+    private sealed class RecordingLoggerProvider : ILoggerProvider
+    {
+        public ConcurrentQueue<string> Messages { get; } = [];
+
+        public ILogger CreateLogger(string categoryName) => new RecordingLogger(Messages);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class RecordingLogger(ConcurrentQueue<string> messages) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+                messages.Enqueue(formatter(state, exception));
+        }
     }
 
     private DbContextOptions<OrderSystemDbContext> CreateDbContextOptions() =>

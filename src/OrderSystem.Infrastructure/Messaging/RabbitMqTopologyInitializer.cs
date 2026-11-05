@@ -55,7 +55,7 @@ internal sealed class RabbitMqTopologyInitializer : IRabbitMqTopologyInitializer
             arguments: null,
             cancellationToken: cancellationToken
         );
-        await channel.QueueDeclareAsync(
+        var mainQueue = await channel.QueueDeclareAsync(
             _options.OrderCreatedQueueName,
             durable: true,
             exclusive: false,
@@ -74,7 +74,7 @@ internal sealed class RabbitMqTopologyInitializer : IRabbitMqTopologyInitializer
         {
             ["x-queue-type"] = "quorum"
         };
-        await channel.QueueDeclareAsync(
+        var retryQueue = await channel.QueueDeclareAsync(
             _options.OrderCreatedRetryQueueName,
             durable: true,
             exclusive: false,
@@ -82,7 +82,7 @@ internal sealed class RabbitMqTopologyInitializer : IRabbitMqTopologyInitializer
             arguments: quorumQueueArguments,
             cancellationToken: cancellationToken
         );
-        await channel.QueueDeclareAsync(
+        var deadLetterQueue = await channel.QueueDeclareAsync(
             _options.OrderCreatedDeadLetterQueueName,
             durable: true,
             exclusive: false,
@@ -111,5 +111,8 @@ internal sealed class RabbitMqTopologyInitializer : IRabbitMqTopologyInitializer
             arguments: null,
             cancellationToken: cancellationToken
         );
+        MessagingReliabilityMetrics.RecordBacklog(MessagingRoute.Main, mainQueue.MessageCount);
+        MessagingReliabilityMetrics.RecordBacklog(MessagingRoute.Retry, retryQueue.MessageCount);
+        MessagingReliabilityMetrics.RecordBacklog(MessagingRoute.DeadLetter, deadLetterQueue.MessageCount);
     }
 }

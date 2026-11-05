@@ -37,7 +37,10 @@ public sealed class OrderCreatedNotificationProcessor(
 
         try
         {
-            await store.CreateAsync(notification, processedMessage, cancellationToken);
+            var storeResult = await store.CreateAsync(notification, processedMessage, cancellationToken);
+            return storeResult == OrderCreatedNotificationStoreResult.Duplicate
+                ? OrderCreatedNotificationProcessingResult.Duplicate
+                : OrderCreatedNotificationProcessingResult.Completed;
         }
         catch (TimeoutException)
         {
@@ -47,7 +50,5 @@ public sealed class OrderCreatedNotificationProcessor(
         {
             return OrderCreatedNotificationProcessingResult.PermanentFailure;
         }
-
-        return OrderCreatedNotificationProcessingResult.Completed;
     }
 }

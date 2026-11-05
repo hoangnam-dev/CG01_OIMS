@@ -5,10 +5,11 @@ using Microsoft.Extensions.Options;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Notifications;
 using OrderSystem.Infrastructure.Configuration;
+using OrderSystem.Infrastructure.Messaging;
 
 namespace OrderSystem.Infrastructure.Notifications;
 
-internal sealed class MessageCleanupWorker(
+internal sealed partial class MessageCleanupWorker(
     IServiceScopeFactory scopeFactory,
     IOptions<MessageCleanupOptions> options,
     IClock clock,
@@ -18,6 +19,12 @@ internal sealed class MessageCleanupWorker(
         LogLevel.Error,
         new EventId(1, nameof(CleanupFailed)),
         "Message cleanup iteration failed");
+
+    [LoggerMessage(
+        EventId = 2201,
+        Level = LogLevel.Information,
+        Message = "Message cleanup completed with ProcessedMessageDeletedCount {ProcessedMessageDeletedCount}, TerminalFailureDeletedCount {TerminalFailureDeletedCount}, ProcessedMessageCutoff {ProcessedMessageCutoff}, TerminalFailureCutoff {TerminalFailureCutoff}, BatchSize {BatchSize}")]
+    private static partial void CleanupCompleted(ILogger logger, int processedMessageDeletedCount, int terminalFailureDeletedCount, DateTimeOffset processedMessageCutoff, DateTimeOffset terminalFailureCutoff, int batchSize);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -37,14 +44,31 @@ internal sealed class MessageCleanupWorker(
                 var processedMessageCutoff = now.Subtract(settings.ProcessedMessageRetention);
                 var terminalFailureCutoff = now.Subtract(settings.TerminalFailureRetention);
 
-                await store.DeleteProcessedMessagesBatchAsync(
+                var processedMessageDeletedCount = await store.DeleteProcessedMessagesBatchAsync(
                     processedMessageCutoff,
                     settings.CleanupBatchSize,
                     stoppingToken);
-                await store.DeleteTerminalFailedMessagesBatchAsync(
+                var terminalFailureDeletedCount = await store.DeleteTerminalFailedMessagesBatchAsync(
                     terminalFailureCutoff,
                     settings.CleanupBatchSize,
                     stoppingToken);
+                MessagingReliabilityMetrics.RecordCleanup(
+                    MessagingCleanupRecordType.ProcessedMessage,
+                    processedMessageDeletedCount);
+                MessagingReliabilityMetrics.RecordCleanup(
+                    MessagingCleanupRecordType.TerminalFailure,
+                    terminalFailureDeletedCount);
+                MessagingReliabilityMetrics.RecordOperation(
+                    MessagingOperation.Cleanup,
+                    MessagingOutcome.Success,
+                    MessagingRoute.FailureLedger);
+                CleanupCompleted(
+                    logger,
+                    processedMessageDeletedCount,
+                    terminalFailureDeletedCount,
+                    processedMessageCutoff,
+                    terminalFailureCutoff,
+                    settings.CleanupBatchSize);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -52,6 +76,10 @@ internal sealed class MessageCleanupWorker(
             }
             catch (Exception exception)
             {
+                MessagingReliabilityMetrics.RecordOperation(
+                    MessagingOperation.Cleanup,
+                    MessagingOutcome.Failed,
+                    MessagingRoute.FailureLedger);
                 CleanupFailed(logger, exception);
             }
 

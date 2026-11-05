@@ -8,7 +8,7 @@ namespace OrderSystem.Infrastructure.Notifications;
 
 internal sealed class EfOrderCreatedNotificationStore(OrderSystemDbContext dbContext) : IOrderCreatedNotificationStore
 {
-    public async Task CreateAsync(Notification notification, ProcessedMessage processedMessage, CancellationToken cancellationToken)
+    public async Task<OrderCreatedNotificationStoreResult> CreateAsync(Notification notification, ProcessedMessage processedMessage, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(notification);
         ArgumentNullException.ThrowIfNull(processedMessage);
@@ -32,7 +32,7 @@ internal sealed class EfOrderCreatedNotificationStore(OrderSystemDbContext dbCon
             if (acquired == 0)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return;
+                return OrderCreatedNotificationStoreResult.Duplicate;
             }
 
             var existingNotification = await dbContext.Notifications
@@ -53,12 +53,13 @@ internal sealed class EfOrderCreatedNotificationStore(OrderSystemDbContext dbCon
                 }
 
                 await transaction.CommitAsync(cancellationToken);
-                return;
+                return OrderCreatedNotificationStoreResult.Duplicate;
             }
 
             dbContext.Notifications.Add(notification);
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
+            return OrderCreatedNotificationStoreResult.Created;
         }
         catch (NpgsqlException exception) when (exception.IsTransient)
         {
