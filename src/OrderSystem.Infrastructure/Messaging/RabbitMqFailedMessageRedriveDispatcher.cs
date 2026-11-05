@@ -29,14 +29,14 @@ internal sealed partial class RabbitMqFailedMessageRedriveDispatcher(
     [LoggerMessage(
         EventId = 2300,
         Level = LogLevel.Information,
-        Message = "Message Failure redrive published for FailureId {FailureId}, MessageId {MessageId}, CorrelationId {CorrelationId}, ConsumerName {ConsumerName}")]
-    private static partial void RedrivePublished(ILogger logger, Guid failureId, Guid messageId, Guid? correlationId, string consumerName);
+        Message = "Message Failure redrive published for FailureId {FailureId}, MessageId {MessageId}, CorrelationId {CorrelationId}, ConsumerName {ConsumerName}, TargetExchange {TargetExchange}, TargetRoutingKey {TargetRoutingKey}")]
+    private static partial void RedrivePublished(ILogger logger, Guid failureId, Guid messageId, Guid? correlationId, string consumerName, string targetExchange, string targetRoutingKey);
 
     [LoggerMessage(
         EventId = 2301,
         Level = LogLevel.Warning,
-        Message = "Message Failure redrive failed for FailureId {FailureId}, MessageId {MessageId}, CorrelationId {CorrelationId}, ConsumerName {ConsumerName}")]
-    private static partial void RedriveFailed(ILogger logger, Guid failureId, Guid? messageId, Guid? correlationId, string consumerName, Exception exception);
+        Message = "Message Failure redrive failed for FailureId {FailureId}, MessageId {MessageId}, CorrelationId {CorrelationId}, ConsumerName {ConsumerName}, TargetExchange {TargetExchange}, TargetRoutingKey {TargetRoutingKey}")]
+    private static partial void RedriveFailed(ILogger logger, Guid failureId, Guid? messageId, Guid? correlationId, string consumerName, string targetExchange, string targetRoutingKey, Exception exception);
 
     [LoggerMessage(
         EventId = 2302,
@@ -73,12 +73,22 @@ internal sealed partial class RabbitMqFailedMessageRedriveDispatcher(
                 var completedAt = clock.UtcNow;
                 if (await store.MarkRedrivenAsync(failedMessage.Id, completedAt, stoppingToken))
                 {
+                    MessagingReliabilityMetrics.RecordOperation(
+                        MessagingOperation.Redrive,
+                        MessagingOutcome.Success,
+                        MessagingRoute.Main);
+                    if (failedMessage.OccurredAt is { } occurredAt)
+                    {
+                        MessagingReliabilityMetrics.RecordMessageAge(MessagingAgeStage.Redrive, occurredAt, completedAt);
+                    }
                     RedrivePublished(
                         logger,
                         failedMessage.Id,
                         messageId,
                         failedMessage.CorrelationId,
-                        failedMessage.ConsumerName
+                        failedMessage.ConsumerName,
+                        rabbitMq.ConsumerIngressExchangeName,
+                        rabbitMq.OrderCreatedConsumerRoutingKey
                     );
                 }
             }
@@ -94,12 +104,18 @@ internal sealed partial class RabbitMqFailedMessageRedriveDispatcher(
                 }
                 else
                 {
+                    MessagingReliabilityMetrics.RecordOperation(
+                        MessagingOperation.Redrive,
+                        MessagingOutcome.Failed,
+                        MessagingRoute.Main);
                     RedriveFailed(
                         logger,
                         failedMessage.Id,
                         failedMessage.MessageId,
                         failedMessage.CorrelationId,
                         failedMessage.ConsumerName,
+                        rabbitMq.ConsumerIngressExchangeName,
+                        rabbitMq.OrderCreatedConsumerRoutingKey,
                         exception
                     );
                 }

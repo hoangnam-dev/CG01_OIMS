@@ -2,6 +2,7 @@ extern alias worker;
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -467,6 +468,7 @@ public sealed class OrderCreatedNotificationWorkerTests(
 
     [Fact]
     [Trait("Requirement", "S10-T07")]
+    [Trait("Requirement", "S10-T10")]
     [Trait("TestId", "MSG-RETRY-001")]
     public async Task ConsumeOrderCreated_TransientStoreFailure_TransfersAttemptTwoToRetryQueue()
     {
@@ -483,6 +485,25 @@ public sealed class OrderCreatedNotificationWorkerTests(
         var retryQueueName = $"{queueName}.retry";
         var consumerRoutingKey = $"order-created.v1.test.{suffix}";
         var failureGate = new FailOnceNotificationStoreGate();
+        var loggerProvider = new RecordingLoggerProvider();
+        var measurements = new ConcurrentQueue<(string Instrument, long Value, IReadOnlyList<KeyValuePair<string, object?>> Tags)>();
+        var ageMeasurements = new ConcurrentQueue<(double Value, IReadOnlyList<KeyValuePair<string, object?>> Tags)>();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == MessagingReliabilityMetrics.MeterName &&
+                instrument.Name is MessagingReliabilityMetrics.OperationCounterName
+                    or MessagingReliabilityMetrics.BacklogHistogramName
+                    or MessagingReliabilityMetrics.MessageAgeHistogramName)
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
+            measurements.Enqueue((instrument.Name, value, tags.ToArray())));
+        listener.SetMeasurementEventCallback<double>((_, value, tags, _) =>
+            ageMeasurements.Enqueue((value, tags.ToArray())));
+        listener.Start();
         var dbOptions = new DbContextOptionsBuilder<OrderSystemDbContext>()
             .UseNpgsql(postgres.ConnectionString)
             .Options;
@@ -501,6 +522,7 @@ public sealed class OrderCreatedNotificationWorkerTests(
             routingKey,
             queueName,
             new PassThroughOperationHook(),
+            loggerProvider,
             consumerRoutingKey: consumerRoutingKey,
             clock: new FakeClock(now),
             consumerIngressExchangeName: consumerIngressExchangeName,
@@ -517,6 +539,27 @@ public sealed class OrderCreatedNotificationWorkerTests(
             Assert.Equal(1u, retryState.MessageCount);
             var sourceState = await WaitForQueueStateAsync(queueName, 0, 1, TimeSpan.FromSeconds(5));
             Assert.Equal(0u, sourceState.MessageCount);
+
+            var retryMeasurement = Assert.Single(measurements, measurement =>
+                measurement.Instrument == MessagingReliabilityMetrics.OperationCounterName &&
+                measurement.Tags.Any(tag => tag is { Key: "operation", Value: "transfer" }) &&
+                measurement.Tags.Any(tag => tag is { Key: "outcome", Value: "success" }) &&
+                measurement.Tags.Any(tag => tag is { Key: "route", Value: "retry" }) &&
+                measurement.Tags.Any(tag => tag is { Key: "attempt", Value: 2 }));
+            Assert.Equal(1, retryMeasurement.Value);
+            Assert.DoesNotContain(retryMeasurement.Tags, tag =>
+                tag.Key is "message_id" or "correlation_id" or "order_id" or "user_id");
+            Assert.Contains(measurements, measurement =>
+                measurement.Instrument == MessagingReliabilityMetrics.BacklogHistogramName &&
+                measurement.Tags.Any(tag => tag is { Key: "route", Value: "retry" }));
+            Assert.Contains(ageMeasurements, measurement =>
+                measurement.Value == 0 &&
+                measurement.Tags.Any(tag => tag is { Key: "stage", Value: "retry_transfer" }));
+            Assert.True(
+                await loggerProvider.WaitForMessageAsync(
+                    $"transferred for MessageId {message.MessageId:D}, CorrelationId {message.CorrelationId:D}, Attempt 2, SourceExchange {exchangeName}, SourceRoutingKey {routingKey}, TargetExchange {retryExchangeName}, TargetRoutingKey {consumerRoutingKey}",
+                    TimeSpan.FromSeconds(5)),
+                "The retry transfer did not emit safe route and attempt context");
 
             var connectionFactory = new ConnectionFactory
             {
@@ -924,10 +967,11 @@ public sealed class OrderCreatedNotificationWorkerTests(
         await using (var actContext = new OrderSystemDbContext(dbOptions))
         {
             var store = new EfOrderCreatedNotificationStore(actContext);
-            await store.CreateAsync(
+            var result = await store.CreateAsync(
                 new Notification(Guid.NewGuid(), userId, orderId, messageId, now),
                 new ProcessedMessage(messageId, consumerName, now),
                 CancellationToken.None);
+            Assert.Equal(OrderCreatedNotificationStoreResult.Duplicate, result);
         }
 
         await using var assertionContext = new OrderSystemDbContext(dbOptions);
@@ -2833,7 +2877,7 @@ WaitForProcessedMessageAsync(
         IOrderCreatedNotificationStore inner,
         FailOnceNotificationStoreGate failureGate) : IOrderCreatedNotificationStore
     {
-        public Task CreateAsync(
+        public Task<OrderCreatedNotificationStoreResult> CreateAsync(
             Notification notification,
             ProcessedMessage processedMessage,
             CancellationToken cancellationToken)
@@ -2859,7 +2903,7 @@ WaitForProcessedMessageAsync(
     private sealed class AlwaysFailOrderCreatedNotificationStore(
         AlwaysFailNotificationStoreGate failureGate) : IOrderCreatedNotificationStore
     {
-        public Task CreateAsync(
+        public Task<OrderCreatedNotificationStoreResult> CreateAsync(
             Notification notification,
             ProcessedMessage processedMessage,
             CancellationToken cancellationToken)
