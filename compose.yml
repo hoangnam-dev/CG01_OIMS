@@ -1,6 +1,66 @@
 name: oims
 
 services:
+  migrate:
+    image: oims-migrator:${OIMS_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: src/OrderSystem.Migrator/Dockerfile
+    environment:
+      Database__ConnectionString: Host=postgres;Port=5432;Database=${OIMS_POSTGRES_DB:-oims};Username=${OIMS_POSTGRES_USER:-oims};Password=${OIMS_POSTGRES_PASSWORD:?Set OIMS_POSTGRES_PASSWORD in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - oims
+
+  api:
+    image: oims-api:${OIMS_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: src/OrderSystem.Api/Dockerfile
+    environment:
+      Database__ConnectionString: Host=postgres;Port=5432;Database=${OIMS_POSTGRES_DB:-oims};Username=${OIMS_POSTGRES_USER:-oims};Password=${OIMS_POSTGRES_PASSWORD:?Set OIMS_POSTGRES_PASSWORD in .env}
+      Jwt__SigningKey: ${OIMS_JWT_SIGNING_KEY:-}
+      Redis__Configuration: redis:6379,password=${OIMS_REDIS_PASSWORD:?Set OIMS_REDIS_PASSWORD in .env},abortConnect=false
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Username: ${OIMS_RABBITMQ_USER:-oims}
+      RabbitMq__Password: ${OIMS_RABBITMQ_PASSWORD:?Set OIMS_RABBITMQ_PASSWORD in .env}
+    ports:
+      - "${OIMS_APP_BIND_ADDRESS:-127.0.0.1}:${OIMS_API_PORT:-8080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    stop_grace_period: 30s
+    networks:
+      - oims
+
+  worker:
+    image: oims-worker:${OIMS_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: src/OrderSystem.Worker/Dockerfile
+    environment:
+      Database__ConnectionString: Host=postgres;Port=5432;Database=${OIMS_POSTGRES_DB:-oims};Username=${OIMS_POSTGRES_USER:-oims};Password=${OIMS_POSTGRES_PASSWORD:?Set OIMS_POSTGRES_PASSWORD in .env}
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Username: ${OIMS_RABBITMQ_USER:-oims}
+      RabbitMq__Password: ${OIMS_RABBITMQ_PASSWORD:?Set OIMS_RABBITMQ_PASSWORD in .env}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    stop_grace_period: 30s
+    networks:
+      - oims
+
   postgres:
     image: postgres:18-alpine
     environment:
