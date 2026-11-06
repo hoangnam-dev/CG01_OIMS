@@ -1,0 +1,167 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Restore, format, build, unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore OrderSystem.slnx
+      - name: Format check
+        run: dotnet format OrderSystem.slnx --verify-no-changes --no-restore
+      - name: Release analyzer build
+        run: dotnet build OrderSystem.slnx --configuration Release --no-restore
+      - name: Unit tests
+        run: dotnet test tests/OrderSystem.UnitTests/OrderSystem.UnitTests.csproj --configuration Release --no-restore --no-build --logger 'trx;LogFileName=unit.trx' --results-directory TestResults/unit
+      - name: Require passing unit tests without skips
+        shell: pwsh
+        run: ./tests/CI/AssertTrx.ps1 -Path TestResults/unit/unit.trx
+      - name: Publish unit results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-results
+          path: TestResults/unit/unit.trx
+          if-no-files-found: ignore
+
+  postgres:
+    name: PostgreSQL integration tests
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore OrderSystem.slnx
+      - run: dotnet build tests/OrderSystem.IntegrationTests/OrderSystem.IntegrationTests.csproj --configuration Release --no-restore
+      - name: PostgreSQL tests
+        run: dotnet test tests/OrderSystem.IntegrationTests/OrderSystem.IntegrationTests.csproj --configuration Release --no-restore --no-build --filter 'FullyQualifiedName!~OrderSystem.IntegrationTests.Api.&FullyQualifiedName!~OrderSystem.IntegrationTests.Products.Caching.&FullyQualifiedName!~OrderSystem.IntegrationTests.Messaging.' --logger 'trx;LogFileName=postgres.trx' --results-directory TestResults/postgres
+      - name: Require passing PostgreSQL tests without skips
+        shell: pwsh
+        run: ./tests/CI/AssertTrx.ps1 -Path TestResults/postgres/postgres.trx
+      - name: Publish PostgreSQL results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: postgres-test-results
+          path: TestResults/postgres/postgres.trx
+          if-no-files-found: ignore
+
+  api:
+    name: API integration tests
+    needs: postgres
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore OrderSystem.slnx
+      - run: dotnet build tests/OrderSystem.IntegrationTests/OrderSystem.IntegrationTests.csproj --configuration Release --no-restore
+      - name: API tests
+        run: dotnet test tests/OrderSystem.IntegrationTests/OrderSystem.IntegrationTests.csproj --configuration Release --no-restore --no-build --filter 'FullyQualifiedName~OrderSystem.IntegrationTests.Api.' --logger 'trx;LogFileName=api.trx' --results-directory TestResults/api
+      - name: Require passing API tests without skips
+        shell: pwsh
+        run: ./tests/CI/AssertTrx.ps1 -Path TestResults/api/api.trx
+      - name: Publish API results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: api-test-results
+          path: TestResults/api/api.trx
+          if-no-files-found: ignore
+
+  redis:
+    name: Redis integration tests
+    needs: api
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore OrderSystem.slnx
+      - run: dotnet build tests/OrderSystem.IntegrationTests/OrderSystem.IntegrationTests.csproj --configuration Release --no-restore
+      - name: Redis tests
+        run: dotnet test tests/OrderSystem.IntegrationTests/OrderSystem.IntegrationTests.csproj --configuration Release --no-restore --no-build --filter 'FullyQualifiedName~OrderSystem.IntegrationTests.Products.Caching.' --logger 'trx;LogFileName=redis.trx' --results-directory TestResults/redis
+      - name: Require passing Redis tests without skips
+        shell: pwsh
+        run: ./tests/CI/AssertTrx.ps1 -Path TestResults/redis/redis.trx
+      - name: Publish Redis results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: redis-test-results
+          path: TestResults/redis/redis.trx
+          if-no-files-found: ignore
+
+  rabbitmq:
+    name: RabbitMQ integration tests
+    needs: redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore OrderSystem.slnx
+      - run: dotnet build tests/OrderSystem.IntegrationTests/OrderSystem.IntegrationTests.csproj --configuration Release --no-restore
+      - name: RabbitMQ tests
+        run: dotnet test tests/OrderSystem.IntegrationTests/OrderSystem.IntegrationTests.csproj --configuration Release --no-restore --no-build --filter 'FullyQualifiedName~OrderSystem.IntegrationTests.Messaging.' --logger 'trx;LogFileName=rabbitmq.trx' --results-directory TestResults/rabbitmq
+      - name: Require passing RabbitMQ tests without skips
+        shell: pwsh
+        run: ./tests/CI/AssertTrx.ps1 -Path TestResults/rabbitmq/rabbitmq.trx
+      - name: Publish RabbitMQ results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rabbitmq-test-results
+          path: TestResults/rabbitmq/rabbitmq.trx
+          if-no-files-found: ignore
+
+  docker:
+    name: Docker images and Compose smoke
+    needs: rabbitmq
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build API image
+        run: docker build --file src/OrderSystem.Api/Dockerfile --tag oims-api:${{ github.sha }} .
+      - name: Build Worker image
+        run: docker build --file src/OrderSystem.Worker/Dockerfile --tag oims-worker:${{ github.sha }} .
+      - name: Build Migrator image
+        run: docker build --file src/OrderSystem.Migrator/Dockerfile --tag oims-migrator:${{ github.sha }} .
+      - name: Cold-start Compose smoke
+        shell: pwsh
+        run: ./tests/E2E/ComposeSmoke.ps1
