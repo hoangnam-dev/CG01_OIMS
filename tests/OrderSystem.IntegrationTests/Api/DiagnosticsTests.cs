@@ -14,9 +14,11 @@ public sealed class DiagnosticsTests : IClassFixture<WebApplicationFactory<Progr
 {
     private readonly WebApplicationFactory<Program> _factory;
     private readonly HttpClient _client;
+    private readonly PostgreSqlFixture _postgres;
 
     public DiagnosticsTests(WebApplicationFactory<Program> factory, PostgreSqlFixture postgres)
     {
+        _postgres = postgres;
         _factory = factory.WithWebHostBuilder(builder =>
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddOimsTestConfiguration(
@@ -121,6 +123,56 @@ public sealed class DiagnosticsTests : IClassFixture<WebApplicationFactory<Progr
         using var response = await client.GetAsync("/health/ready");
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
+    [Fact]
+    [Trait("Requirement", "S11-T04")]
+    public async Task ReadinessEndpoint_TracksPostgresqlOutageAndRecovery()
+    {
+        await using var factory = _factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddOimsTestConfiguration(
+                    new KeyValuePair<string, string?>(
+                        "Database:ConnectionString",
+                        $"{_postgres.ConnectionString};Timeout=1;Command Timeout=1"))));
+        using var client = factory.CreateClient();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var paused = false;
+        try
+        {
+            await WaitForReadinessAsync(client, HttpStatusCode.OK, timeout.Token);
+            await _postgres.PauseAsync();
+            paused = true;
+            await WaitForReadinessAsync(client, HttpStatusCode.ServiceUnavailable, timeout.Token);
+            await _postgres.UnpauseAsync();
+            paused = false;
+            await WaitForReadinessAsync(client, HttpStatusCode.OK, timeout.Token);
+        }
+        finally
+        {
+            if (paused)
+            {
+                await _postgres.UnpauseAsync();
+            }
+        }
+    }
+
+    private static async Task WaitForReadinessAsync(
+        HttpClient client,
+        HttpStatusCode expected,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var response = await client.GetAsync("/health/ready", cancellationToken);
+            if (response.StatusCode == expected)
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+        }
     }
 
     [Fact]

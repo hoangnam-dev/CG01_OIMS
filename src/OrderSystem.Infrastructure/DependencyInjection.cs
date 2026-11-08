@@ -146,6 +146,12 @@ public static class DependencyInjection
 
         services.AddScoped<IProductCatalogStore, EfProductCatalogStore>();
         services.AddScoped<ProductCatalogService>();
+        services.AddHealthChecks()
+            .AddCheck<RedisHealthCheck>(
+                "redis",
+                failureStatus: HealthStatus.Degraded,
+                tags: [],
+                timeout: TimeSpan.FromSeconds(5));
 
         return services;
     }

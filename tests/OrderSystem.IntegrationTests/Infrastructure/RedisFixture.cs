@@ -15,6 +15,10 @@ public sealed class RedisFixture : IAsyncLifetime
 
     public Task InitializeAsync() => _container.StartAsync();
 
+    public Task PauseAsync() => _container.PauseAsync();
+
+    public Task UnpauseAsync() => _container.UnpauseAsync();
+
     public Task DisposeAsync() => _container.DisposeAsync().AsTask();
 }
 
