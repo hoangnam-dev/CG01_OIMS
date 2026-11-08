@@ -24,9 +24,10 @@ public static class LoggingConfiguration
         return loggerConfiguration
             .ReadFrom.Configuration(configuration)
             .Enrich.WithProperty("Service", serviceName)
+            .Enrich.With<SafeExceptionTypeEnricher>()
             .WriteTo.Console(
                 formatProvider: CultureInfo.InvariantCulture,
-                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [{Service}] [{UserId}] [{CorrelationId}] {Message:lj}{NewLine}{Exception}")
+                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [{Service}] [{UserId}] [{CorrelationId}] {Message:lj}{NewLine}{ExceptionType}")
             .WriteTo.File(
                 filePath,
                 rollingInterval: RollingInterval.Day,
@@ -36,6 +37,6 @@ public static class LoggingConfiguration
                 rollOnFileSizeLimit: true,
                 shared: true,
                 formatProvider: CultureInfo.InvariantCulture,
-                outputTemplate: "{Timestamp:O} [{Level:u3}] [{Service}] [{UserId}] [{CorrelationId}] {Message:lj}{NewLine}{Exception}");
+                outputTemplate: "{Timestamp:O} [{Level:u3}] [{Service}] [{UserId}] [{CorrelationId}] {Message:lj}{NewLine}{ExceptionType}");
     }
 }

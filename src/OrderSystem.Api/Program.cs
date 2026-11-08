@@ -126,6 +126,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICorrelationContext, HttpCorrelationContext>();
 builder.Services.AddMetrics();
 builder.Services.AddSingleton<PaymentInitiationMetrics>();
+builder.Services.AddSingleton<ApiFailureMetrics>();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddSingleton<ICreateOrderResponseSnapshotSerializer, CreateOrderResponseSnapshotSerializer>();
@@ -278,7 +279,6 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseMiddleware<UserContextLoggingMiddleware>();
 app.UseAuthorization();
-app.UseExceptionHandler();
 app.UseSerilogRequestLogging(options =>
 {
     options.MessageTemplate = "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
@@ -288,6 +288,7 @@ app.UseSerilogRequestLogging(options =>
         diagnosticContext.Set("CorrelationId", httpContext.TraceIdentifier);
     };
 });
+app.UseExceptionHandler();
 
 app.UseSwagger(options => options.RouteTemplate = "openapi/{documentName}.json");
 if (app.Environment.IsDevelopment())
