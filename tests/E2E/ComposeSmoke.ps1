@@ -12,6 +12,17 @@ $rng.GetBytes($bytes)
 $env:OIMS_JWT_SIGNING_KEY = [Convert]::ToBase64String($bytes)
 $rng.Dispose()
 
+$databaseConnection = [System.Data.Common.DbConnectionStringBuilder]::new()
+$databaseConnection['Host'] = 'postgres'
+$databaseConnection['Port'] = 5432
+$databaseConnection['Database'] = 'oims'
+$databaseConnection['Username'] = 'oims'
+$databaseConnection['Password'] = $env:OIMS_POSTGRES_PASSWORD
+$env:OIMS_DATABASE_CONNECTION_STRING = $databaseConnection.ConnectionString
+
+$redisPasswordOption = @('password', $env:OIMS_REDIS_PASSWORD) -join '='
+$env:OIMS_REDIS_CONFIGURATION = @('redis:6379', $redisPasswordOption, 'abortConnect=false') -join ','
+
 $env:OIMS_POSTGRES_PORT = '0'
 $env:OIMS_REDIS_PORT = '0'
 $env:OIMS_RABBITMQ_PORT = '0'

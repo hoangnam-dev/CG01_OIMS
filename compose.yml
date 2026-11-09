@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: src/OrderSystem.Migrator/Dockerfile
     environment:
-      Database__ConnectionString: Host=postgres;Port=5432;Database=${OIMS_POSTGRES_DB:-oims};Username=${OIMS_POSTGRES_USER:-oims};Password=${OIMS_POSTGRES_PASSWORD:?Set OIMS_POSTGRES_PASSWORD in .env}
+      Database__ConnectionString: ${OIMS_DATABASE_CONNECTION_STRING:?Set OIMS_DATABASE_CONNECTION_STRING in .env}
     depends_on:
       postgres:
         condition: service_healthy
@@ -21,9 +21,9 @@ services:
       context: .
       dockerfile: src/OrderSystem.Api/Dockerfile
     environment:
-      Database__ConnectionString: Host=postgres;Port=5432;Database=${OIMS_POSTGRES_DB:-oims};Username=${OIMS_POSTGRES_USER:-oims};Password=${OIMS_POSTGRES_PASSWORD:?Set OIMS_POSTGRES_PASSWORD in .env}
+      Database__ConnectionString: ${OIMS_DATABASE_CONNECTION_STRING:?Set OIMS_DATABASE_CONNECTION_STRING in .env}
       Jwt__SigningKey: ${OIMS_JWT_SIGNING_KEY:-}
-      Redis__Configuration: redis:6379,password=${OIMS_REDIS_PASSWORD:?Set OIMS_REDIS_PASSWORD in .env},abortConnect=false
+      Redis__Configuration: ${OIMS_REDIS_CONFIGURATION:?Set OIMS_REDIS_CONFIGURATION in .env}
       RabbitMq__Host: rabbitmq
       RabbitMq__Username: ${OIMS_RABBITMQ_USER:-oims}
       RabbitMq__Password: ${OIMS_RABBITMQ_PASSWORD:?Set OIMS_RABBITMQ_PASSWORD in .env}
@@ -48,7 +48,7 @@ services:
       context: .
       dockerfile: src/OrderSystem.Worker/Dockerfile
     environment:
-      Database__ConnectionString: Host=postgres;Port=5432;Database=${OIMS_POSTGRES_DB:-oims};Username=${OIMS_POSTGRES_USER:-oims};Password=${OIMS_POSTGRES_PASSWORD:?Set OIMS_POSTGRES_PASSWORD in .env}
+      Database__ConnectionString: ${OIMS_DATABASE_CONNECTION_STRING:?Set OIMS_DATABASE_CONNECTION_STRING in .env}
       RabbitMq__Host: rabbitmq
       RabbitMq__Username: ${OIMS_RABBITMQ_USER:-oims}
       RabbitMq__Password: ${OIMS_RABBITMQ_PASSWORD:?Set OIMS_RABBITMQ_PASSWORD in .env}
