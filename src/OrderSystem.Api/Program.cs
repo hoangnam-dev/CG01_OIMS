@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -125,6 +126,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICorrelationContext, HttpCorrelationContext>();
 builder.Services.AddMetrics();
 builder.Services.AddSingleton<PaymentInitiationMetrics>();
+builder.Services.AddSingleton<ApiFailureMetrics>();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddSingleton<ICreateOrderResponseSnapshotSerializer, CreateOrderResponseSnapshotSerializer>();
@@ -277,7 +279,6 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseMiddleware<UserContextLoggingMiddleware>();
 app.UseAuthorization();
-app.UseExceptionHandler();
 app.UseSerilogRequestLogging(options =>
 {
     options.MessageTemplate = "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
@@ -287,6 +288,7 @@ app.UseSerilogRequestLogging(options =>
         diagnosticContext.Set("CorrelationId", httpContext.TraceIdentifier);
     };
 });
+app.UseExceptionHandler();
 
 app.UseSwagger(options => options.RouteTemplate = "openapi/{documentName}.json");
 if (app.Environment.IsDevelopment())
@@ -302,6 +304,18 @@ app.MapHealthChecks("/health/live", new HealthCheckOptions
 app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
     Predicate = registration => registration.Tags.Contains("ready")
+});
+app.MapHealthChecks("/health/dependencies", new HealthCheckOptions
+{
+    ResponseWriter = async (context, report) =>
+    {
+        context.Response.ContentType = "application/json";
+        await JsonSerializer.SerializeAsync(context.Response.Body, new
+        {
+            status = report.Status.ToString(),
+            checks = report.Entries.ToDictionary(entry => entry.Key, entry => entry.Value.Status.ToString())
+        }, cancellationToken: context.RequestAborted);
+    }
 });
 app.MapFoundationEndpoints();
 app.MapAuthenticationEndpoints();
