@@ -66,6 +66,35 @@ public sealed class FileLoggingTests : IAsyncLifetime
     public Task InitializeAsync() => Task.CompletedTask;
 
     [Fact]
+    [Trait("Requirement", "S11-T05")]
+    public async Task FileSink_RecordsExceptionTypeWithoutExceptionMessage()
+    {
+        Directory.CreateDirectory(_directory);
+        var logPath = Path.Combine(_directory, "exception-.log");
+        var secret = $"test-secret-{Guid.NewGuid():N}";
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Serilog:FilePath"] = logPath,
+                ["Serilog:MinimumLevel:Default"] = "Information"
+            })
+            .Build();
+
+        using (var logger = new LoggerConfiguration()
+            .ConfigureOimsLogging(configuration, "OrderSystem.Worker")
+            .CreateLogger())
+        {
+            logger.Error(new InvalidOperationException($"Password={secret}"), "Worker scan failed");
+        }
+
+        var file = Assert.Single(Directory.GetFiles(_directory, "exception-*.log"));
+        var contents = await File.ReadAllTextAsync(file);
+        Assert.Contains(nameof(InvalidOperationException), contents, StringComparison.Ordinal);
+        Assert.Contains("Worker scan failed", contents, StringComparison.Ordinal);
+        Assert.DoesNotContain(secret, contents, StringComparison.Ordinal);
+    }
+
+    [Fact]
     [Trait("Requirement", "NFR-007")]
     public async Task AuthenticatedRequest_WritesTrustedUserIdToRequestLog()
     {

@@ -6,7 +6,8 @@ namespace OrderSystem.Api.Errors;
 
 public sealed class GlobalExceptionHandler(
     ILogger<GlobalExceptionHandler> logger,
-    IProblemDetailsService problemDetailsService) : IExceptionHandler
+    IProblemDetailsService problemDetailsService,
+    ApiFailureMetrics metrics) : IExceptionHandler
 {
     private static readonly Action<ILogger, string, string?, Exception?> UnhandledFailure =
         LoggerMessage.Define<string, string?>(
@@ -27,14 +28,17 @@ public sealed class GlobalExceptionHandler(
         var databaseFailure = DatabaseFailureClassifier.Classify(exception);
         if (databaseFailure is not null)
         {
+            metrics.RecordDependencyUnavailable();
             DatabaseFailure(logger, httpContext.Request.Path, databaseFailure.Code, null);
         }
         else if (DatabaseFailureClassifier.IsContention(exception))
         {
+            metrics.RecordDatabaseContention();
             DatabaseFailure(logger, httpContext.Request.Path, "DATABASE_CONTENTION", null);
         }
         else
         {
+            metrics.RecordUnexpected();
             UnhandledFailure(logger, httpContext.Request.Path, exception.GetType().FullName, null);
         }
         var statusCode = databaseFailure?.StatusCode ?? StatusCodes.Status500InternalServerError;
