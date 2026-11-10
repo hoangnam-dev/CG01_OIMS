@@ -1430,6 +1430,126 @@ namespace OrderSystem.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("OrderSystem.Infrastructure.Persistence.OutboxMessage", b =>
+                {
+                    b.Property<Guid>("MessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("message_id");
+
+                    b.Property<int>("AttemptCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("attempt_count");
+
+                    b.Property<Guid?>("ClaimToken")
+                        .HasColumnType("uuid")
+                        .HasColumnName("claim_token");
+
+                    b.Property<Guid>("CorrelationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("event_type");
+
+                    b.Property<short>("EventVersion")
+                        .HasColumnType("smallint")
+                        .HasColumnName("event_version");
+
+                    b.Property<string>("ExchangeName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("exchange_name");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("last_error");
+
+                    b.Property<string>("LastFailureCategory")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("last_failure_category");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<DateTimeOffset?>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload");
+
+                    b.Property<DateTimeOffset?>("PublishedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("published_at");
+
+                    b.Property<string>("RoutingKey")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("routing_key");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.HasKey("MessageId")
+                        .HasName("pk_outbox_messages");
+
+                    b.HasIndex("LeaseExpiresAt", "MessageId")
+                        .HasDatabaseName("ix_outbox_messages_publishing")
+                        .HasFilter("status = 'Publishing'");
+
+                    b.HasIndex("NextAttemptAt", "MessageId")
+                        .HasDatabaseName("ix_outbox_messages_pending")
+                        .HasFilter("status = 'Pending'");
+
+                    b.HasIndex("PublishedAt", "MessageId")
+                        .HasDatabaseName("ix_outbox_messages_published")
+                        .HasFilter("status = 'Published'");
+
+                    b.ToTable("outbox_messages", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_outbox_messages_attempt_count", "attempt_count >= 0");
+
+                            t.HasCheckConstraint("ck_outbox_messages_event_type", "length(btrim(event_type)) > 0");
+
+                            t.HasCheckConstraint("ck_outbox_messages_event_version", "event_version > 0");
+
+                            t.HasCheckConstraint("ck_outbox_messages_exchange_name", "length(btrim(exchange_name)) > 0");
+
+                            t.HasCheckConstraint("ck_outbox_messages_failure_category", "last_failure_category IS NULL OR last_failure_category IN ('BrokerUnavailable', 'ConfirmTimeout', 'NegativeConfirmation', 'OutcomeUnknown', 'Unroutable', 'UnsupportedStoredContract')");
+
+                            t.HasCheckConstraint("ck_outbox_messages_lifecycle", "(status = 'Pending' AND next_attempt_at IS NOT NULL AND claim_token IS NULL AND lease_expires_at IS NULL AND published_at IS NULL) OR (status = 'Publishing' AND next_attempt_at IS NULL AND claim_token IS NOT NULL AND lease_expires_at IS NOT NULL AND published_at IS NULL) OR (status = 'Published' AND next_attempt_at IS NULL AND claim_token IS NULL AND lease_expires_at IS NULL AND published_at IS NOT NULL) OR (status = 'NeedsAttention' AND next_attempt_at IS NULL AND claim_token IS NULL AND lease_expires_at IS NULL AND published_at IS NULL)");
+
+                            t.HasCheckConstraint("ck_outbox_messages_payload", "jsonb_typeof(payload) = 'object'");
+
+                            t.HasCheckConstraint("ck_outbox_messages_routing_key", "length(btrim(routing_key)) > 0");
+
+                            t.HasCheckConstraint("ck_outbox_messages_status", "status IN ('Pending', 'Publishing', 'Published', 'NeedsAttention')");
+                        });
+                });
+
             modelBuilder.Entity("OrderSystem.Domain.Idempotency.IdempotencyRequest", b =>
                 {
                     b.HasOne("OrderSystem.Domain.Users.User", null)
