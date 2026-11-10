@@ -7,8 +7,6 @@ using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Common.Identifiers;
-using OrderSystem.Application.Messaging;
-using OrderSystem.Application.Messaging.Contracts;
 using OrderSystem.Application.Orders;
 using OrderSystem.Application.Orders.Contracts;
 using OrderSystem.Domain.Inventories;
@@ -40,7 +38,7 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         var service = CreateService(
             commandScope,
             userId,
-            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid()],
+            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()],
             new ThrowingCheckpointHook(OrderOperationCheckpoints.AfterInventoryReservation));
 
         // Act
@@ -61,6 +59,7 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         Assert.False(await assertionDbContext.Orders.AnyAsync(candidate => candidate.Id == orderId));
         Assert.False(await assertionDbContext.OrderItems.AnyAsync(candidate => candidate.OrderId == orderId));
         Assert.False(await assertionDbContext.InventoryTransactions.AnyAsync(candidate => candidate.ReferenceId == orderId));
+        Assert.False(await assertionDbContext.OutboxMessages.AnyAsync(candidate => candidate.OrderId == orderId));
     }
 
     [Fact]
@@ -75,7 +74,7 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         var service = CreateService(
             commandScope,
             userId,
-            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid()],
+            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()],
             new ThrowingCheckpointHook(OrderOperationCheckpoints.AfterCreateCommit));
 
         // Act
@@ -113,9 +112,10 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         Assert.Equal(1, ledger.ReservedQuantityDelta);
         Assert.Equal(InventoryReferenceType.Order, ledger.ReferenceType);
         Assert.Equal(orderId, ledger.ReferenceId);
+        Assert.True(await assertionDbContext.OutboxMessages.AnyAsync(candidate => candidate.OrderId == orderId));
     }
 
-    [Fact(Skip = "S12-T04 owns enabling this outbox atomicity contract")]
+    [Fact]
     public async Task CreateAsync_WhenOrderCommits_PersistsOneOrderCreatedOutboxIntent()
     {
         await using var factory = CreateFactory();
@@ -150,7 +150,7 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         Assert.Equal(0, outboxMessage.AttemptCount);
     }
 
-    [Fact(Skip = "S12-T04 owns enabling this outbox atomicity contract")]
+    [Fact]
     public async Task CreateAsync_WhenFailureOccursBeforeCommit_RollsBackOrderAndOutboxIntent()
     {
         await using var factory = CreateFactory();
@@ -304,7 +304,6 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
             scope.ServiceProvider.GetRequiredService<ICreateOrderResponseSnapshotSerializer>(),
             operationHook,
             new TestCorrelationContext(),
-            new NoOpOrderCreatedPublisher(),
             ReservationDuration,
             IdempotencyReplayWindow,
             IdempotencyRetentionWindow);
@@ -429,11 +428,6 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
     private sealed record TestCorrelationContext : ICorrelationContext
     {
         public Guid CorrelationId { get; } = Guid.NewGuid();
-    }
-
-    private sealed class NoOpOrderCreatedPublisher : IOrderCreatedPublisher
-    {
-        public Task PublishAsync(OrderCreatedV1 message) => Task.CompletedTask;
     }
 
     private sealed class SequenceIdGenerator(IReadOnlyCollection<Guid> generatedIds) : IIdGenerator

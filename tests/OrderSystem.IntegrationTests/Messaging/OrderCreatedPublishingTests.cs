@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -10,7 +9,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Logging;
 using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
@@ -35,28 +33,18 @@ public sealed class OrderCreatedPublishingTests(
     private static readonly DateTimeOffset FixedNow = new(2026, 10, 17, 8, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    [Trait("Requirement", "S9-T04")]
-    [Trait("Requirement", "S9-T06")]
-    [Trait("TestId", "MSG-PUBLISH-001")]
-    [Trait("TestId", "MSG-TRACE-001")]
-    public async Task CreateAsync_NewlyCommittedOrder_PublishesAndLogsOrderCreatedV1()
+    [Trait("Requirement", "S12-T04")]
+    [Trait("TestId", "OUTBOX-001")]
+    public async Task CreateAsync_NewlyCommittedOrder_StoresOrderCreatedV1Intent()
     {
         var userId = Guid.NewGuid();
         var correlationId = Guid.NewGuid();
-        using var loggerProvider = new RecordingLoggerProvider();
-        await using var factory = CreateFactory(userId, correlationId, loggerProvider);
+        await using var factory = CreateFactory(userId, correlationId);
         using var scope = factory.Services.CreateScope();
         var provider = scope.ServiceProvider;
         var dbContext = provider.GetRequiredService<OrderSystemDbContext>();
         await dbContext.Database.MigrateAsync();
         var productVariantId = await SeedOrderDependenciesAsync(dbContext, userId);
-
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var topology = provider.GetRequiredService<IRabbitMqTopologyInitializer>();
-        var channelFactory = provider.GetRequiredService<IRabbitMqChannelFactory>();
-        await topology.InitializeAsync(timeout.Token);
-        await using var channel = await channelFactory.CreateChannelAsync(timeout.Token);
-        await channel.QueuePurgeAsync("oims.notification.order-created.v1", timeout.Token);
 
         var service = provider.GetRequiredService<OrderCommandService>();
         var result = await service.CreateAsync(
@@ -67,13 +55,10 @@ public sealed class OrderCreatedPublishingTests(
         Assert.True(result.IsSuccess);
         Assert.False(result.Value!.IsReplay);
 
-        var delivery = await channel.BasicGetAsync(
-            "oims.notification.order-created.v1",
-            autoAck: true,
-            timeout.Token);
-
-        Assert.NotNull(delivery);
-        Assert.True(OrderCreatedV1Serializer.TryDeserialize(delivery.Body.Span, out var message));
+        var intent = await dbContext.OutboxMessages.AsNoTracking()
+            .SingleAsync(candidate => candidate.OrderId == result.Value.ResourceId);
+        Assert.True(OrderCreatedV1Serializer.TryDeserialize(
+            System.Text.Encoding.UTF8.GetBytes(intent.Payload), out var message));
         Assert.NotNull(message);
 
         var committedOrder = await dbContext.Orders
@@ -86,30 +71,11 @@ public sealed class OrderCreatedPublishingTests(
         Assert.Equal(userId, message.UserId);
         Assert.Equal(correlationId, message.CorrelationId);
         Assert.Equal(committedOrder.CreatedAt, message.OccurredAt);
-        Assert.Equal(message.MessageId.ToString("D"), delivery.BasicProperties.MessageId);
-        Assert.Equal(message.CorrelationId.ToString("D"), delivery.BasicProperties.CorrelationId);
-        Assert.Equal("application/json", delivery.BasicProperties.ContentType);
-        Assert.Equal("OrderCreated", delivery.BasicProperties.Type);
-        Assert.True(delivery.BasicProperties.Persistent);
-
-        var publishLog = Assert.Single(
-            loggerProvider.Entries,
-            entry =>
-                entry.CategoryName == typeof(RabbitMqOrderCreatedPublisher).FullName &&
-                entry.EventId.Name == "PublishSucceeded");
-
-        Assert.Equal(LogLevel.Information, publishLog.Level);
-        Assert.Null(publishLog.Exception);
-        Assert.Contains(publishLog.Properties, property => property.Key == "MessageId" && Equals(property.Value, message.MessageId));
-        Assert.Contains(publishLog.Properties, property => property.Key == "CorrelationId" && Equals(property.Value, correlationId));
-        Assert.Contains(publishLog.Properties, property => property.Key == "OrderId" && Equals(property.Value, committedOrder.Id));
-        Assert.Contains(publishLog.Properties, property => property.Key == "UserId" && Equals(property.Value, userId));
-        Assert.Contains(publishLog.Properties, property => property.Key == "EventVersion" && Equals(property.Value, 1));
-        Assert.Contains(publishLog.Properties, property => property.Key == "Exchange" && Equals(property.Value, "oims.events"));
-        Assert.Contains(publishLog.Properties, property => property.Key == "RoutingKey" && Equals(property.Value, "order.created.v1"));
-        Assert.DoesNotContain(
-            publishLog.Properties,
-            property => property.Key is "Payload" or "Body" or "Password" or "Token" or "IdempotencyKey");
+        Assert.Equal(message.MessageId, intent.MessageId);
+        Assert.Equal("OrderCreated", intent.EventType);
+        Assert.Equal("oims.events", intent.ExchangeName);
+        Assert.Equal("order.created.v1", intent.RoutingKey);
+        Assert.Equal(OutboxMessageStatus.Pending, intent.Status);
     }
 
     [Fact]
@@ -180,6 +146,10 @@ public sealed class OrderCreatedPublishingTests(
                 .SingleAsync(item =>
                     item.ProductVariantId == seeded.ProductVariantId);
             Assert.Equal(1, inventory.ReservedQuantity);
+            var intent = await dbContext.OutboxMessages.AsNoTracking()
+                .SingleAsync(candidate => candidate.OrderId == order.Id);
+            Assert.Equal(OutboxMessageStatus.Pending, intent.Status);
+            Assert.Equal(0, intent.AttemptCount);
         }
         finally
         {
@@ -229,12 +199,13 @@ public sealed class OrderCreatedPublishingTests(
             IdempotencyRequestStatus.Completed,
             idempotencyRequest.Status);
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var intent = await dbContext.OutboxMessages.AsNoTracking()
+            .SingleAsync(candidate => candidate.OrderId == order.Id);
+        Assert.Equal(unroutableRoutingKey, intent.RoutingKey);
+        Assert.Equal(OutboxMessageStatus.Pending, intent.Status);
     }
 
-    private WebApplicationFactory<Program> CreateFactory(
-        Guid userId,
-        Guid correlationId,
-        ILoggerProvider? loggerProvider = null) =>
+    private WebApplicationFactory<Program> CreateFactory(Guid userId, Guid correlationId) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration((_, configuration) =>
@@ -254,12 +225,6 @@ public sealed class OrderCreatedPublishingTests(
                 services.RemoveAll<ICorrelationContext>();
                 services.AddScoped<ICorrelationContext>(_ => new TestCorrelationContext(correlationId));
 
-                if (loggerProvider is not null)
-                {
-                    services.Replace(
-                        ServiceDescriptor.Singleton<ILoggerFactory>(
-                            _ => new LoggerFactory([loggerProvider])));
-                }
             });
         });
 
@@ -447,64 +412,4 @@ public sealed class OrderCreatedPublishingTests(
     string Email,
     Guid ProductVariantId);
 
-    private sealed class RecordingLoggerProvider : ILoggerProvider
-    {
-        private readonly ConcurrentQueue<LogEntry> entries = [];
-
-        public IReadOnlyCollection<LogEntry> Entries => entries.ToArray();
-
-        public ILogger CreateLogger(string categoryName) =>
-            new RecordingLogger(categoryName, entries);
-
-        public void Dispose()
-        {
-        }
-
-        private sealed class RecordingLogger(
-            string categoryName,
-            ConcurrentQueue<LogEntry> entries) : ILogger
-        {
-            public IDisposable BeginScope<TState>(TState state)
-                where TState : notnull =>
-                EmptyScope.Instance;
-
-            public bool IsEnabled(LogLevel logLevel) => true;
-
-            public void Log<TState>(
-                LogLevel logLevel,
-                EventId eventId,
-                TState state,
-                Exception? exception,
-                Func<TState, Exception?, string> formatter)
-            {
-                var properties = state is IEnumerable<KeyValuePair<string, object?>> values
-                    ? values.ToArray()
-                    : [];
-
-                entries.Enqueue(
-                    new LogEntry(
-                        categoryName,
-                        logLevel,
-                        eventId,
-                        properties,
-                        exception));
-            }
-        }
-    }
-
-    private sealed record LogEntry(
-        string CategoryName,
-        LogLevel Level,
-        EventId EventId,
-        IReadOnlyList<KeyValuePair<string, object?>> Properties,
-        Exception? Exception);
-
-    private sealed class EmptyScope : IDisposable
-    {
-        public static EmptyScope Instance { get; } = new();
-
-        public void Dispose()
-        {
-        }
-    }
 }

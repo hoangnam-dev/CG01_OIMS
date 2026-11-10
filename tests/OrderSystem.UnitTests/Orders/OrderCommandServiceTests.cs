@@ -3,7 +3,6 @@ using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Common.Identifiers;
 using OrderSystem.Application.Common.Models;
-using OrderSystem.Application.Messaging;
 using OrderSystem.Application.Messaging.Contracts;
 using OrderSystem.Application.Orders;
 using OrderSystem.Application.Orders.Contracts;
@@ -181,6 +180,7 @@ public sealed class OrderCommandServiceTests
         Assert.Empty(store.AddedOrders);
         Assert.Empty(store.AddedOrderItems);
         Assert.Empty(store.AddedInventoryTransactions);
+        Assert.Empty(store.AddedOrderCreatedIntents);
         Assert.Collection(
             store.ReservationAttempts,
             first =>
@@ -258,6 +258,11 @@ public sealed class OrderCommandServiceTests
             store.AddedInventoryTransactions.OrderBy(transaction => transaction.ProductVariantId),
             first => AssertReserveLedger(first, order.Id, firstVariantId, 2),
             second => AssertReserveLedger(second, order.Id, secondVariantId, 1));
+
+        var intent = Assert.Single(store.AddedOrderCreatedIntents);
+        Assert.Equal(order.Id, intent.OrderId);
+        Assert.Equal(customer.UserId, intent.UserId);
+        Assert.Equal(order.CreatedAt, intent.OccurredAt);
 
         Assert.Equal(1, store.SaveChangesCalls);
         Assert.Equal(1, store.Transaction.CommitCalls);
@@ -565,6 +570,7 @@ public sealed class OrderCommandServiceTests
         Assert.Equal(0, store.LoadVariantSnapshotsCalls);
         Assert.Empty(store.ReservationAttempts);
         Assert.Empty(store.AddedOrders);
+        Assert.Empty(store.AddedOrderCreatedIntents);
         Assert.Equal(0, store.SaveChangesCalls);
         Assert.Equal(0, store.Transaction.CommitCalls);
     }
@@ -636,7 +642,6 @@ public sealed class OrderCommandServiceTests
             new FakeCreateOrderResponseSnapshotSerializer(),
             hook ?? new FakeOperationHook(),
             new FakeCorrelationContext(),
-            new FakeOrderCreatedPublisher(),
             ReservationDuration,
             IdempotencyReplayWindow,
             IdempotencyRetentionWindow);
@@ -689,11 +694,6 @@ public sealed class OrderCommandServiceTests
     private sealed record FakeCorrelationContext : ICorrelationContext
     {
         public Guid CorrelationId { get; } = Guid.NewGuid();
-    }
-
-    private sealed class FakeOrderCreatedPublisher : IOrderCreatedPublisher
-    {
-        public Task PublishAsync(OrderCreatedV1 message) => Task.CompletedTask;
     }
 
     private sealed class FakeIdGenerator : IIdGenerator
@@ -763,6 +763,7 @@ public sealed class OrderCommandServiceTests
         public List<Order> AddedOrders { get; } = [];
         public List<OrderItem> AddedOrderItems { get; } = [];
         public List<InventoryTransaction> AddedInventoryTransactions { get; } = [];
+        public List<OrderCreatedV1> AddedOrderCreatedIntents { get; } = [];
         public List<OrderStatusHistory> AddedOrderStatusHistories { get; } = [];
         public Order? LockedOrder { get; init; }
         public IReadOnlyList<OrderItem> OrderItems { get; init; } = [];
@@ -835,6 +836,8 @@ public sealed class OrderCommandServiceTests
 
         public void AddInventoryTransactions(IEnumerable<InventoryTransaction> transactions) =>
             AddedInventoryTransactions.AddRange(transactions);
+
+        public void AddOrderCreatedIntent(OrderCreatedV1 message) => AddedOrderCreatedIntents.Add(message);
 
         public void AddOrderStatusHistory(OrderStatusHistory history) =>
             AddedOrderStatusHistories.Add(history);
