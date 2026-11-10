@@ -115,6 +115,73 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         Assert.Equal(orderId, ledger.ReferenceId);
     }
 
+    [Fact(Skip = "S12-T04 owns enabling this outbox atomicity contract")]
+    public async Task CreateAsync_WhenOrderCommits_PersistsOneOrderCreatedOutboxIntent()
+    {
+        await using var factory = CreateFactory();
+        var (userId, productVariantId) = await SeedCreateOrderDependenciesAsync(factory);
+        var orderId = Guid.NewGuid();
+        var messageId = Guid.NewGuid();
+
+        using var commandScope = factory.Services.CreateScope();
+        var service = CreateService(
+            commandScope,
+            userId,
+            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid(), messageId],
+            new ThrowingCheckpointHook("not-reached"));
+
+        var result = await service.CreateAsync(
+            Guid.NewGuid(),
+            new CreateOrderRequest([new(productVariantId, Quantity: 1)]),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDbContext = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        Assert.True(await assertionDbContext.Orders.AsNoTracking().AnyAsync(order => order.Id == orderId));
+
+        var outboxMessages = await assertionDbContext.OutboxMessages.AsNoTracking()
+            .Where(message => message.OrderId == orderId)
+            .ToListAsync();
+        var outboxMessage = Assert.Single(outboxMessages);
+        Assert.Equal(messageId, outboxMessage.MessageId);
+        Assert.Equal(OutboxMessageStatus.Pending, outboxMessage.Status);
+        Assert.Equal(0, outboxMessage.AttemptCount);
+    }
+
+    [Fact(Skip = "S12-T04 owns enabling this outbox atomicity contract")]
+    public async Task CreateAsync_WhenFailureOccursBeforeCommit_RollsBackOrderAndOutboxIntent()
+    {
+        await using var factory = CreateFactory();
+        var (userId, productVariantId) = await SeedCreateOrderDependenciesAsync(factory);
+        var orderId = Guid.NewGuid();
+
+        using var commandScope = factory.Services.CreateScope();
+        var commandDbContext = commandScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var hook = new RecordingThrowingCreateHook(commandDbContext, orderId);
+        var service = CreateService(
+            commandScope,
+            userId,
+            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()],
+            hook);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(
+            Guid.NewGuid(),
+            new CreateOrderRequest([new(productVariantId, Quantity: 1)]),
+            CancellationToken.None));
+
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDbContext = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var inventory = await assertionDbContext.Inventories.AsNoTracking()
+            .SingleAsync(candidate => candidate.ProductVariantId == productVariantId);
+
+        Assert.Equal(0, inventory.ReservedQuantity);
+        Assert.False(await assertionDbContext.Orders.AnyAsync(candidate => candidate.Id == orderId));
+        Assert.False(await assertionDbContext.OutboxMessages.AnyAsync(candidate => candidate.OrderId == orderId));
+        Assert.Equal(1, hook.StagedOutboxCount);
+    }
+
     [Fact]
     public async Task CancelAsync_WhenFailureOccursAfterFirstRelease_RollsBackAllReservationEffects()
     {
@@ -387,6 +454,25 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
             if (checkpoint == checkpointToThrow)
             {
                 throw new InvalidOperationException($"Injected failure at '{checkpoint}'.");
+            }
+
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingThrowingCreateHook(OrderSystemDbContext dbContext, Guid orderId) : IOperationHook
+    {
+        public int StagedOutboxCount { get; private set; }
+
+        public Task ReachAsync(string checkpoint, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (checkpoint == OrderOperationCheckpoints.AfterInventoryReservation)
+            {
+                StagedOutboxCount = dbContext.ChangeTracker.Entries<OutboxMessage>()
+                    .Count(entry => entry.State == EntityState.Added && entry.Entity.OrderId == orderId);
+                throw new InvalidOperationException("Injected failure before CreateOrder commit");
             }
 
             return Task.CompletedTask;
