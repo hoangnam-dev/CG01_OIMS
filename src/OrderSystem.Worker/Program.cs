@@ -12,6 +12,7 @@ builder.Services
     .AddOrderSystemCommonInfrastructure()
     .AddOrderSystemOrderInfrastructure(builder.Configuration)
     .AddOrderSystemMessagingInfrastructure(builder.Configuration)
+    .AddOrderSystemOutboxPublisherInfrastructure(builder.Configuration)
     .AddOrderSystemPaymentInfrastructure(builder.Configuration)
     .AddOrderSystemNotificationConsumer()
     .AddOrderSystemDeadLetterIntakeConsumer()

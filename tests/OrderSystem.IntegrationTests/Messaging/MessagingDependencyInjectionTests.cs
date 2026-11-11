@@ -4,12 +4,146 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using OrderSystem.Infrastructure;
 using OrderSystem.Infrastructure.Configuration;
+using OrderSystem.Infrastructure.Outbox;
 using RabbitMQ.Client;
 
 namespace OrderSystem.IntegrationTests.Messaging;
 
 public sealed class MessagingDependencyInjectionTests
 {
+    [Fact]
+    [Trait("Requirement", "S12-T05")]
+    public async Task OutboxPublisherCapability_ResolvesRabbitMqAdapter()
+    {
+        var settings = new Dictionary<string, string?>
+        {
+            ["RabbitMq:Host"] = "localhost",
+            ["RabbitMq:Port"] = "5672",
+            ["RabbitMq:VirtualHost"] = "/",
+            ["RabbitMq:Username"] = "oims"
+        };
+
+        using var host = new HostBuilder()
+            .ConfigureAppConfiguration(configuration =>
+            {
+                configuration.Sources.Clear();
+                configuration.AddInMemoryCollection(settings);
+            })
+            .ConfigureServices((context, services) =>
+            {
+                services.AddLogging();
+                services.AddOrderSystemMessagingInfrastructure(context.Configuration);
+                services.AddOrderSystemOutboxPublisherInfrastructure(context.Configuration);
+            })
+            .Build();
+
+        await host.StartAsync();
+
+        var publisher = host.Services.GetService<IOutboxMessagePublisher>();
+        Assert.NotNull(publisher);
+        Assert.IsType<RabbitMqOutboxPublisher>(publisher);
+
+        await host.StopAsync();
+    }
+
+    [Fact]
+    [Trait("Requirement", "S12-T05")]
+    public async Task OutboxPublisherCapability_UsesTwoSecondIdlePollInterval()
+    {
+        using var host = new HostBuilder()
+            .ConfigureServices((context, services) =>
+            {
+                services.AddOrderSystemOutboxPublisherInfrastructure(context.Configuration);
+            })
+            .Build();
+
+        await host.StartAsync();
+
+        var options = host.Services.GetRequiredService<IOptions<OutboxPublisherOptions>>().Value;
+        Assert.Equal(TimeSpan.FromSeconds(2), options.IdlePollInterval);
+
+        await host.StopAsync();
+    }
+
+    [Fact]
+    [Trait("Requirement", "S12-T05")]
+    public async Task OutboxPublisherCapability_WithZeroIdlePollInterval_FailsStartup()
+    {
+        var settings = new Dictionary<string, string?>
+        {
+            ["OutboxPublisher:IdlePollInterval"] = "00:00:00"
+        };
+
+        using var host = new HostBuilder()
+            .ConfigureAppConfiguration(configuration =>
+            {
+                configuration.Sources.Clear();
+                configuration.AddInMemoryCollection(settings);
+            })
+            .ConfigureServices((context, services) =>
+            {
+                services.AddOrderSystemOutboxPublisherInfrastructure(context.Configuration);
+            })
+            .Build();
+
+        var exception = await Assert.ThrowsAsync<OptionsValidationException>(() => host.StartAsync());
+        Assert.Contains(nameof(OutboxPublisherOptions.IdlePollInterval), exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait("Requirement", "S12-T05")]
+    public async Task OutboxPublisherCapability_BindsConfiguredConcurrencyLimit()
+    {
+        var settings = new Dictionary<string, string?>
+        {
+            ["OutboxPublisher:MaxConcurrentPublishes"] = "2"
+        };
+
+        using var host = new HostBuilder()
+            .ConfigureAppConfiguration(configuration =>
+            {
+                configuration.Sources.Clear();
+                configuration.AddInMemoryCollection(settings);
+            })
+            .ConfigureServices((context, services) =>
+            {
+                services.AddOrderSystemOutboxPublisherInfrastructure(context.Configuration);
+            })
+            .Build();
+
+        await host.StartAsync();
+
+        var options = host.Services.GetRequiredService<IOptions<OutboxPublisherOptions>>().Value;
+        Assert.Equal(2, options.MaxConcurrentPublishes);
+
+        await host.StopAsync();
+    }
+
+    [Fact]
+    [Trait("Requirement", "S12-T05")]
+    public async Task OutboxPublisherCapability_WithZeroConcurrency_FailsStartup()
+    {
+        var settings = new Dictionary<string, string?>
+        {
+            ["OutboxPublisher:MaxConcurrentPublishes"] = "0"
+        };
+
+        using var host = new HostBuilder()
+            .ConfigureAppConfiguration(configuration =>
+            {
+                configuration.Sources.Clear();
+                configuration.AddInMemoryCollection(settings);
+            })
+            .ConfigureServices((context, services) =>
+            {
+                services.AddOrderSystemOutboxPublisherInfrastructure(context.Configuration);
+            })
+            .Build();
+
+        var exception = await Assert.ThrowsAsync<OptionsValidationException>(() => host.StartAsync());
+        Assert.Contains(nameof(OutboxPublisherOptions.MaxConcurrentPublishes), exception.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     [Trait("Requirement", "S9-T02")]
     public async Task MessagingCapability_WithOnlyRabbitMqConfiguration_StartsWithoutRetryConfiguration()
