@@ -2,15 +2,54 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Microsoft.EntityFrameworkCore;
 using OrderSystem.Infrastructure;
 using OrderSystem.Infrastructure.Configuration;
 using OrderSystem.Infrastructure.Outbox;
+using OrderSystem.Infrastructure.Persistence;
 using RabbitMQ.Client;
 
 namespace OrderSystem.IntegrationTests.Messaging;
 
 public sealed class MessagingDependencyInjectionTests
 {
+    [Fact]
+    [Trait("Requirement", "S12-T06")]
+    public async Task OutboxPublisherCapability_ResolvesPublishBatchFromScope()
+    {
+        var settings = new Dictionary<string, string?>
+        {
+            ["RabbitMq:Host"] = "localhost",
+            ["RabbitMq:Port"] = "5672",
+            ["RabbitMq:VirtualHost"] = "/",
+            ["RabbitMq:Username"] = "oims"
+        };
+
+        using var host = new HostBuilder()
+            .ConfigureAppConfiguration(configuration =>
+            {
+                configuration.Sources.Clear();
+                configuration.AddInMemoryCollection(settings);
+            })
+            .ConfigureServices((context, services) =>
+            {
+                services.AddLogging();
+                services.AddDbContext<OrderSystemDbContext>(options =>
+                    options.UseNpgsql("Host=localhost;Database=oims;Username=oims"));
+                services.AddOrderSystemMessagingInfrastructure(context.Configuration);
+                services.AddOrderSystemOutboxPublisherInfrastructure(context.Configuration);
+            })
+            .Build();
+
+        await host.StartAsync();
+        using var scope = host.Services.CreateScope();
+
+        var batch = scope.ServiceProvider.GetService<IOutboxPublishBatch>();
+
+        Assert.IsType<OutboxPublishBatch>(batch);
+        await host.StopAsync();
+    }
+
     [Fact]
     [Trait("Requirement", "S12-T05")]
     public async Task OutboxPublisherCapability_ResolvesRabbitMqAdapter()

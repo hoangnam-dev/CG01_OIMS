@@ -5,7 +5,7 @@ namespace OrderSystem.Infrastructure.Outbox;
 
 internal sealed class EfOutboxDueMessageQuery(OrderSystemDbContext dbContext)
 {
-    public Task<List<OutboxMessage>> SelectDuePendingForUpdateAsync(DateTimeOffset now, int capacity, CancellationToken cancellationToken)
+    public Task<List<OutboxMessage>> SelectDueForUpdateAsync(DateTimeOffset now, int capacity, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
 
@@ -17,9 +17,9 @@ internal sealed class EfOutboxDueMessageQuery(OrderSystemDbContext dbContext)
         return dbContext.OutboxMessages
             .FromSqlInterpolated($"""
                 SELECT * FROM outbox_messages
-                WHERE status = 'Pending'
-                AND next_attempt_at <= {now}
-                ORDER BY next_attempt_at, message_id
+                WHERE (status = 'Pending' AND next_attempt_at <= {now})
+                   OR (status = 'Publishing' AND lease_expires_at <= {now})
+                ORDER BY CASE WHEN status = 'Pending' THEN next_attempt_at ELSE lease_expires_at END, message_id
                 LIMIT {capacity}
                 FOR UPDATE SKIP LOCKED
                 """)

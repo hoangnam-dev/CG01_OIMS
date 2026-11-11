@@ -4,6 +4,7 @@ using OrderSystem.Infrastructure.Configuration;
 using OrderSystem.Infrastructure.Messaging;
 using OrderSystem.Infrastructure.Persistence;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
 
 namespace OrderSystem.Infrastructure.Outbox;
 
@@ -12,6 +13,10 @@ internal sealed class RabbitMqOutboxPublisher(IRabbitMqChannelFactory channelFac
     public async Task PublishAsync(OutboxMessage message, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(message);
+        if (!OutboxEventContractCatalog.IsSupported(message.EventType, message.EventVersion))
+        {
+            throw new OutboxPublishFailureException(OutboxFailureCategory.UnsupportedStoredContract);
+        }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(options.Value.PublisherConfirmTimeout);
@@ -24,14 +29,46 @@ internal sealed class RabbitMqOutboxPublisher(IRabbitMqChannelFactory channelFac
             MessageId = message.MessageId.ToString("D"),
             CorrelationId = message.CorrelationId.ToString("D")
         };
-        await using var channel = await channelFactory.CreatePublisherChannelAsync(timeout.Token);
-        await channel.BasicPublishAsync(
-            message.ExchangeName,
-            message.RoutingKey,
-            mandatory: true,
-            properties,
-            Encoding.UTF8.GetBytes(message.Payload),
-            timeout.Token
-        );
+        try
+        {
+            IChannel channel;
+            try
+            {
+                channel = await channelFactory.CreatePublisherChannelAsync(timeout.Token);
+            }
+            catch (AlreadyClosedException)
+            {
+                throw new OutboxPublishFailureException(OutboxFailureCategory.BrokerUnavailable);
+            }
+
+            await using var publisherChannel = channel;
+            await publisherChannel.BasicPublishAsync(
+                message.ExchangeName,
+                message.RoutingKey,
+                mandatory: true,
+                properties,
+                Encoding.UTF8.GetBytes(message.Payload),
+                timeout.Token
+            );
+        }
+        catch (AlreadyClosedException)
+        {
+            throw new OutboxPublishFailureException(OutboxFailureCategory.OutcomeUnknown);
+        }
+        catch (BrokerUnreachableException)
+        {
+            throw new OutboxPublishFailureException(OutboxFailureCategory.BrokerUnavailable);
+        }
+        catch (PublishException exception)
+        {
+            var category = exception.IsReturn
+                ? OutboxFailureCategory.Unroutable
+                : OutboxFailureCategory.NegativeConfirmation;
+            throw new OutboxPublishFailureException(category);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new OutboxPublishFailureException(OutboxFailureCategory.ConfirmTimeout);
+        }
     }
 }

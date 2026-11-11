@@ -112,4 +112,92 @@ internal sealed class OutboxMessage
     public DateTimeOffset? NextAttemptAt { get; private set; }
     public OutboxFailureCategory? LastFailureCategory { get; private set; }
     public string? LastError { get; private set; }
+
+    internal bool TryClaim(DateTimeOffset now, Guid claimToken, TimeSpan leaseDuration)
+    {
+        if (claimToken == Guid.Empty)
+        {
+            throw new ArgumentException("Claim token cannot be empty", nameof(claimToken));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(leaseDuration, TimeSpan.Zero);
+
+        var duePending = Status == OutboxMessageStatus.Pending && NextAttemptAt <= now;
+        var expiredPublishing = Status == OutboxMessageStatus.Publishing && LeaseExpiresAt <= now;
+        if (!duePending && !expiredPublishing)
+        {
+            return false;
+        }
+
+        var leaseExpiresAt = now.Add(leaseDuration);
+        var nextAttemptCount = checked(AttemptCount + 1);
+
+        Status = OutboxMessageStatus.Publishing;
+        ClaimToken = claimToken;
+        LeaseExpiresAt = leaseExpiresAt;
+        AttemptCount = nextAttemptCount;
+        NextAttemptAt = null;
+        return true;
+    }
+
+    internal bool TryMarkPublished(DateTimeOffset publishedAt, Guid claimToken)
+    {
+        if (Status != OutboxMessageStatus.Publishing || ClaimToken != claimToken)
+        {
+            return false;
+        }
+
+        Status = OutboxMessageStatus.Published;
+        PublishedAt = publishedAt;
+        ClaimToken = null;
+        LeaseExpiresAt = null;
+        return true;
+    }
+
+    internal bool TryScheduleRetry(DateTimeOffset attemptedAt, Guid claimToken, OutboxFailureCategory category)
+    {
+        if (category is not OutboxFailureCategory.BrokerUnavailable
+            and not OutboxFailureCategory.ConfirmTimeout
+            and not OutboxFailureCategory.NegativeConfirmation
+            and not OutboxFailureCategory.OutcomeUnknown
+        )
+        {
+            throw new ArgumentOutOfRangeException(nameof(category), category, "Failure category is not retryable");
+        }
+
+        if (Status != OutboxMessageStatus.Publishing || ClaimToken != claimToken)
+        {
+            return false;
+        }
+
+        var delaySeconds = Math.Min(300, 5 << Math.Clamp(AttemptCount - 1, 0, 6));
+        var nextAttemptAt = attemptedAt.AddSeconds(delaySeconds);
+
+        Status = OutboxMessageStatus.Pending;
+        NextAttemptAt = nextAttemptAt;
+        LastFailureCategory = category;
+        ClaimToken = null;
+        LeaseExpiresAt = null;
+        return true;
+    }
+
+    internal bool TryMarkNeedsAttention(Guid claimToken, OutboxFailureCategory category)
+    {
+        if (category is not OutboxFailureCategory.Unroutable and not OutboxFailureCategory.UnsupportedStoredContract)
+        {
+            throw new ArgumentOutOfRangeException(nameof(category), category, "Failure category is not terminal");
+        }
+
+        if (Status != OutboxMessageStatus.Publishing || ClaimToken != claimToken)
+        {
+            return false;
+        }
+
+        Status = OutboxMessageStatus.NeedsAttention;
+        LastFailureCategory = category;
+        NextAttemptAt = null;
+        ClaimToken = null;
+        LeaseExpiresAt = null;
+        return true;
+    }
 }

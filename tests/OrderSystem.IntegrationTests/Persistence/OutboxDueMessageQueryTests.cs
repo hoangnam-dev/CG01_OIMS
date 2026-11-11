@@ -11,8 +11,37 @@ namespace OrderSystem.IntegrationTests.Persistence;
 public sealed class OutboxDueMessageQueryTests(PostgreSqlFixture postgres) : IClassFixture<PostgreSqlFixture>
 {
     [Fact]
+    [Trait("Requirement", "S12-T06")]
+    public async Task SelectDueForUpdateAsync_OrdersPendingAndExpiredByEffectiveDueTime()
+    {
+        var options = new DbContextOptionsBuilder<OrderSystemDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options;
+        var now = new DateTimeOffset(2026, 11, 9, 12, 0, 0, TimeSpan.Zero);
+        var duePending = CreateIntent(now.AddMinutes(-1));
+        var expiredPublishing = CreateIntent(now.AddMinutes(-4));
+        var activePublishing = CreateIntent(now.AddMinutes(-2));
+        var futurePending = CreateIntent(now.AddMinutes(1));
+        Assert.True(expiredPublishing.TryClaim(now.AddMinutes(-3), Guid.NewGuid(), TimeSpan.FromSeconds(60)));
+        Assert.True(activePublishing.TryClaim(now, Guid.NewGuid(), TimeSpan.FromSeconds(60)));
+
+        await using var context = new OrderSystemDbContext(options);
+        await context.Database.MigrateAsync();
+        await using var transaction = await context.Database.BeginTransactionAsync();
+        context.OutboxMessages.AddRange(duePending, expiredPublishing, activePublishing, futurePending);
+        await context.SaveChangesAsync();
+
+        var selected = await new EfOutboxDueMessageQuery(context)
+            .SelectDueForUpdateAsync(now, 2, CancellationToken.None);
+
+        Assert.Collection(selected,
+            first => Assert.Equal(expiredPublishing.MessageId, first.MessageId),
+            second => Assert.Equal(duePending.MessageId, second.MessageId));
+    }
+
+    [Fact]
     [Trait("Requirement", "S12-T05")]
-    public async Task SelectDuePendingForUpdateAsync_OrdersDueRowsAndLimitsBatch()
+    public async Task SelectDueForUpdateAsync_OrdersDueRowsAndLimitsBatch()
     {
         var options = new DbContextOptionsBuilder<OrderSystemDbContext>()
             .UseNpgsql(postgres.ConnectionString)
@@ -32,7 +61,7 @@ public sealed class OutboxDueMessageQueryTests(PostgreSqlFixture postgres) : ICl
         await using var transaction = await queryContext.Database.BeginTransactionAsync();
         var query = new EfOutboxDueMessageQuery(queryContext);
 
-        var selected = await query.SelectDuePendingForUpdateAsync(now, 1, CancellationToken.None);
+        var selected = await query.SelectDueForUpdateAsync(now, 1, CancellationToken.None);
 
         Assert.Equal(earliest.MessageId, Assert.Single(selected).MessageId);
         Assert.DoesNotContain(selected, message => message.MessageId == future.MessageId);
