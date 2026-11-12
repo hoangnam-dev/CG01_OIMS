@@ -20,7 +20,7 @@ public sealed class WorkerHostStartupTests
         {
             StartInfo = new ProcessStartInfo("dotnet")
             {
-                WorkingDirectory = Path.GetDirectoryName(workerAssemblyPath)!,
+                WorkingDirectory = Path.Combine(Path.GetDirectoryName(workerAssemblyPath)!, "WorkerConfig"),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
@@ -92,7 +92,7 @@ public sealed class WorkerHostStartupTests
         {
             StartInfo = new ProcessStartInfo("dotnet")
             {
-                WorkingDirectory = Path.GetDirectoryName(workerAssemblyPath)!,
+                WorkingDirectory = Path.Combine(Path.GetDirectoryName(workerAssemblyPath)!, "WorkerConfig"),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
@@ -162,7 +162,7 @@ public sealed class WorkerHostStartupTests
         {
             StartInfo = new ProcessStartInfo("dotnet")
             {
-                WorkingDirectory = Path.GetDirectoryName(workerAssemblyPath)!,
+                WorkingDirectory = Path.Combine(Path.GetDirectoryName(workerAssemblyPath)!, "WorkerConfig"),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
@@ -235,7 +235,7 @@ public sealed class WorkerHostStartupTests
         {
             StartInfo = new ProcessStartInfo("dotnet")
             {
-                WorkingDirectory = Path.GetDirectoryName(workerAssemblyPath)!,
+                WorkingDirectory = Path.Combine(Path.GetDirectoryName(workerAssemblyPath)!, "WorkerConfig"),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,

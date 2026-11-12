@@ -37,6 +37,9 @@
     <None Include="..\..\deploy\rabbitmq\definitions.template.json"
           Link="rabbitmq\definitions.template.json"
           CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\OrderSystem.Worker\appsettings.json"
+          Link="WorkerConfig\appsettings.json"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
