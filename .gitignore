@@ -13,4 +13,3 @@ docs
 **/appsettings.*.json
 .agents
 AGENTS.md
-README.md
