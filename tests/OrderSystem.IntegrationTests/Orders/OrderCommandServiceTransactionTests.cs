@@ -7,8 +7,6 @@ using OrderSystem.Application.Authentication;
 using OrderSystem.Application.Common.Clock;
 using OrderSystem.Application.Common.Diagnostics;
 using OrderSystem.Application.Common.Identifiers;
-using OrderSystem.Application.Messaging;
-using OrderSystem.Application.Messaging.Contracts;
 using OrderSystem.Application.Orders;
 using OrderSystem.Application.Orders.Contracts;
 using OrderSystem.Domain.Inventories;
@@ -40,7 +38,7 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         var service = CreateService(
             commandScope,
             userId,
-            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid()],
+            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()],
             new ThrowingCheckpointHook(OrderOperationCheckpoints.AfterInventoryReservation));
 
         // Act
@@ -61,6 +59,7 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         Assert.False(await assertionDbContext.Orders.AnyAsync(candidate => candidate.Id == orderId));
         Assert.False(await assertionDbContext.OrderItems.AnyAsync(candidate => candidate.OrderId == orderId));
         Assert.False(await assertionDbContext.InventoryTransactions.AnyAsync(candidate => candidate.ReferenceId == orderId));
+        Assert.False(await assertionDbContext.OutboxMessages.AnyAsync(candidate => candidate.OrderId == orderId));
     }
 
     [Fact]
@@ -75,7 +74,7 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         var service = CreateService(
             commandScope,
             userId,
-            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid()],
+            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()],
             new ThrowingCheckpointHook(OrderOperationCheckpoints.AfterCreateCommit));
 
         // Act
@@ -113,6 +112,74 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         Assert.Equal(1, ledger.ReservedQuantityDelta);
         Assert.Equal(InventoryReferenceType.Order, ledger.ReferenceType);
         Assert.Equal(orderId, ledger.ReferenceId);
+        Assert.True(await assertionDbContext.OutboxMessages.AnyAsync(candidate => candidate.OrderId == orderId));
+    }
+
+    [Fact]
+    public async Task CreateAsync_WhenOrderCommits_PersistsOneOrderCreatedOutboxIntent()
+    {
+        await using var factory = CreateFactory();
+        var (userId, productVariantId) = await SeedCreateOrderDependenciesAsync(factory);
+        var orderId = Guid.NewGuid();
+        var messageId = Guid.NewGuid();
+
+        using var commandScope = factory.Services.CreateScope();
+        var service = CreateService(
+            commandScope,
+            userId,
+            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid(), messageId],
+            new ThrowingCheckpointHook("not-reached"));
+
+        var result = await service.CreateAsync(
+            Guid.NewGuid(),
+            new CreateOrderRequest([new(productVariantId, Quantity: 1)]),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDbContext = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        Assert.True(await assertionDbContext.Orders.AsNoTracking().AnyAsync(order => order.Id == orderId));
+
+        var outboxMessages = await assertionDbContext.OutboxMessages.AsNoTracking()
+            .Where(message => message.OrderId == orderId)
+            .ToListAsync();
+        var outboxMessage = Assert.Single(outboxMessages);
+        Assert.Equal(messageId, outboxMessage.MessageId);
+        Assert.Equal(OutboxMessageStatus.Pending, outboxMessage.Status);
+        Assert.Equal(0, outboxMessage.AttemptCount);
+    }
+
+    [Fact]
+    public async Task CreateAsync_WhenFailureOccursBeforeCommit_RollsBackOrderAndOutboxIntent()
+    {
+        await using var factory = CreateFactory();
+        var (userId, productVariantId) = await SeedCreateOrderDependenciesAsync(factory);
+        var orderId = Guid.NewGuid();
+
+        using var commandScope = factory.Services.CreateScope();
+        var commandDbContext = commandScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var hook = new RecordingThrowingCreateHook(commandDbContext, orderId);
+        var service = CreateService(
+            commandScope,
+            userId,
+            [Guid.NewGuid(), orderId, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()],
+            hook);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(
+            Guid.NewGuid(),
+            new CreateOrderRequest([new(productVariantId, Quantity: 1)]),
+            CancellationToken.None));
+
+        using var assertionScope = factory.Services.CreateScope();
+        var assertionDbContext = assertionScope.ServiceProvider.GetRequiredService<OrderSystemDbContext>();
+        var inventory = await assertionDbContext.Inventories.AsNoTracking()
+            .SingleAsync(candidate => candidate.ProductVariantId == productVariantId);
+
+        Assert.Equal(0, inventory.ReservedQuantity);
+        Assert.False(await assertionDbContext.Orders.AnyAsync(candidate => candidate.Id == orderId));
+        Assert.False(await assertionDbContext.OutboxMessages.AnyAsync(candidate => candidate.OrderId == orderId));
+        Assert.Equal(1, hook.StagedOutboxCount);
     }
 
     [Fact]
@@ -237,7 +304,6 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
             scope.ServiceProvider.GetRequiredService<ICreateOrderResponseSnapshotSerializer>(),
             operationHook,
             new TestCorrelationContext(),
-            new NoOpOrderCreatedPublisher(),
             ReservationDuration,
             IdempotencyReplayWindow,
             IdempotencyRetentionWindow);
@@ -364,11 +430,6 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
         public Guid CorrelationId { get; } = Guid.NewGuid();
     }
 
-    private sealed class NoOpOrderCreatedPublisher : IOrderCreatedPublisher
-    {
-        public Task PublishAsync(OrderCreatedV1 message) => Task.CompletedTask;
-    }
-
     private sealed class SequenceIdGenerator(IReadOnlyCollection<Guid> generatedIds) : IIdGenerator
     {
         private readonly Queue<Guid> ids = new(generatedIds);
@@ -387,6 +448,25 @@ public sealed class OrderCommandServiceTransactionTests(PostgreSqlFixture postgr
             if (checkpoint == checkpointToThrow)
             {
                 throw new InvalidOperationException($"Injected failure at '{checkpoint}'.");
+            }
+
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingThrowingCreateHook(OrderSystemDbContext dbContext, Guid orderId) : IOperationHook
+    {
+        public int StagedOutboxCount { get; private set; }
+
+        public Task ReachAsync(string checkpoint, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (checkpoint == OrderOperationCheckpoints.AfterInventoryReservation)
+            {
+                StagedOutboxCount = dbContext.ChangeTracker.Entries<OutboxMessage>()
+                    .Count(entry => entry.State == EntityState.Added && entry.Entity.OrderId == orderId);
+                throw new InvalidOperationException("Injected failure before CreateOrder commit");
             }
 
             return Task.CompletedTask;

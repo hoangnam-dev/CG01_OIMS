@@ -12,6 +12,7 @@ builder.Services
     .AddOrderSystemCommonInfrastructure()
     .AddOrderSystemOrderInfrastructure(builder.Configuration)
     .AddOrderSystemMessagingInfrastructure(builder.Configuration)
+    .AddOrderSystemOutboxPublisherInfrastructure(builder.Configuration)
     .AddOrderSystemPaymentInfrastructure(builder.Configuration)
     .AddOrderSystemNotificationConsumer()
     .AddOrderSystemDeadLetterIntakeConsumer()
@@ -23,6 +24,7 @@ builder.Services.AddSingleton<ReservationExpirationMetrics>();
 
 builder.Services.AddHostedService<ReservationExpirationWorker>();
 builder.Services.AddHostedService<PaymentReconciliationWorker>();
+builder.Services.AddHostedService<OutboxPublisherWorker>();
 
 var host = builder.Build();
 host.Run();

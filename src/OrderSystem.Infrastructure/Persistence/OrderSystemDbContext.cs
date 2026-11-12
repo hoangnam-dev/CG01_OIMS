@@ -51,6 +51,8 @@ public sealed class OrderSystemDbContext(DbContextOptions<OrderSystemDbContext> 
 
     public DbSet<FailedMessagePayloadAccess> FailedMessagePayloadAccesses => Set<FailedMessagePayloadAccess>();
 
+    internal DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

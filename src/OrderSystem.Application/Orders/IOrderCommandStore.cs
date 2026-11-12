@@ -1,5 +1,6 @@
 using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Orders;
+using OrderSystem.Application.Messaging.Contracts;
 
 namespace OrderSystem.Application.Orders;
 
@@ -48,6 +49,7 @@ public interface IOrderCommandStore
     void AddOrder(Order order);
     void AddOrderItems(IEnumerable<OrderItem> items);
     void AddInventoryTransactions(IEnumerable<InventoryTransaction> transactions);
+    void AddOrderCreatedIntent(OrderCreatedV1 message);
     void AddOrderStatusHistory(OrderStatusHistory history);
     Task SaveChangesAsync(CancellationToken cancellationToken);
     Task<IdempotencyClaimResult> TryClaimCreateOrderAsync(CreateOrderIdempotencyClaim claim, CancellationToken cancellationToken);

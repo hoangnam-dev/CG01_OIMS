@@ -20,7 +20,7 @@ public sealed class WorkerHostStartupTests
         {
             StartInfo = new ProcessStartInfo("dotnet")
             {
-                WorkingDirectory = Path.GetDirectoryName(workerAssemblyPath)!,
+                WorkingDirectory = Path.Combine(Path.GetDirectoryName(workerAssemblyPath)!, "WorkerConfig"),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
@@ -81,6 +81,76 @@ public sealed class WorkerHostStartupTests
     }
 
     [Fact]
+    [Trait("Requirement", "S12-T05")]
+    public async Task Executable_WithZeroOutboxConcurrency_FailsClearly()
+    {
+        var workerAssemblyPath = typeof(worker::OrderSystem.Worker.ReservationExpirationWorker).Assembly.Location;
+        var output = new StringBuilder();
+        var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo("dotnet")
+            {
+                WorkingDirectory = Path.Combine(Path.GetDirectoryName(workerAssemblyPath)!, "WorkerConfig"),
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            },
+            EnableRaisingEvents = true
+        };
+        process.StartInfo.ArgumentList.Add(workerAssemblyPath);
+        process.StartInfo.Environment["DOTNET_ENVIRONMENT"] = "Production";
+        process.StartInfo.Environment["OutboxPublisher__MaxConcurrentPublishes"] = "0";
+        process.StartInfo.Environment.Remove("Jwt__SigningKey");
+        process.StartInfo.Environment.Remove("Payment__FakeWebhookSecret");
+
+        void CaptureOutput(string? line)
+        {
+            if (line is null)
+            {
+                return;
+            }
+
+            lock (output)
+            {
+                output.AppendLine(line);
+            }
+        }
+
+        process.OutputDataReceived += (_, eventArgs) => CaptureOutput(eventArgs.Data);
+        process.ErrorDataReceived += (_, eventArgs) => CaptureOutput(eventArgs.Data);
+        process.Exited += (_, _) => exited.TrySetResult(process.ExitCode);
+
+        try
+        {
+            Assert.True(process.Start(), "The Worker process could not be started");
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            var timeout = Task.Delay(TimeSpan.FromSeconds(10));
+            var completed = await Task.WhenAny(exited.Task, timeout);
+
+            Assert.True(completed == exited.Task, $"Worker did not reject invalid OutboxPublisher configuration{Environment.NewLine}{output}");
+
+            await process.WaitForExitAsync();
+            Assert.Contains("OutboxPublisher", output.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("MaxConcurrentPublishes", output.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.NotEqual(0, await exited.Task);
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+
+            await process.WaitForExitAsync();
+        }
+    }
+
+    [Fact]
     [Trait("Requirement", "S10-T09")]
     public async Task Executable_WithNonPositiveMessageCleanupInterval_FailsClearly()
     {
@@ -92,7 +162,7 @@ public sealed class WorkerHostStartupTests
         {
             StartInfo = new ProcessStartInfo("dotnet")
             {
-                WorkingDirectory = Path.GetDirectoryName(workerAssemblyPath)!,
+                WorkingDirectory = Path.Combine(Path.GetDirectoryName(workerAssemblyPath)!, "WorkerConfig"),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
@@ -165,7 +235,7 @@ public sealed class WorkerHostStartupTests
         {
             StartInfo = new ProcessStartInfo("dotnet")
             {
-                WorkingDirectory = Path.GetDirectoryName(workerAssemblyPath)!,
+                WorkingDirectory = Path.Combine(Path.GetDirectoryName(workerAssemblyPath)!, "WorkerConfig"),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
