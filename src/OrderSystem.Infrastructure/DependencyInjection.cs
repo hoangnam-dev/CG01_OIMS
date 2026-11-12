@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
@@ -33,6 +34,7 @@ using StackExchange.Redis;
 using OrderSystem.Application.Messaging;
 using OrderSystem.Application.Notifications;
 using OrderSystem.Infrastructure.Notifications;
+using OrderSystem.Infrastructure.Outbox;
 
 namespace OrderSystem.Infrastructure;
 
@@ -50,6 +52,10 @@ public static class DependencyInjection
             .Validate(options => !string.IsNullOrWhiteSpace(options.ConnectionString), "Database:ConnectionString is required.")
             .Validate(options => IsPostgreSqlConnectionString(options.ConnectionString), "Database:ConnectionString must be a valid PostgreSQL connection string.")
             .ValidateOnStart();
+        services.AddOptions<OutboxHealthOptions>()
+            .Bind(configuration.GetSection(OutboxHealthOptions.SectionName))
+            .Validate(options => options.PendingAgeThreshold > TimeSpan.Zero, "OutboxHealth:PendingAgeThreshold must be positive")
+            .ValidateOnStart();
         services.AddDbContext<OrderSystemDbContext>((provider, options) =>
         {
             var database = provider.GetRequiredService<IOptions<DatabaseOptions>>().Value;
@@ -59,8 +65,10 @@ public static class DependencyInjection
         services.AddScoped<DbContext>(provider => provider.GetRequiredService<OrderSystemDbContext>());
         services.AddScoped<IFailedMessageStore, EfFailedMessageStore>();
         services.AddScoped<INotificationReadStore, EfNotificationReadStore>();
+        services.TryAddSingleton<TimeProvider>(TimeProvider.System);
         services.AddHealthChecks()
-            .AddDbContextCheck<OrderSystemDbContext>("postgresql", tags: ["ready"]);
+            .AddDbContextCheck<OrderSystemDbContext>("postgresql", tags: ["ready"])
+            .AddCheck<OutboxHealthCheck>("outbox", failureStatus: HealthStatus.Degraded, tags: []);
 
         return services;
     }

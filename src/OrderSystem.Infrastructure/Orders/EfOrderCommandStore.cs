@@ -1,16 +1,20 @@
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Options;
+using OrderSystem.Application.Messaging.Contracts;
 using OrderSystem.Application.Orders;
 using OrderSystem.Domain.Idempotency;
 using OrderSystem.Domain.Inventories;
 using OrderSystem.Domain.Orders;
 using OrderSystem.Domain.Products;
+using OrderSystem.Infrastructure.Configuration;
+using OrderSystem.Infrastructure.Messaging;
 using OrderSystem.Infrastructure.Persistence;
 
 namespace OrderSystem.Infrastructure.Orders;
 
-internal sealed class EfOrderCommandStore(OrderSystemDbContext dbContext) : IOrderCommandStore
+internal sealed class EfOrderCommandStore(OrderSystemDbContext dbContext, IOptions<RabbitMqOptions> rabbitMqOptions) : IOrderCommandStore
 {
     public async Task<IReadOnlyList<OrderVariantSnapshot>> LoadVariantSnapshotsAsync(
       IReadOnlyCollection<Guid> productVariantIds,
@@ -210,6 +214,27 @@ internal sealed class EfOrderCommandStore(OrderSystemDbContext dbContext) : IOrd
     {
         ArgumentNullException.ThrowIfNull(transactions);
         dbContext.InventoryTransactions.AddRange(transactions);
+    }
+
+    public void AddOrderCreatedIntent(OrderCreatedV1 message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (dbContext.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException("An active database transaction is required to add an Outbox intent");
+        }
+
+        var options = rabbitMqOptions.Value;
+        dbContext.OutboxMessages.Add(new OutboxMessage(
+            message.MessageId,
+            message.OrderId,
+            "OrderCreated",
+            checked((short)message.EventVersion),
+            Encoding.UTF8.GetString(OrderCreatedV1Serializer.Serialize(message)),
+            message.CorrelationId,
+            message.OccurredAt,
+            options.ExchangeName,
+            options.OrderCreatedRoutingKey));
     }
 
     public void AddOrderStatusHistory(OrderStatusHistory history)

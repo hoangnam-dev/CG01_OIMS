@@ -15,6 +15,7 @@ using OrderSystem.Infrastructure.Configuration;
 using OrderSystem.Infrastructure.Notifications;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 
 namespace OrderSystem.Infrastructure.Messaging;
 
@@ -46,6 +47,25 @@ internal sealed partial class RabbitMqOrderCreatedDeadLetterIntakeConsumer(
     private readonly RabbitMqOptions _rabbitMqOptions = options.Value;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await RunSessionAsync(stoppingToken);
+                return;
+            }
+            catch (Exception exception) when (
+                !stoppingToken.IsCancellationRequested &&
+                (exception is BrokerUnreachableException or AlreadyClosedException)
+            )
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
+            }
+        }
+    }
+
+    private async Task RunSessionAsync(CancellationToken stoppingToken)
     {
         await using var channel = await channelFactory.CreateChannelAsync(stoppingToken);
         await DeclareTopologyAsync(channel, stoppingToken);
